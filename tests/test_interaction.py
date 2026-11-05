@@ -32,30 +32,26 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(result.interaction.status, "COMPLETED")
         answer.assert_not_called()
 
-    def test_business_clarification_in_json_text_completes_all_input_modes(self):
-        """三类输入均按业务状态补答，18来源不被改写为15，正文无需疑问句。"""
-        for attachment in ({}, {"image": "fixture.jpg"}, {"file": "fixture.txt"}):
-            first = {"Status": "success", "ExtraInfo": {"ReplyMethod": 18}, "Messages": [{"Type": "reply", "Contents": [
-                {"Type": "json_text", "Text": envelope("CLARIFICATION", "WAITING_USER", "需要费用类型", ["expense_type"])},
-            ]}]}
-            with (
-                self.subTest(attachment=attachment),
-                patch("adp_chat.attachments.prepare_attachment", return_value={"Type": "fixture"}) as upload,
-                patch("adp_chat.sse.open_request", side_effect=[
-                    FakeStream(event("response.completed", Response=first)),
-                    response(envelope("ANSWER", "COMPLETED", "报销说明"), 18),
-                ]) as network,
-            ):
-                seen = []
-                final = chat_until_complete("我要报销", config=self.config, answer_provider=lambda _: "差旅", on_result=seen.append, **attachment)
-                self.assertEqual(seen[0].clarification_source, "interaction")
-                self.assertEqual(seen[0].interaction.missing_fields, ("expense_type",))
-                self.assertEqual([item.reply_method for item in seen], [18, 18])
-                self.assertEqual(final.input_kind, "clarification_answer")
-                self.assertEqual(final.text, "报销说明")
-                self.assertEqual(upload.call_count, int(bool(attachment)))
-                payloads = [json.loads(call.args[0].data) for call in network.call_args_list]
-                self.assertEqual(payloads[0]["ConversationId"], payloads[1]["ConversationId"])
+    def test_business_clarification_in_json_text_continues_text(self):
+        """文字按业务状态补答，18来源不被改写为15，正文无需疑问句。"""
+        first = {"Status": "success", "ExtraInfo": {"ReplyMethod": 18}, "Messages": [{"Type": "reply", "Contents": [
+            {"Type": "json_text", "Text": envelope("CLARIFICATION", "WAITING_USER", "需要费用类型", ["expense_type"])},
+        ]}]}
+        with (
+            patch("adp_chat.sse.open_request", side_effect=[
+                FakeStream(event("response.completed", Response=first)),
+                response(envelope("ANSWER", "COMPLETED", "报销说明"), 18),
+            ]) as network,
+        ):
+            seen = []
+            final = chat_until_complete("我要报销", config=self.config, answer_provider=lambda _: "差旅", on_result=seen.append)
+            self.assertEqual(seen[0].clarification_source, "interaction")
+            self.assertEqual(seen[0].interaction.missing_fields, ("expense_type",))
+            self.assertEqual([item.reply_method for item in seen], [18, 18])
+            self.assertEqual(final.input_kind, "clarification_answer")
+            self.assertEqual(final.text, "报销说明")
+            payloads = [json.loads(call.args[0].data) for call in network.call_args_list]
+            self.assertEqual(payloads[0]["ConversationId"], payloads[1]["ConversationId"])
 
     def test_confirmation_waits_for_human_and_never_invents_consent(self):
         """操作确认保留独立类型，只向调用方要答案，不默认同意。"""

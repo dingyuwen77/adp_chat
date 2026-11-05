@@ -21,13 +21,6 @@ class ChatConfig:
     search_network: str = ""
     workflow_status: str = ""
     enable_multi_intent: bool | None = None
-    bot_biz_id: str = ""
-    region: str = "ap-guangzhou"
-    secret_id: str = field(default="", repr=False)
-    secret_key: str = field(default="", repr=False)
-    attachment_timeout_seconds: float = 60
-    signed_url_seconds: int = 300
-    allow_public_image_upload: bool = False
     first_question: str = field(default="", repr=False)
     show_preview: bool = True
     interactive: bool = True
@@ -39,6 +32,7 @@ class ChatConfig:
     log_max_bytes: int = 5_242_880
     log_backup_count: int = 3
     log_answer_chars: int = 100
+    session_file: str = "runtime/session.json"
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -52,11 +46,10 @@ class ChatConfig:
                     raise ChatError("config", "invalid_type", f"配置字段 [{section}].{key} 类型错误。")
         if not self.app_key.strip() or not self.user_id.strip():
             raise ChatError("config", "missing_identity", "请填写 [adp] 的 app_key 和 user_id。")
-        for key in ("chat_timeout_seconds", "attachment_timeout_seconds"):
-            if not 0 < getattr(self, key) <= TIMEOUT_MAX:
-                raise ChatError("config", "invalid_timeout", f"配置字段 {key} 超出系统支持的超时范围。")
-        if self.streaming_throttle < 0 or self.signed_url_seconds <= 0:
-            raise ChatError("config", "invalid_range", "流式节流或签名时长超出有效范围。")
+        if not 0 < self.chat_timeout_seconds <= TIMEOUT_MAX:
+            raise ChatError("config", "invalid_timeout", "配置字段 chat_timeout_seconds 超出系统支持的超时范围。")
+        if self.streaming_throttle < 0:
+            raise ChatError("config", "invalid_range", "流式节流超出有效范围。")
         for key in ("search_network", "workflow_status"):
             if getattr(self, key) not in ("", "enable", "disable"):
                 raise ChatError("config", "invalid_option", f"配置字段 {key} 的取值无效。")
@@ -64,6 +57,8 @@ class ChatConfig:
             raise ChatError("config", "invalid_option", "日志级别必须是 DEBUG、INFO、WARNING、ERROR 或 CRITICAL。")
         if not self.log_file.strip() or self.log_max_bytes <= 0 or self.log_backup_count < 1 or self.log_answer_chars < 0:
             raise ChatError("config", "invalid_logging", "日志路径、轮转参数和回答预览长度必须有效。")
+        if not self.session_file.strip() or "\0" in self.session_file:
+            raise ChatError("config", "invalid_session_path", "会话文件路径不能为空或含有空字符。")
 
 
 _SECTIONS = {
@@ -77,12 +72,8 @@ _SECTIONS = {
         "detect_text_clarification": bool,
         "structured_interaction": bool,
     },
-    "attachments": {
-        "bot_biz_id": str, "region": str, "secret_id": str, "secret_key": str,
-        "attachment_timeout_seconds": (int, float), "signed_url_seconds": int,
-        "allow_public_image_upload": bool,
-    },
     "cli": {"first_question": str, "show_preview": bool, "interactive": bool},
+    "session": {"session_file": str},
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,
         "log_max_bytes": int, "log_backup_count": int,
@@ -92,7 +83,7 @@ _SECTIONS = {
 
 
 def load_config(path: str | Path = "config.toml") -> ChatConfig:
-    """读取本机 TOML，校验通用配置，附件凭据由附件调用按需校验。"""
+    """读取文字对话配置；兼容忽略旧附件分组，不保留其凭据。"""
     try:
         with Path(path).open("rb") as source:
             data = tomllib.load(source)
@@ -103,6 +94,9 @@ def load_config(path: str | Path = "config.toml") -> ChatConfig:
 
     values = {}
     for name, group in data.items():
+        # 已有本机配置可以继续发文字；废弃上传配置不进入运行时对象。
+        if name == "attachments" and isinstance(group, dict):
+            continue
         if name not in _SECTIONS or not isinstance(group, dict):
             raise ChatError("config", "unknown_section", "配置包含未知分组或分组格式错误。")
         for key, value in group.items():
@@ -116,4 +110,7 @@ def load_config(path: str | Path = "config.toml") -> ChatConfig:
     log_path = Path(config.log_file)
     if not log_path.is_absolute():
         config = replace(config, log_file=str(Path(path).absolute().parent / log_path))
+    session_path = Path(config.session_file)
+    if not session_path.is_absolute():
+        config = replace(config, session_file=str(Path(path).absolute().parent / session_path))
     return config

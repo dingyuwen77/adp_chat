@@ -171,11 +171,10 @@ class ChatTests(unittest.TestCase):
         self.assertTrue(stream.closed)
 
     def test_invalid_input_does_not_start_network(self):
-        """错误问题、会话 ID 或附件参数在联网前拒绝。"""
+        """错误问题或会话 ID 在联网前拒绝。"""
         with patch("adp_chat.sse.open_request") as transport:
             for question, kwargs in [
                 ("", {}), ("问题", {"conversation_id": "short"}),
-                ("问题", {"file": "a.txt", "image": "b.png"}),
             ]:
                 with self.subTest(kwargs=kwargs):
                     with self.assertRaises(ChatError) as caught:
@@ -195,12 +194,12 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "config")
         self.assertNotIn("secret-value", str(caught.exception))
 
-    def test_config_constructor_rejects_nonboolean_public_consent_and_invalid_timeout(self):
+    def test_config_constructor_rejects_nonboolean_options_and_invalid_timeout(self):
         """Python 构造的配置执行与 TOML 相同的安全和超时校验。"""
         for value in ("false", 1):
             with self.subTest(value=value):
                 with self.assertRaises(ChatError) as caught:
-                    ChatConfig("test-key", "tester", allow_public_image_upload=value)
+                    ChatConfig("test-key", "tester", incremental=value)
                 self.assertEqual(caught.exception.code, "invalid_type")
         with self.assertRaises(ChatError) as caught:
             ChatConfig("test-key", "tester", chat_timeout_seconds=1e100)

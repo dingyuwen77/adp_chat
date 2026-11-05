@@ -1,0 +1,36 @@
+name: 文字对话回归
+
+on:
+  pull_request:
+    paths:
+      - 'adp_chat/**'
+      - 'tests/**'
+      - 'main.py'
+      - 'pyproject.toml'
+      - 'config.example.toml'
+      - '.github/workflows/tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'adp_chat/**'
+      - 'tests/**'
+      - 'main.py'
+      - 'pyproject.toml'
+      - 'config.example.toml'
+      - '.github/workflows/tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  text-regression:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      # 固定官方 Release revision，避免可变标签改变测试环境准备逻辑。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      - name: 运行确定性文字回归
+        run: python -B -X utf8 -m unittest discover -s tests

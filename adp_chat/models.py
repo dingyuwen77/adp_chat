@@ -29,6 +29,7 @@ class ChatResult:
     clarification_source: Literal["interaction", "reply_method", "questionnaire", "text_rule"] | None = None
     original_question: str = field(default="", repr=False)
     interaction: Interaction | None = None
+    reply_contents: tuple[tuple[dict, ...], ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True, slots=True)

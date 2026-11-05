@@ -74,7 +74,7 @@ def _mask_private_url(match: re.Match) -> str:
 
 def conversation_text(config: ChatConfig, text: str, *, limit: int | None = None) -> str:
     """完整脱敏后按Unicode字符截取，再转成单行JSON字符串，防止日志行伪造。"""
-    text = _mask_secrets(text, (config.app_key, config.secret_id, config.secret_key))
+    text = _mask_secrets(text, (config.app_key,))
     text = _URL.sub(_mask_private_url, text)
     if limit is not None:
         text = text[:limit]
@@ -146,7 +146,7 @@ def diagnostic_logger(config: ChatConfig):
         )
     except (OSError, ValueError):
         raise ChatError("logging", "unwritable", "无法创建日志文件，请检查 [logging] 的路径和权限。") from None
-    handler.setFormatter(_Formatter((config.app_key, config.secret_id, config.secret_key)))
+    handler.setFormatter(_Formatter((config.app_key,)))
     logger.addHandler(handler)
     try:
         yield logger

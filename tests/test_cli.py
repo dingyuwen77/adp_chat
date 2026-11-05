@@ -10,7 +10,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from adp_chat.cli import main
-from test_attachments import _STORAGE
 from test_chat import FakeStream, completed
 
 
@@ -60,31 +59,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payloads[0]["ConversationId"], payloads[1]["ConversationId"])
         self.assertNotEqual(payloads[1]["ConversationId"], payloads[2]["ConversationId"])
 
-    def test_cli_document_and_image_reach_the_shared_v2_request(self):
-        """交互文档和单次图片都通过 CLI 进入公共 V2 请求。"""
-        document = self.path.with_name("带 空格.txt")
-        document.write_text("文档", encoding="utf-8")
-        image = self.path.with_name("样例.jpeg")
-        image.write_bytes(b"test-image")
-        with self.path.open("a", encoding="utf-8") as config:
-            config.write(
-                '\n[attachments]\nbot_biz_id="fixture"\nsecret_id="test-id"\n'
-                'secret_key="test-secret"\nallow_public_image_upload=true\n'
-            )
-        with (
-            contextlib.redirect_stdout(self.stdout),
-            contextlib.redirect_stderr(self.stderr),
-            patch("builtins.input", side_effect=[f'/file "{document}"', "提取文档", "/exit"]),
-            patch("adp_chat.attachments._storage_request", return_value=_STORAGE),
-            patch("adp_chat.attachments.open_request", side_effect=[io.BytesIO() for _ in range(3)]),
-            patch("adp_chat.sse.open_request", side_effect=[FakeStream(completed()) for _ in range(2)]) as sse,
-        ):
-            self.assertEqual(main(["--config", str(self.path)]), 0)
-            self.assertEqual(main(["--config", str(self.path), "--image", str(image), "--ask", "描述图片"]), 0)
-        payloads = [json.loads(call.args[0].data) for call in sse.call_args_list]
-        self.assertEqual(payloads[0]["Contents"][1]["File"]["FileName"], document.name)
-        self.assertEqual(payloads[1]["Contents"][1]["Type"], "image")
-        self.assertEqual(self.stdout.getvalue(), "完整回答\n完整回答\n")
+    def test_retired_attachment_flags_and_commands_are_rejected(self):
+        """旧附件入口明确拒绝，文字 CLI 不会读取或上传本地文件。"""
+        with contextlib.redirect_stderr(self.stderr), patch("adp_chat.sse.open_request") as network:
+            for flag in ("--file", "--image"):
+                with self.assertRaises(SystemExit) as caught:
+                    main([flag, "local-path", "--ask", "问题"])
+                self.assertEqual(caught.exception.code, 2)
+            with patch("builtins.input", side_effect=['/file "local-path"', "/exit"]):
+                self.assertEqual(main(["--config", str(self.path)]), 0)
+        network.assert_not_called()
+        self.assertIn("unsupported_command", self.stderr.getvalue())
 
     def test_import_preserves_environment_and_root_logging(self):
         """在新进程验证库导入不会配置宿主日志或删除 TLS 环境变量。"""

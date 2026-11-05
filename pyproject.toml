@@ -5,12 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adp-chat"
 version = "0.1.0"
-description = "Tencent Cloud ADP Multi-Agent chat component and CLI"
+description = "Tencent Cloud ADP text chat component and CLI"
 readme = "README.md"
 requires-python = ">=3.14"
-
-[project.optional-dependencies]
-attachments = ["tencentcloud-sdk-python"]
 
 [tool.setuptools]
 packages = ["adp_chat"]
