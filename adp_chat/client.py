@@ -3,7 +3,6 @@ from collections import Counter
 from collections.abc import Callable
 from contextlib import closing
 from copy import deepcopy
-from pathlib import Path
 from logging import INFO
 from time import monotonic
 from uuid import uuid4
@@ -37,7 +36,7 @@ def _provider_error_message(code: str | None) -> str:
 
 
 def _payload(config: ChatConfig, request_id: str, conversation_id: str, contents: list) -> dict:
-    """以统一的 V2 字段组装文本、图片或文档请求。"""
+    """以现有 V2 字段组装一轮文字对话请求。"""
     payload = {
         "AppKey": config.app_key,
         "UserId": config.user_id,
@@ -147,6 +146,7 @@ def _result(
         input_kind=input_kind, questionnaires=tuple(questionnaires), widgets=tuple(widgets),
         original_question=question,
         interaction=interaction,
+        reply_contents=tuple(tuple(deepcopy(part) for part in message) for message in contents),
     )
 
 
@@ -226,10 +226,14 @@ def _completed_record(payload: dict, config: ChatConfig, on_preview, logger) -> 
                     provider_request_id=_safe_diagnostic(error.get("RequestId")),
                     provider_trace_id=_safe_diagnostic(error.get("TraceId")),
                 )
-            if kind == "request_ack" and _object(event.get("RequestAck")).get("Status") != "success":
-                raise ChatError("chat", "request_rejected", "ADP 未接受本轮请求。")
+            if kind == "request_ack":
+                acknowledgement = _object(event.get("RequestAck"))
+                _check_conversation(acknowledgement, payload["ConversationId"])
+                if acknowledgement.get("Status") != "success":
+                    raise ChatError("chat", "request_rejected", "ADP 未接受本轮请求。")
             if kind == "response.completed":
                 record = _object(event.get("Response"))
+                _check_conversation(record, payload["ConversationId"])
                 if record.get("Status") != "success":
                     raise ChatError("chat", "response_failed", "ADP 对话未成功完成。")
                 logger.debug("sse_completed conversation_id=%s request_id=%s events=%s", payload["ConversationId"], payload["RequestId"], dict(counts))
@@ -253,17 +257,21 @@ def _completed_record(payload: dict, config: ChatConfig, on_preview, logger) -> 
     raise ChatError("chat", "incomplete", "对话流已结束，未收到成功完成事件。")
 
 
+def _check_conversation(record: dict, conversation_id: str) -> None:
+    """兼容未返回标识的事件；一旦返回则严格验证，不回显未经信任的值。"""
+    if "ConversationId" in record and record["ConversationId"] != conversation_id:
+        raise ChatError("chat", "conversation_mismatch", "ADP 返回的会话标识与本轮提交值不一致。")
+
+
 def chat(
     question: str | ClarificationAnswer,
     *,
     config: ChatConfig,
-    file: str | Path | None = None,
-    image: str | Path | None = None,
     conversation_id: str | None = None,
     reply_to: ChatResult | None = None,
     on_preview: Callable[[PreviewEvent], None] | None = None,
 ) -> ChatResult:
-    """执行一轮 ADP Multi-Agent 对话，可附带一个本地文档或图片。"""
+    """执行一轮 ADP 文字对话，不读取终端输入、不自动续答或重试。"""
     if not isinstance(config, ChatConfig):
         raise ChatError("config", "invalid_config", "config 必须是 load_config() 返回的对话配置。")
     if reply_to is not None:
@@ -277,8 +285,6 @@ def chat(
     if reply_to is not None and reply_to.needs_input and reply_to.original_question:
         # 本题经过补答后仍保留首问语境；新问题不会继承上一题的生成任务保护。
         original_question = reply_to.original_question
-    if file is not None and image is not None:
-        raise ChatError("input", "conflicting_attachment", "一轮只可选择文档或图片。")
     if conversation_id is not None and (
         not isinstance(conversation_id, str) or not _ID_PATTERN.fullmatch(conversation_id)
     ):
@@ -302,18 +308,11 @@ def chat(
     with diagnostic_logger(config) as logger:
         started = monotonic()
         input_kind = "clarification_answer" if reply_to is not None and reply_to.needs_input else "question"
-        attachment_kind = "image" if image is not None else "file" if file is not None else "none"
-        logger.info("request_started conversation_id=%s request_id=%s input_kind=%s attachment=%s structured=%s", conversation_id, request_id, input_kind, attachment_kind, config.structured_interaction)
+        logger.info("request_started conversation_id=%s request_id=%s input_kind=%s structured=%s", conversation_id, request_id, input_kind, config.structured_interaction)
         if logger.isEnabledFor(INFO):
             current_question = question if isinstance(question, str) else question.text
             logger.info("user_question conversation_id=%s request_id=%s question=%s", conversation_id, request_id, conversation_text(config, current_question))
         try:
-            if file is not None or image is not None:
-                from .attachments import prepare_attachment
-
-                logger.debug("attachment_started conversation_id=%s request_id=%s kind=%s", conversation_id, request_id, attachment_kind)
-                contents.append(prepare_attachment(image if image is not None else file, image is not None, config))
-                logger.debug("attachment_completed conversation_id=%s request_id=%s kind=%s", conversation_id, request_id, attachment_kind)
             payload = _payload(config, request_id, conversation_id, contents)
             record = _completed_record(payload, config, notify if on_preview is not None else None, logger)
             result = _result(record, conversation_id, request_id, input_kind, original_question, config)
@@ -340,12 +339,10 @@ def chat_until_complete(
     config: ChatConfig,
     answer_provider: Callable[[ChatResult], str | ClarificationAnswer],
     on_result: Callable[[ChatResult], None] | None = None,
-    file: str | Path | None = None,
-    image: str | Path | None = None,
     conversation_id: str | None = None,
     on_preview: Callable[[PreviewEvent], None] | None = None,
 ) -> ChatResult:
-    """按正式状态或保守文字推断收集补充答案；附件仅首轮上传。
+    """按正式状态或保守文字推断收集补充答案。
 
     answer_provider 和 on_result 在当前线程执行，异常原样传播，不重试。
     调用方可在回调中实现界面输入、取消或限制追问次数。
@@ -353,7 +350,7 @@ def chat_until_complete(
     if not callable(answer_provider) or (on_result is not None and not callable(on_result)):
         raise ChatError("input", "invalid_callback", "答案提供器和结果回调必须可调用。")
     result = chat(
-        question, config=config, file=file, image=image, conversation_id=conversation_id,
+        question, config=config, conversation_id=conversation_id,
         on_preview=on_preview,
     )
     with diagnostic_logger(config) as logger:

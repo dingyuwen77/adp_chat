@@ -22,8 +22,7 @@ def _show_error(error: ChatError) -> None:
 
 
 def _turn(
-    question: str, config: ChatConfig, conversation_id: str | None, *,
-    file: str | None = None, image: str | None = None,
+    question: str, config: ChatConfig, conversation_id: str | None,
 ) -> ChatResult:
     """运行公共追问流程，分别显示预览和每轮正式回复。"""
     preview_started = False
@@ -48,7 +47,7 @@ def _turn(
 
     try:
         return chat_until_complete(
-            question, config=config, file=file, image=image, conversation_id=conversation_id,
+            question, config=config, conversation_id=conversation_id,
             on_preview=show if config.show_preview and not config.structured_interaction else None,
             answer_provider=read_clarification, on_result=completed,
         )
@@ -58,34 +57,24 @@ def _turn(
 
 
 def _interactive(config: ChatConfig, conversation_id: str | None) -> int:
-    """处理终端输入、单轮附件和会话切换。"""
-    print("输入问题，或使用 /file 路径、/image 路径、/new、/exit。", file=sys.stderr)
+    """处理文字输入和会话切换，保持旧 CLI 的连续对话行为。"""
+    print("输入文字问题，或使用 /new、/exit。", file=sys.stderr)
     while True:
         print("你：", end="", file=sys.stderr, flush=True)
         question = input().strip()
         if not question:
             continue
-        command, *arguments = question.split(maxsplit=1)
-        command = command.lower()
         if question.lower() in ("/exit", "/quit"):
             return 0
         if question.lower() == "/new":
             conversation_id = None
             print("下一轮将开启新会话。", file=sys.stderr)
             continue
-        attachment = {}
-        if command in ("/file", "/image"):
-            if not arguments:
-                print("请在命令后输入本地附件路径。", file=sys.stderr)
-                continue
-            path = arguments[0].strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in ("\"", "'"):
-                path = path[1:-1]
-            print("想问什么：", end="", file=sys.stderr, flush=True)
-            question = input().strip()
-            attachment[command[1:]] = path
+        if question.split(maxsplit=1)[0].lower() in ("/image", "/file"):
+            _show_error(ChatError("input", "unsupported_command", "当前只转发文字，不支持附件命令。"))
+            continue
         try:
-            result = _turn(question, config, conversation_id, **attachment)
+            result = _turn(question, config, conversation_id)
             conversation_id = result.conversation_id
         except ChatError as error:
             _show_error(error)
@@ -101,16 +90,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path("config.toml"), help="本地 TOML 配置")
     parser.add_argument("--ask", help="完成本题及必要的 ADP 追问后退出")
     parser.add_argument("--conversation-id", help="继续指定会话")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--file", help="本轮文档路径")
-    group.add_argument("--image", help="本轮图片路径")
     args = parser.parse_args(argv)
-    if (args.file is not None or args.image is not None) and args.ask is None:
-        parser.error("--file 或 --image 必须和 --ask 一起使用")
     try:
         config = load_config(args.config)
         if args.ask is not None:
-            _turn(args.ask, config, args.conversation_id, file=args.file, image=args.image)
+            _turn(args.ask, config, args.conversation_id)
             return 0
         conversation_id = args.conversation_id
         if config.first_question.strip():

@@ -21,7 +21,7 @@ class LoggingTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.config = ChatConfig(
-            "fixture-app-secret", "logging-test", secret_id="fixture-secret-id", secret_key="fixture-secret-key",
+            "fixture-app-secret", "logging-test",
             log_file=str(self.root / "logs" / "adp_chat.log"), log_level="DEBUG",
         )
 
@@ -42,7 +42,7 @@ class LoggingTests(unittest.TestCase):
         self.assertRegex(content, r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} client\.py L\d+\] \[INFO\]")
         self.assertIn('question="private-question-sentinel"', content)
         self.assertIn('answer_preview="请提供完整报错。"', content)
-        for value in (self.config.app_key, self.config.secret_id, self.config.secret_key):
+        for value in (self.config.app_key,):
             self.assertNotIn(value, content)
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
@@ -63,11 +63,11 @@ class LoggingTests(unittest.TestCase):
     def test_content_redaction_precedes_answer_truncation_and_escapes_newlines(self):
         """先脱敏再截断，避免跨100字符边界的密钥残片或签名URL泄漏及伪造日志行。"""
         question = f'排查\n[ERROR] forged\r\n{self.config.app_key}\u2028后续说明'
-        answer = "答" * 95 + self.config.secret_key + " https://example.com/file?q-signature=private-signature&token=private-token"
+        answer = "答" * 95 + self.config.app_key + " https://example.com/file?q-signature=private-signature&token=private-token"
         with patch("adp_chat.sse.open_request", return_value=response(answer, 18)):
             chat(question, config=self.config)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
-        for value in (self.config.app_key, self.config.secret_key, "private-signature", "private-token", "fixtu"):
+        for value in (self.config.app_key, "private-signature", "private-token", "fixtu"):
             self.assertNotIn(value, content)
         self.assertIn("\\n[ERROR] forged\\r\\n", content)
         self.assertIn("\\u2028", content)
@@ -197,7 +197,7 @@ class LoggingTests(unittest.TestCase):
         config = replace(self.config, log_max_bytes=256, log_backup_count=2)
         with diagnostic_logger(config) as logger:
             for _ in range(8):
-                logger.info("凭据兜底测试 %s %s %s", config.app_key, config.secret_id, config.secret_key)
+                logger.info("凭据兜底测试 %s", config.app_key)
         paths = list(Path(config.log_file).parent.glob("adp_chat.log*"))
         self.assertGreater(len(paths), 1)
         self.assertLessEqual(len(paths), 3)
@@ -205,7 +205,6 @@ class LoggingTests(unittest.TestCase):
             content = path.read_text(encoding="utf-8")
             self.assertIn("[REDACTED]", content)
             self.assertNotIn(config.app_key, content)
-            self.assertNotIn(config.secret_key, content)
 
     def test_disabled_logging_does_not_create_file(self):
         """调用方可关闭诊断写入，不产生任何日志目录。"""

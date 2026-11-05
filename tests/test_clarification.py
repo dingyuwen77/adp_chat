@@ -33,34 +33,30 @@ class ClarificationTests(unittest.TestCase):
         self.assertEqual(result.input_kind, "question")
         answer.assert_not_called()
 
-    def test_all_input_modes_resume_only_when_adp_requests_clarification(self):
-        """三种首轮输入均按协议追问，续轮复用会话并只上传一次附件。"""
-        for attachment in ({}, {"image": "example.jpeg"}, {"file": "example.txt"}):
-            with self.subTest(attachment=attachment):
-                supplied = Mock(side_effect=["北京", "明天"])
-                results = []
-                with (
-                    patch("adp_chat.attachments.prepare_attachment", return_value={"Type": "fixture"}) as upload,
-                    patch("adp_chat.sse.open_request", side_effect=[
-                        response("请补充城市", 15), response("请补充日期", 15), response("最终答案"),
-                    ]) as transport,
-                ):
-                    result = chat_until_complete(
-                        "首次问题", config=self.config, answer_provider=supplied,
-                        on_result=results.append, **attachment,
-                    )
-                payloads = [json.loads(call.args[0].data) for call in transport.call_args_list]
-                self.assertEqual(len({item["ConversationId"] for item in payloads}), 1)
-                self.assertEqual(len({item["RequestId"] for item in payloads}), 3)
-                self.assertEqual(upload.call_count, 1 if attachment else 0)
-                self.assertEqual(payloads[1]["Contents"], [{"Type": "text", "Text": "北京"}])
-                self.assertEqual(payloads[2]["Contents"], [{"Type": "text", "Text": "明天"}])
-                self.assertEqual([item.needs_input for item in results], [True, True, False])
-                self.assertEqual([item.input_kind for item in results], [
-                    "question", "clarification_answer", "clarification_answer",
-                ])
-                self.assertEqual(result.text, "最终答案")
-                self.assertEqual(supplied.call_count, 2)
+    def test_text_resumes_only_when_adp_requests_clarification(self):
+        """文字输入按协议追问，续轮复用会话且每轮请求 ID 独立。"""
+        supplied = Mock(side_effect=["北京", "明天"])
+        results = []
+        with (
+            patch("adp_chat.sse.open_request", side_effect=[
+                response("请补充城市", 15), response("请补充日期", 15), response("最终答案"),
+            ]) as transport,
+        ):
+            result = chat_until_complete(
+                "首次问题", config=self.config, answer_provider=supplied,
+                on_result=results.append,
+            )
+        payloads = [json.loads(call.args[0].data) for call in transport.call_args_list]
+        self.assertEqual(len({item["ConversationId"] for item in payloads}), 1)
+        self.assertEqual(len({item["RequestId"] for item in payloads}), 3)
+        self.assertEqual(payloads[1]["Contents"], [{"Type": "text", "Text": "北京"}])
+        self.assertEqual(payloads[2]["Contents"], [{"Type": "text", "Text": "明天"}])
+        self.assertEqual([item.needs_input for item in results], [True, True, False])
+        self.assertEqual([item.input_kind for item in results], [
+            "question", "clarification_answer", "clarification_answer",
+        ])
+        self.assertEqual(result.text, "最终答案")
+        self.assertEqual(supplied.call_count, 2)
 
     def test_questionnaire_without_plain_text_is_exposed_as_pending(self):
         """结构化问卷必须保留其问题和选项，供调用方作答。"""
@@ -150,13 +146,13 @@ class ClarificationTests(unittest.TestCase):
         self.assertEqual(payloads[0]["ConversationId"], payloads[1]["ConversationId"])
         self.assertEqual(result.input_kind, "clarification_answer")
 
-    def test_invalid_continuation_is_rejected_before_upload_or_network(self):
+    def test_invalid_continuation_is_rejected_before_network(self):
         """跨会话误答或提交其他卡片动作必须在外部副作用之前失败。"""
         with patch("adp_chat.sse.open_request", return_value=response("补充信息", 15)):
             pending = chat("问题", config=self.config)
-        with patch("adp_chat.sse.open_request") as network, patch("adp_chat.attachments.prepare_attachment") as upload:
+        with patch("adp_chat.sse.open_request") as network:
             with self.assertRaises(ChatError) as caught:
-                chat("答案", config=self.config, reply_to=pending, conversation_id="a" * 32, file="file.txt")
+                chat("答案", config=self.config, reply_to=pending, conversation_id="a" * 32)
             self.assertEqual(caught.exception.code, "conflicting_conversation")
             with self.assertRaises(ChatError) as caught:
                 chat(ClarificationAnswer(widget_actions=({
@@ -164,7 +160,6 @@ class ClarificationTests(unittest.TestCase):
                 },)), config=self.config, reply_to=pending)
             self.assertEqual(caught.exception.code, "invalid_answer")
         network.assert_not_called()
-        upload.assert_not_called()
 
     def test_callback_cancellation_keeps_exception_and_stops_network(self):
         """调用方取消原样传播，不修改异常、不重试、不再发送补充回答。"""
@@ -192,25 +187,20 @@ class ClarificationTests(unittest.TestCase):
         self.assertIn("clarification_cancelled", output.getvalue())
         self.assertEqual(transport.call_count, 1)
 
-    def test_three_main_examples_share_automatic_continuation(self):
-        """运行三个真实示例函数，确认均完成追问且只有首轮包含附件。"""
+    def test_legacy_text_example_keeps_automatic_continuation(self):
+        """保留的文字示例仍支持高级追问，但不作为 main 默认流程。"""
         import main as examples
-
-        for example, attached in ((examples.example_text_chat, False), (examples.example_image_chat, True), (examples.example_file_chat, True)):
-            with (
-                self.subTest(example=example.__name__),
-                patch("builtins.input", return_value="补充说明") as user_input,
-                patch("adp_chat.attachments.prepare_attachment", return_value={"Type": "fixture"}) as upload,
-                patch("adp_chat.sse.open_request", side_effect=[response("请补充", 15), response("完成")]) as transport,
-                contextlib.redirect_stdout(io.StringIO()) as output,
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                result = example(self.config)
-                self.assertEqual(result.text, "完成")
-                self.assertEqual(upload.call_count, int(attached))
-                self.assertEqual(transport.call_count, 2)
-                user_input.assert_called_once()
-                self.assertEqual(output.getvalue(), "请补充\n完成\n")
+        with (
+            patch("builtins.input", return_value="补充说明") as user_input,
+            patch("adp_chat.sse.open_request", side_effect=[response("请补充", 15), response("完成")]) as transport,
+            contextlib.redirect_stdout(io.StringIO()) as output,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = examples.example_text_chat(self.config)
+        self.assertEqual(result.text, "完成")
+        self.assertEqual(transport.call_count, 2)
+        user_input.assert_called_once()
+        self.assertEqual(output.getvalue(), "请补充\n完成\n")
 
     def test_unmarked_agent_question_is_recognized_as_text_inference(self):
         """新要求覆盖真实漏判句式，推断来源与正式协议状态明确区分。"""

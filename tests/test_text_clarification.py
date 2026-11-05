@@ -178,28 +178,24 @@ class TextClarificationTests(unittest.TestCase):
         self.assertTrue(explicit.needs_input)
         self.assertEqual(explicit.clarification_source, "reply_method")
 
-    def test_three_input_modes_continue_and_do_not_upload_again(self):
-        """文字追问对三类输入生效，补答可再次追问，正常结果立即停止。"""
-        for attachment in ({}, {"image": "fixture.jpeg"}, {"file": "fixture.txt"}):
-            with (
-                self.subTest(attachment=attachment),
-                patch("adp_chat.attachments.prepare_attachment", return_value={"Type": "fixture"}) as upload,
-                patch("adp_chat.sse.open_request", side_effect=[
-                    response("请提供操作系统。", 18), response("请补充具体报错。", 18),
-                    response("请先重新连接 VPN，再登录系统。", 18),
-                ]) as network,
-            ):
-                results = []
-                provider = Mock(side_effect=["Windows", "登录超时"])
-                final = chat_until_complete("VPN 连不上", config=self.config, answer_provider=provider, on_result=results.append, **attachment)
-            self.assertFalse(final.needs_input)
-            self.assertEqual(provider.call_count, 2)
-            self.assertEqual(upload.call_count, int(bool(attachment)))
-            self.assertEqual([item.input_kind for item in results], ["question", "clarification_answer", "clarification_answer"])
-            payloads = [json.loads(call.args[0].data) for call in network.call_args_list]
-            self.assertEqual(len({item["ConversationId"] for item in payloads}), 1)
-            self.assertEqual(payloads[1]["Contents"], [{"Type": "text", "Text": "Windows"}])
-            self.assertEqual(payloads[2]["Contents"], [{"Type": "text", "Text": "登录超时"}])
+    def test_text_continuation_stops_on_normal_answer(self):
+        """文字补答可再次追问，正常结果立即停止。"""
+        with (
+            patch("adp_chat.sse.open_request", side_effect=[
+                response("请提供操作系统。", 18), response("请补充具体报错。", 18),
+                response("请先重新连接 VPN，再登录系统。", 18),
+            ]) as network,
+        ):
+            results = []
+            provider = Mock(side_effect=["Windows", "登录超时"])
+            final = chat_until_complete("VPN 连不上", config=self.config, answer_provider=provider, on_result=results.append)
+        self.assertFalse(final.needs_input)
+        self.assertEqual(provider.call_count, 2)
+        self.assertEqual([item.input_kind for item in results], ["question", "clarification_answer", "clarification_answer"])
+        payloads = [json.loads(call.args[0].data) for call in network.call_args_list]
+        self.assertEqual(len({item["ConversationId"] for item in payloads}), 1)
+        self.assertEqual(payloads[1]["Contents"], [{"Type": "text", "Text": "Windows"}])
+        self.assertEqual(payloads[2]["Contents"], [{"Type": "text", "Text": "登录超时"}])
 
     def test_text_request_with_display_widget_uses_text_input(self):
         """文本推断不得把同轮展示卡片误当作需要提交的交互卡片。"""

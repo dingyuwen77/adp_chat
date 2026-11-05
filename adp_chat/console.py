@@ -95,8 +95,11 @@ def read_clarification(result: ChatResult) -> str | ClarificationAnswer:
 
 
 def show_result(result: ChatResult) -> None:
-    """显示每轮正式文本，结构化追问由输入适配器展开。"""
+    """显示正式文本及非文本内容，保留类型供终端调用者辨认。"""
     if result.text:
         print(result.text)
-    elif not result.needs_input:
-        print("[对话完成，回复中没有文本。]", file=sys.stderr)
+    nontext = [part for message in result.reply_contents for part in message if part.get("Type") not in ("text", "json_text")]
+    for part in nontext:
+        print(json.dumps(part, ensure_ascii=False))
+    if not result.text and not nontext and not result.needs_input:
+        print("[本轮正式回复没有内容。]", file=sys.stderr)
