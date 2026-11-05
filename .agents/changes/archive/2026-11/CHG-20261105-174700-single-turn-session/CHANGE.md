@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: CHG-20261105-174700-single-turn-session
 title: 纯文字单次转发与跨进程会话续接
 level: L3
-status: ready_for_review
+status: done
 owner: Codex
 branch: feature/text-session-forwarding
 created: 2026-11-05T17:47:00+08:00
-updated: 2026-11-05T18:21:17+08:00
+updated: 2026-11-05T18:25:37+08:00
 completion_gate: required
 depends_on: []
 affected_areas:
@@ -174,7 +174,7 @@ Windows Python 3.14.7，当前任务分支工作区：79 tests，退出0；新�
 
 ## 交付状态
 
-当前任务分支 feature/text-session-forwarding，Issue #1 open；独立Review结论NO_FINDINGS_WITHIN_SCOPE，reviewed head=22937b2f94c82a41d96743a7b1e4a76997b897ec；PR #2 CI 42009487928成功，79 tests。此后仅证据元数据更新；main-fresh和后置收尾仍由平台事实确认。项目无原生自动归档，后续按当前手工Change Owner通过受审PR归档，不直接写main。
+当前任务分支 feature/text-session-forwarding，Issue #1 open；独立Review结论NO_FINDINGS_WITHIN_SCOPE，reviewed head=22937b2f94c82a41d96743a7b1e4a76997b897ec；PR #2 CI 42009487928成功，79 tests。此后仅证据元数据更新；main-fresh和后置收尾仍由平台事实确认。实现PR #2已由REST绑定head合并至3814784ec5551e4a8628d4c23784f612514cb850，main CI42010326002成功（79 tests，1.639s）。项目无原生自动归档，本归档通过独立受审PR进入main，不直接写默认分支；Issue #1仍等待Closure及cleanup。
 
 ## 备注
 
