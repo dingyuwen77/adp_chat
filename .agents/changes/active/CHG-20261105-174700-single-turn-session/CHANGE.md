@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: CHG-20261105-174700-single-turn-session
 title: 纯文字单次转发与跨进程会话续接
 level: L3
-status: in_progress
+status: ready_for_review
 owner: Codex
 branch: feature/text-session-forwarding
 created: 2026-11-05T17:47:00+08:00
-updated: 2026-11-05T18:12:00+08:00
+updated: 2026-11-05T18:21:17+08:00
 completion_gate: required
 depends_on: []
 affected_areas:
@@ -117,7 +117,7 @@ main 读取本轮文字，关闭业务解析，先 load_session，再 chat 一�
 | R4 | 服务端一致性及正式回复保留 | #1 / AC4 | satisfied | 两种事件差异测试、reply_contents及thought/tool过滤 |
 | R5 | 系统移除附件，保留文字兼容 | #1 / AC5 | satisfied | 删除上传模块、参数、依赖、样例；原文字断言保留 |
 | R6 | 配置逐项注释与安全迁移 | #1 / AC6 | satisfied | 模板与本机配置逐项注释，解析比对有效值，废弃凭据不入对象 |
-| R7 | 回归与真实文字验收，不安装wheel | #1 / AC7 | satisfied | 78 tests退出0；first/recall/clarification真实进程记录；最新范围后未安装wheel |
+| R7 | 回归与真实文字验收，不安装wheel | #1 / AC7 | satisfied | 79 tests退出0；first/recall/clarification真实进程记录；最新范围后未安装wheel |
 | R8 | Review、CI、merge和后置收尾 | #1 / AC8 | not_applicable | 本施工实现阶段只到Ready，后置状态仍由Issue #1持有；必须在合并/main-fresh/归档/cleanup后才可关闭Issue，不以本行声明端到端完成 |
 
 # 计划改动
@@ -157,16 +157,16 @@ README、配置模板、可选业务协议同步为纯文字。上传实现、�
 
 # 完成审计
 
-- [ ] upstream_re_read：完成前重读Issue #1及最新用户范围。
-- [ ] change_coverage：AC1–AC8逐条映射，后置交付由Issue保留。
-- [ ] reverse_audit：入口/配置/Library/状态文件/CI反向核对。
-- [ ] unresolved_cleared：实现门禁与独立Review通过后才Ready，Issue仍待后置验收。
+- [x] upstream_re_read：已live重读Issue #1，纯文字/配置注释/免安装wheel/合并main范围无漂移。
+- [x] change_coverage：AC1–AC7证据充分，AC8的后置合并与收尾仍由Issue #1保持未勾选，不以Ready替代交付完成。
+- [x] reverse_audit：已审入口、配置、Library、状态文件、依赖和CI责任；79 tests及真实文字证据覆盖当前风险。
+- [x] unresolved_cleared：独立Reviewer对22937b2无剩余BLOCKING；CI 42009487928成功。仅施工Ready，Issue仍待合并后验收。
 
 # 完成证据与状态
 
 ## 新鲜证据
 
-Windows Python 3.14.7，当前任务分支工作区：78 tests，退出0；新增文字范围测试曾出现2个预期失败后修复。保存/清理双故障回归先失败后通过。18:07:52–18:08:10 三个独立真实进程同一服务端会话 b2e9c018-7a33-41ff-8276-3ee23b116fe0，RequestId各不相同，每进程一次请求，编号两次准确，追问正常退出0。
+Windows Python 3.14.7，当前任务分支工作区：79 tests，退出0；新增文字范围测试曾出现2个预期失败后修复。保存/清理双故障回归先失败后通过。18:07:52–18:08:10 三个独立真实进程同一服务端会话 b2e9c018-7a33-41ff-8276-3ee23b116fe0，RequestId各不相同，每进程一次请求，编号两次准确，追问正常退出0。
 
 ## 未验证内容与剩余风险
 
@@ -174,7 +174,7 @@ Windows Python 3.14.7，当前任务分支工作区：78 tests，退出0；新�
 
 ## 交付状态
 
-当前任务分支 feature/text-session-forwarding，Issue #1 open；独立复审、PR CI与合并后状态将由真实平台证据更新。项目无原生自动归档，后续按当前手工Change Owner通过受审PR归档，不直接写main。
+当前任务分支 feature/text-session-forwarding，Issue #1 open；独立Review结论NO_FINDINGS_WITHIN_SCOPE，reviewed head=22937b2f94c82a41d96743a7b1e4a76997b897ec；PR #2 CI 42009487928成功，79 tests。此后仅证据元数据更新；main-fresh和后置收尾仍由平台事实确认。项目无原生自动归档，后续按当前手工Change Owner通过受审PR归档，不直接写main。
 
 ## 备注
 
