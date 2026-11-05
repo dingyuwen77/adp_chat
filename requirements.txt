@@ -1,0 +1,15 @@
+# Python 3.14 兼容版本（已在 Python 3.14.7 / Windows 上验证）
+requests==2.34.2
+sseclient-py==1.9.0
+cos-python-sdk-v5==1.9.44
+tencentcloud-sdk-python==3.1.200
+
+# 以上包的传递依赖
+certifi==2026.6.17
+charset-normalizer==3.4.9
+crcmod==1.7
+idna==3.18
+pycryptodome==3.23.0
+six==1.17.0
+urllib3==2.7.0
+xmltodict==1.0.4

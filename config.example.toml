@@ -1,0 +1,49 @@
+[adp]
+# 应用发布后在 ADP 控制台获取 AppKey。
+app_key = ""
+user_id = "local_adp_test_user_001"
+# 留空时使用 user_id 作为 VisitorId。
+visitor_id = ""
+user_name = ""
+
+[chat]
+chat_timeout_seconds = 180
+incremental = true
+# 0 采用平台默认节流值。
+streaming_throttle = 0
+system_role = ""
+search_network = ""
+workflow_status = ""
+# 对 ReplyMethod=18 使用保守文字追问识别；false 只依据正式协议状态。
+detect_text_clarification = true
+# 应用已配置 docs/interaction.schema.json 后开启，启用严格业务状态解析。
+structured_interaction = false
+# 省略时沿用应用设置。
+# enable_multi_intent = true
+
+[attachments]
+# 纯文本聊天可保留以下凭据为空。
+bot_biz_id = ""
+region = "ap-guangzhou"
+secret_id = ""
+secret_key = ""
+attachment_timeout_seconds = 60
+signed_url_seconds = 300
+# ADP 对话图片上传使用公开读权限，仅为允许公开的图片开启。
+allow_public_image_upload = false
+
+[cli]
+# 留空直接进入交互。--ask 完成本题及必要追问后退出。
+first_question = ""
+show_preview = true
+interactive = true
+
+[logging]
+log_enabled = true
+log_level = "DEBUG"
+# 相对路径基于配置文件所在目录；日志只写文件，不输出控制台。
+log_file = "logs/adp_chat.log"
+log_max_bytes = 5242880
+log_backup_count = 3
+# 问题完整记录；回答在脱敏后最多记录前100个Unicode字符，0关闭回答正文。
+log_answer_chars = 100
