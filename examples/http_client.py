@@ -23,6 +23,10 @@ def send_message(base_url: str, message: str, timeout: float = 240) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows 重定向/CI 可能使用 cp1252；HTTP JSON 与中文诊断统一为 UTF-8。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and not stream.isatty():
+            stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="调用内网 adp_chat FastAPI（不自动重试）")
     parser.add_argument("message", nargs="?", default="你好", help="要发送的一轮文字")
     parser.add_argument("--url", default=DEFAULT_URL, help="服务器 URL，例如 http://10.102.70.82:4560")

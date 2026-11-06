@@ -50,13 +50,13 @@ class ExampleClientTests(unittest.TestCase):
     def _run(self, message):
         return subprocess.run(
             [sys.executable, str(CLIENT), message, "--url", f"http://127.0.0.1:{self.server.server_port}"],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, timeout=8,
         )
 
     def test_unicode_and_correlation_fields(self):
         result = self._run("你好，第二轮")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        response = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8"))
+        response = json.loads(result.stdout.decode("utf-8"))
         self.assertEqual(response["text"], "你好，第二轮")
         self.assertEqual(response["conversation_id"], "fixture")
         self.assertEqual(response["request_id"], "request-1")
@@ -64,5 +64,5 @@ class ExampleClientTests(unittest.TestCase):
     def test_busy_is_reported_without_retry(self):
         result = self._run("忙碌")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("409", result.stderr)
-        self.assertIn("CHAT_BUSY", result.stderr)
+        self.assertIn("409", result.stderr.decode("utf-8"))
+        self.assertIn("CHAT_BUSY", result.stderr.decode("utf-8"))
