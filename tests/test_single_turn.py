@@ -39,7 +39,7 @@ class SingleTurnTests(unittest.TestCase):
 
         with (
             patch("builtins.input", side_effect=inputs) as keyboard,
-            patch("adp_chat.sse.open_request", **patches) as network,
+            patch("adp_chat.adp.sse.open_request", **patches) as network,
             contextlib.redirect_stdout(io.StringIO()) as output,
             contextlib.redirect_stderr(io.StringIO()) as errors,
         ):
@@ -141,18 +141,18 @@ class SingleTurnTests(unittest.TestCase):
             for value in ("2" * 32, None, 42, ""):
                 with self.subTest(kind=kind, value=value):
                     stream = event(kind, **{field: {"Status": "success", "ConversationId": value}}) + completed()
-                    with patch("adp_chat.sse.open_request", return_value=FakeStream(stream)):
+                    with patch("adp_chat.adp.sse.open_request", return_value=FakeStream(stream)):
                         with self.assertRaises(ChatError) as caught:
                             chat("问题", config=config, conversation_id=cid)
                     self.assertEqual(caught.exception.code, "conversation_mismatch")
                     self.assertEqual(caught.exception.conversation_id, cid)
         stream = event("request_ack", RequestAck={"Status": "success", "ConversationId": cid, "ExtraInfo": {"RequestId": "diagnostic"}}) + completed()
-        with patch("adp_chat.sse.open_request", return_value=FakeStream(stream)):
+        with patch("adp_chat.adp.sse.open_request", return_value=FakeStream(stream)):
             self.assertEqual(chat("问题", config=config, conversation_id=cid).conversation_id, cid)
 
     def test_nontext_reply_is_preserved_and_visible(self):
         """保留正式回复内容及顺序，排除 thought 和工具消息。"""
-        from adp_chat.console import show_result
+        from adp_chat.cli.console import show_result
 
         parts = [{"Type": "image", "Image": {"Url": "https://example.com/image.png"}}, {"Type": "e_chart", "EChart": {"data": [1]}}]
         stream = event("response.completed", Response={"Status": "success", "Messages": [
@@ -160,7 +160,7 @@ class SingleTurnTests(unittest.TestCase):
             {"Type": "tool", "Contents": [{"Type": "text", "Text": "内部工具"}]},
             {"Type": "reply", "Contents": parts},
         ]})
-        with patch("adp_chat.sse.open_request", return_value=FakeStream(stream)):
+        with patch("adp_chat.adp.sse.open_request", return_value=FakeStream(stream)):
             result = chat("问题", config=ChatConfig("fixture", "tester", log_enabled=False))
         self.assertEqual(result.reply_contents, (tuple(parts),))
         self.assertEqual(result.text, "")
@@ -173,7 +173,7 @@ class SingleTurnTests(unittest.TestCase):
 
     def test_session_identity_corruption_new_and_failed_atomic_write(self):
         """损坏、身份冲突、显式重建和失败原子替换均有明确行为。"""
-        from adp_chat.session import load_session
+        from adp_chat.storage.session import load_session
 
         config = load_config(self.path)
         first = load_session(config)
@@ -186,7 +186,7 @@ class SingleTurnTests(unittest.TestCase):
                 load_session(changed)
             self.assertEqual(caught.exception.code, "identity_mismatch")
             self.assertEqual(state_path.read_bytes(), original)
-        with patch("adp_chat.session.os.replace", side_effect=PermissionError):
+        with patch("adp_chat.storage.session.os.replace", side_effect=PermissionError):
             with self.assertRaises(ChatError) as caught:
                 load_session(config, new=True)
         self.assertEqual(caught.exception.code, "unwritable")
@@ -213,7 +213,7 @@ class SingleTurnTests(unittest.TestCase):
             '    r=io.BytesIO(("event: response.completed\\ndata: "+json.dumps(data)+"\\n\\n").encode())\n'
             '    r.headers={"Content-Type":"text/event-stream"}\n    return r\n'
             'target,record,config=sys.argv[1:]\nsys.argv=[target,"--config",config]\n'
-            'with patch("adp_chat.sse.open_request",side_effect=respond): runpy.run_path(target,run_name="__main__")\n', encoding="utf-8",
+            'with patch("adp_chat.adp.sse.open_request",side_effect=respond): runpy.run_path(target,run_name="__main__")\n', encoding="utf-8",
         )
         record = self.root / "requests.jsonl"
         for question in ("第一轮", "第二轮"):
@@ -230,13 +230,13 @@ class SingleTurnTests(unittest.TestCase):
 
     def test_save_and_cleanup_failure_keep_chat_error_and_old_session(self):
         """保存与清理同时失败仍返回稳定 ChatError，并保留旧会话。"""
-        from adp_chat.session import load_session
+        from adp_chat.storage.session import load_session
 
         config = load_config(self.path)
         load_session(config)
         state = Path(config.session_file)
         original = state.read_bytes()
-        with patch("adp_chat.session.os.replace", side_effect=PermissionError), patch.object(Path, "unlink", side_effect=PermissionError):
+        with patch("adp_chat.storage.session.os.replace", side_effect=PermissionError), patch.object(Path, "unlink", side_effect=PermissionError):
             with self.assertRaises(ChatError) as caught:
                 load_session(config, new=True)
         self.assertEqual(caught.exception.code, "unwritable")
@@ -247,7 +247,7 @@ class SingleTurnTests(unittest.TestCase):
         """正式入口的新会话命令立即落盘，不读题也不触发网络。"""
         import main
 
-        with patch("builtins.input") as keyboard, patch("adp_chat.sse.open_request") as network, contextlib.redirect_stderr(io.StringIO()):
+        with patch("builtins.input") as keyboard, patch("adp_chat.adp.sse.open_request") as network, contextlib.redirect_stderr(io.StringIO()):
             args = ["--config", str(self.path), "--new-session"]
             self.assertEqual(main.main(args), 0)
             first = json.loads((self.root / "runtime/session.json").read_text())["conversation_id"]
@@ -268,7 +268,7 @@ class SingleTurnTests(unittest.TestCase):
         network.assert_not_called()
         self.assertEqual(state.read_bytes(), b"\xff\xfe")
         state.unlink()
-        with patch("adp_chat.session.os.replace", side_effect=PermissionError):
+        with patch("adp_chat.storage.session.os.replace", side_effect=PermissionError):
             code, _, errors, _, network = self.run_main(["问题"])
         self.assertEqual(code, 1)
         self.assertIn("unwritable", errors)
