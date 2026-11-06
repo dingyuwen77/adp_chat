@@ -198,20 +198,15 @@ class TextClarificationTests(unittest.TestCase):
         self.assertEqual(payloads[2]["Contents"], [{"Type": "text", "Text": "登录超时"}])
 
     def test_text_request_with_display_widget_uses_text_input(self):
-        """文本推断不得把同轮展示卡片误当作需要提交的交互卡片。"""
-        from adp_chat.cli.runner import main
-
-        with (
-            patch("adp_chat.cli.load_config", return_value=self.config),
-            patch("builtins.input", side_effect=["Windows"]) as user_input,
-            patch("adp_chat.adp.sse.open_request", side_effect=[
-                response("请提供操作系统。", 18, [{"Type": "widget", "Widget": {"WidgetId": "display", "WidgetRunId": "run"}}]),
-                response("请重新连接 VPN。", 18),
-            ]) as network,
-            contextlib.redirect_stdout(io.StringIO()),
-            contextlib.redirect_stderr(io.StringIO()) as prompts,
-        ):
-            self.assertEqual(main(["--ask", "VPN 连不上"]), 0)
-        user_input.assert_called_once()
-        self.assertNotIn("卡片动作 JSON", prompts.getvalue())
+        """展示 Widget 不会替代真实文字补答，仍只按文字提交。"""
+        provider = Mock(return_value="Windows")
+        with patch("adp_chat.adp.sse.open_request", side_effect=[
+            response("请提供操作系统。", 18, [{"Type": "widget", "Widget": {"WidgetId": "display", "WidgetRunId": "run"}}]),
+            response("请重新连接 VPN。", 18),
+        ]) as network:
+            final = chat_until_complete("VPN 连不上", config=self.config, answer_provider=provider)
+        provider.assert_called_once()
+        self.assertFalse(final.needs_input)
         self.assertEqual(network.call_count, 2)
+        payload = json.loads(network.call_args_list[1].args[0].data)
+        self.assertEqual(payload["Contents"], [{"Type": "text", "Text": "Windows"}])
