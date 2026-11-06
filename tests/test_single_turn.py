@@ -178,7 +178,7 @@ class SingleTurnTests(unittest.TestCase):
         package = self.root / "adp_chat"
         package.mkdir()
         config_file = package / "config.toml"
-        config_file.write_text('[adp]\\napp_key="fixture"\\nuser_id="tester"\\n', encoding="utf-8")
+        config_file.write_text('[adp]\napp_key="fixture"\nuser_id="tester"\n', encoding="utf-8")
         with patch("adp_chat.core.config.default_config_path", return_value=config_file):
             config = load_config()
         self.assertEqual(Path(config.session_file).resolve(), (self.root / "runtime/session.json").resolve())
