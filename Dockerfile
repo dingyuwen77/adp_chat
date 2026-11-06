@@ -5,7 +5,8 @@ WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt \
-    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin adp
+    && groupadd --gid 10001 adp \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin adp
 
 COPY adp_chat/ /app/adp_chat/
 COPY main.py /app/main.py

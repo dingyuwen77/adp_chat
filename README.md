@@ -1,51 +1,93 @@
-# adp_chat · 腾讯 ADP 单用户对话转发
+# adp_chat：腾讯 ADP 单用户文字对话转发
 
-同一套 Python 源码支持**单次脚本、交互式 CLI、单实例 FastAPI**。每条输入只发送一轮 ADP HTTP SSE V2，对话是否需要追问由 ADP 决定；下一条输入继续使用相同 ConversationId。
+本项目把 **同一套腾讯 ADP 对话能力**提供成三种运行方式：单次脚本、交互式 CLI 和 Linux Docker 常驻 FastAPI。每次只向 ADP 发送一轮文字；ADP 需要追问时，由调用方下一轮继续发消息。Python 不自动判断整项业务是否结束。
 
-**范围**：固定一个 ADP 用户与会话，仅支持文字输入。无应用层鉴权、无队列、无自动重试；只允许放在已限制调用方的可信企业内网，勿公开到互联网。当前不提供企业微信回调网关。
+**使用前提**：Python 3.14；已发布且可访问的腾讯 ADP 应用 AppKey、固定 UserId；在服务器部署时另需 Docker Engine、Docker Compose 插件和允许访问腾讯 ADP 的网络。
 
-## 配置
+## 从哪里开始
 
-Python 3.14。复制 [config.example.toml](config.example.toml) 为包内未纳入 Git 的 `adp_chat/config.toml`，填写已发布 ADP 应用的 AppKey 和稳定 UserId。相对日志和会话路径以配置文件所在目录为基准，模板把持久目录指向仓库根 `runtime/` 和 `logs/`。参见 [adp_chat/core/config.py](adp_chat/core/config.py)。
+| 我想做什么 | 该看哪里 |
+| --- | --- |
+| 本地装依赖、配置、PyCharm/CLI 调试 | [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md#一先在本地验证三种入口) |
+| 在 Linux 服务器 `10.102.70.82:4560` 部署 | [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md#二linux-服务器部署) |
+| 从 Windows、Python 或其他服务调用 | [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md#三其他电脑如何调用) |
+| API、会话与并发机制 | [docs/adp-chat/03_FastAPI服务架构.md](docs/adp-chat/03_FastAPI服务架构.md) |
+| 可直接运行的 HTTP 调用脚本 | [examples/http_client.py](examples/http_client.py)、[examples/http_client.ps1](examples/http_client.ps1) |
 
-切换应用或用户时，现有 `runtime/session.json` 会进行身份校验；不会悄悄覆盖不匹配或损坏的文件。
+## 本地五分钟上手
 
-## 三种运行方式
+在仓库根目录，先安装 Python 3.14（Windows 的 `py -3.14` 仅在该版本已安装时适用）：
+
+```powershell
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+Copy-Item config.example.toml adp_chat/config.toml
+```
+
+编辑未纳入 Git 的 `adp_chat/config.toml`，至少填写 `[adp].app_key` 和 `[adp].user_id`；不要将真实密钥提交到仓库。
+
+```powershell
+.\.venv\Scripts\python.exe main.py --ask "你好"          # 一轮后退出
+.\.venv\Scripts\python.exe -m adp_chat                # 连续输入，/exit 退出
+.\.venv\Scripts\python.exe -m uvicorn adp_chat.api.app:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+第三条命令启动本机 HTTP 服务；**它需要保持运行**。在另外一个终端：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/healthz
+```
+
+预期返回 `status = ok`（只证明本机 HTTP 存活，不代表腾讯 ADP 可用）。详细的调用与错误示例见运维文档。
+
+## 服务器部署速览
+
+服务器 `10.102.70.82` 的宿主端口是 **4560**，Docker 容器内部端口是 **8000**。
 
 ```bash
-python main.py --ask "你好"             # 一轮后退出
-python main.py                         # 从终端读取一条后退出
-python -m adp_chat                     # 多轮交互，/exit 退出
-python -m uvicorn adp_chat.api.app:app --host 127.0.0.1 --port 8000 --workers 1
+git clone git@github.com:dingyuwen77/adp_chat.git
+cd adp_chat
+mkdir -p deploy runtime logs
+cp config.example.toml deploy/config.toml
+# 先编辑 deploy/config.toml，再按运维文档设置 UID/GID 10001 的文件权限
+docker compose config
+docker compose up -d --build
+docker compose ps
+curl -fsS http://10.102.70.82:4560/healthz
 ```
 
-配置路径可用 `--config` 覆盖；终端 `/new` 或 `--new-session` 可在**停止 HTTP 服务后**人工更换当前会话。不支持 HTTP 会话重置。所有调用入口复用 [adp_chat/application/chat_service.py](adp_chat/application/chat_service.py)，正式 ADP 流处理仍来自 [adp_chat/adp/client.py](adp_chat/adp/client.py)。
+**不可跳过**：上述命令只有在服务器安装 Docker、拥有该内网 IP、具备访问权限并已配置真实 AppKey/持久目录权限后才能运行。复制配置后未填写 AppKey 就启动会失败。请先读完整的 [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md)，其中包含逐步权限命令、调用和回滚。
 
-### 内网 FastAPI
+从你的 Windows 电脑调用：
 
-```http
-POST http://10.102.70.82:4560/api/v1/chat
-Content-Type: application/json
-
-{"message":"你好"}
+```powershell
+Test-NetConnection 10.102.70.82 -Port 4560
+.\examples\http_client.ps1 -Server "http://10.102.70.82:4560" -Message "你好"
 ```
 
-API 返回 `text`、`conversation_id`、`request_id`、`record_id`、`reply_method` 和完整 `reply_contents`。无认证 Header。忙碌时返回 HTTP 409，输入格式不合法时 422，ADP 错误/超时分别返回 502/504；只有正式成功 `response.completed` 才返回 200。健康检查为 `GET /healthz`，不会调用 ADP。
+使用 Python 3 标准库从任意可信内网客户端调用：
 
-**重要**：当前进程内锁仅保护一个 Uvicorn worker/实例，且防并发不等于幂等。无法确认结果的 ADP 请求不能自动重试；后续启用会议预订等写操作之前需要下游业务幂等和未知结果处置。
+```bash
+python examples/http_client.py "你好" --url http://10.102.70.82:4560
+```
 
-## Docker 部署与验证
+## 服务行为和限制
 
-执行 `docker compose up -d --build` 前必须准备 `deploy/config.toml`、`runtime/`、`logs/`，并检查目录权限。默认仅绑定服务器内网地址 `10.102.70.82:4560`，可通过 Compose 的 `ADP_BIND_IP`、`ADP_HOST_PORT` 覆盖。**当前代码尚未在目标服务器验收，不将配置示例视为已部署成功。**
+- `POST /api/v1/chat` 请求为 `{"message":"你好"}`，响应包括 `text`、`conversation_id`、`request_id`、`record_id`、`reply_method` 和 `reply_contents`；只在 ADP 的 `response.completed` 成功后返回 200。
+- `GET /healthz` 是轻量健康检查，不调用腾讯 ADP；FastAPI 的交互文档默认在 `/docs`。
+- `runtime/session.json` 维持固定 UserId/AppKey 的单个 ConversationId；容器重建不应丢失该文件。三种模式不能**同时**操作同一份会话数据。
+- 服务使用一把进程内互斥锁；单实例单 worker，同一时刻只能处理一个 ADP 请求，忙碌的第二条消息立即返回 HTTP **409**。不支持多用户、多会话、上传、队列或自动重试。
+- **无 X-API-Key 或 HTTPS**。任何能够到达服务端口的内网程序都可以使用该固定 ADP 身份。必须由服务器网络边界限制访问来源，严禁直接暴露公网。
+- 超时、断流、容器退出后不能推断 ADP 或下游 MCP 未执行；涉及订会、改会等写入操作时，不应盲目重试，业务幂等仍需后续验证。
 
-完整安装、PowerShell/Python 跨机器调用、网络限制、备份和回滚见 [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md)，架构/API 见 [docs/adp-chat/03_FastAPI服务架构.md](docs/adp-chat/03_FastAPI服务架构.md)。
+正式对话入口在 [adp_chat/adp/client.py](adp_chat/adp/client.py)，服务编排在 [adp_chat/application/chat_service.py](adp_chat/application/chat_service.py)，HTTP 入口在 [adp_chat/api/routes.py](adp_chat/api/routes.py)，本地 CLI 在 [adp_chat/cli/runner.py](adp_chat/cli/runner.py)。
 
 ## 测试
 
 ```bash
-python -B -X utf8 -m unittest discover -s tests
+python -B -X utf8 -m unittest discover -s tests -v
 ```
 
-测试使用 unittest；FastAPI 的 ASGI 契约测试需要先安装 `requirements-dev.txt`，纯标准库 CLI 环境会明确跳过这些用例。已有 GitHub Actions CI 工作流保持不变，不新增 CI。外部 ADP 真实联网、Docker 目标主机、网络 ACL 和 Windows 跨机验收应按部署文档在实际可达环境执行。
+在已安装 `requirements-dev.txt` 的环境运行以覆盖 FastAPI TestClient / HTTPX；**检查 skipped 是否为零，并核实每个跳过原因**。现有 Windows CI 没有安装 FastAPI 测试依赖，不能把其绿色状态理解为 API/Docker 实际验收完成。本次没有增加或修改 CI workflow。
 
-更多背景和企业微信未实施内容见 [docs/README.md](docs/README.md)。
+机器事实见 [config.example.toml](config.example.toml)、[requirements.txt](requirements.txt)、[requirements-dev.txt](requirements-dev.txt)、[compose.yaml](compose.yaml)、[Dockerfile](Dockerfile)。其他专题见 [docs/README.md](docs/README.md)。
