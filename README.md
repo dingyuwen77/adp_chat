@@ -83,3 +83,11 @@ python -B -X utf8 -m unittest discover -s tests
 ```
 
 测试覆盖真实临时文件、进程退出再启动、会话身份隔离、原子保存及清理失败、单次转发、协议一致性、旧文字接口和日志脱敏。沙箱默认临时目录不可写时，可把当前进程 TEMP/TMP 指向项目内可写目录。模拟 SSE 只能证明本地行为；真实文本验收需在两个独立进程中先发送唯一编号，再询问该编号。本次不安装 wheel，也不发布或部署。
+
+## 企业微信自建应用接入规划（尚未实现）
+
+计划将当前单轮 ADP CLI 扩展为单实例企业微信消息网关；本文所述企业微信回调、消息存储和 Cosmos DB 日志功能**尚未实现**。阅读顺序：
+
+- [docs/wecom-gateway-design.md](docs/wecom-gateway-design.md)：整体架构、身份/会话、消息文件与自动清理、离开应用后的回复及失败恢复。
+- [docs/wecom-log-events.md](docs/wecom-log-events.md)：统一结构化日志事件契约、JSONL 和未来 Cosmos DB 接入边界。
+- [docs/wecom-roadmap.md](docs/wecom-roadmap.md)：基于当前源码的阶段目标、开发顺序、测试和验收条件。
