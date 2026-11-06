@@ -7,7 +7,7 @@ status: in_progress
 owner: dingyuwen77
 branch: feature/single-user-fastapi-service
 created: 2026-11-06T18:20:00+08:00
-updated: 2026-11-06T18:20:00+08:00
+updated: 2026-11-06T19:07:00+08:00
 completion_gate: required
 depends_on: []
 affected_areas: [ADP对话, HTTP API, CLI, Docker, 文档]
@@ -67,3 +67,10 @@ data_changes: [runtime/session.json]
 # Git / 交付
 
 开发分支：feature/single-user-fastapi-service。PR、CI、Review、Merge 与 Archive 以当前 GitHub 实际状态为准，不预先标记成功。
+
+## 2026-11-06 独立审查豁免与剩余验收
+
+- 用户已明确豁免**本次独立 AI Review**，记录为 `USER_WAIVED`；不视为独立评审通过，不豁免其他测试、CI、部署或完成门禁。
+- 当前实现 revision `67692b623148706d1bc37246548d838cdd9b8203` 的原有 Windows / Python 3.14 CI run #9：85 tests，0 failed，5 skipped，成功。5 个 FastAPI/HTTPX API 用例因测试依赖未安装而跳过，不能据此认定 HTTP 契约已通过。
+- 当前会话执行环境安装有 FastAPI 等依赖，但没有项目源码的本地可执行 checkout、Python 3.14 或 Docker 引擎；未取得完整 API 真实测试与 Docker 构建/容器启动的直接证据。远程 Desktop Commander 离线，无法在目标服务器核验 10.102.70.82:4560 的网络边界。
+- 当前状态仍为 `in_progress`、完成门禁尚未达到 `ready_for_review`。仅豁免独立 Review 不自动解除缺失的必要验证。
