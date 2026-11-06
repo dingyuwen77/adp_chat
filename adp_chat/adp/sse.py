@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterator
 from urllib.request import Request
 
-from .models import ChatError
+from ..core.models import ChatError
 from .transport import open_request
 
 

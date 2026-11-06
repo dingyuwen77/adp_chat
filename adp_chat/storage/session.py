@@ -7,8 +7,8 @@ import tempfile
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from .config import ChatConfig
-from .models import ChatError
+from ..core.config import ChatConfig
+from ..core.models import ChatError
 
 
 def load_session(config: ChatConfig, *, new: bool = False) -> str:
@@ -19,7 +19,7 @@ def load_session(config: ChatConfig, *, new: bool = False) -> str:
     """
     path = Path(config.session_file)
     if not path.is_absolute():
-        path = Path(__file__).resolve().parents[1] / path
+        path = Path(__file__).resolve().parents[2] / path
     identity = {
         "user_id": config.user_id,
         "app_key_fingerprint": "sha256:" + hashlib.sha256(config.app_key.encode("utf-8")).hexdigest(),

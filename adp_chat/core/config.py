@@ -27,11 +27,12 @@ class ChatConfig:
     detect_text_clarification: bool = True
     structured_interaction: bool = False
     log_enabled: bool = True
-    log_level: str = "DEBUG"
+    log_level: str = "INFO"
     log_file: str = "logs/adp_chat.log"
     log_max_bytes: int = 5_242_880
     log_backup_count: int = 3
-    log_answer_chars: int = 100
+    log_answer_chars: int = 0
+    log_question: bool = False
     session_file: str = "runtime/session.json"
 
     def __post_init__(self) -> None:
@@ -77,15 +78,21 @@ _SECTIONS = {
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,
         "log_max_bytes": int, "log_backup_count": int,
-        "log_answer_chars": int,
+        "log_answer_chars": int, "log_question": bool,
     },
 }
 
 
-def load_config(path: str | Path = "config.toml") -> ChatConfig:
+def default_config_path() -> Path:
+    """定位主包内的正式配置，不依赖当前工作目录。"""
+    return Path(__file__).resolve().parents[2] / "adp_chat" / "config.toml"
+
+
+def load_config(path: str | Path | None = None) -> ChatConfig:
     """读取文字对话配置；兼容忽略旧附件分组，不保留其凭据。"""
+    path = Path(path) if path is not None else default_config_path()
     try:
-        with Path(path).open("rb") as source:
+        with path.open("rb") as source:
             data = tomllib.load(source)
     except (UnicodeError, tomllib.TOMLDecodeError):
         raise ChatError("config", "invalid_toml", "配置文件必须是有效的 UTF-8 TOML。") from None
@@ -104,6 +111,10 @@ def load_config(path: str | Path = "config.toml") -> ChatConfig:
                 raise ChatError("config", "unknown_key", f"配置分组 [{name}] 包含未知字段。")
             values[key] = value
 
+    # 标准配置放在包内时，默认日志/会话仍存于仓库根持久目录。
+    if path.absolute() == default_config_path().absolute():
+        values.setdefault("session_file", "../runtime/session.json")
+        values.setdefault("log_file", "../logs/adp_chat.log")
     values.setdefault("app_key", "")
     values.setdefault("user_id", "")
     config = ChatConfig(**values)

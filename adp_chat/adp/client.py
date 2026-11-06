@@ -7,11 +7,11 @@ from logging import INFO
 from time import monotonic
 from uuid import uuid4
 
-from .config import ChatConfig
+from ..core.config import ChatConfig
 from .clarification import is_text_clarification
 from .interaction import parse_interaction
-from .logging import conversation_text, diagnostic_logger
-from .models import ChatError, ChatResult, ClarificationAnswer, PreviewEvent
+from ..core.logging import conversation_text, diagnostic_logger
+from ..core.models import ChatError, ChatResult, ClarificationAnswer, PreviewEvent
 from .sse import stream_events
 
 
@@ -309,7 +309,7 @@ def chat(
         started = monotonic()
         input_kind = "clarification_answer" if reply_to is not None and reply_to.needs_input else "question"
         logger.info("request_started conversation_id=%s request_id=%s input_kind=%s structured=%s", conversation_id, request_id, input_kind, config.structured_interaction)
-        if logger.isEnabledFor(INFO):
+        if logger.isEnabledFor(INFO) and config.log_question:
             current_question = question if isinstance(question, str) else question.text
             logger.info("user_question conversation_id=%s request_id=%s question=%s", conversation_id, request_id, conversation_text(config, current_question))
         try:

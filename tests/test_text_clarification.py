@@ -88,7 +88,7 @@ class TextClarificationTests(unittest.TestCase):
     def test_direct_text_requests_are_detected(self):
         """识别不依赖问号的直接补充要求和原始真实漏判句式。"""
         for text in POSITIVE:
-            with self.subTest(text=text), patch("adp_chat.sse.open_request", return_value=response(text, 18)):
+            with self.subTest(text=text), patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)):
                 result = chat("我需要帮助", config=self.config)
                 self.assertTrue(result.needs_input, text)
                 self.assertEqual(result.clarification_source, "text_rule")
@@ -97,7 +97,7 @@ class TextClarificationTests(unittest.TestCase):
         """正常答案、引用、步骤和可选邀请均不能导致额外用户输入或请求。"""
         for text in NEGATIVE:
             provider = Mock(side_effect=AssertionError("正常答案不应询问用户"))
-            with self.subTest(text=text), patch("adp_chat.sse.open_request", return_value=response(text, 18)) as network:
+            with self.subTest(text=text), patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)) as network:
                 result = chat_until_complete("问题", config=self.config, answer_provider=provider)
                 self.assertFalse(result.needs_input, text)
                 self.assertIsNone(result.clarification_source)
@@ -113,7 +113,7 @@ class TextClarificationTests(unittest.TestCase):
             ("请将这句话转换为礼貌表达：告诉我系统版本", "请告诉我系统版本。"),
             ("请把这两个客服追问列成清单：您用什么系统？请提供错误截图。", "- 您用什么系统？\n- 请提供错误截图。"),
         ):
-            with self.subTest(question=question), patch("adp_chat.sse.open_request", return_value=response(text, 18)):
+            with self.subTest(question=question), patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)):
                 self.assertFalse(chat(question, config=self.config).needs_input)
 
     def test_instructions_answer_the_question_without_requesting_a_reply(self):
@@ -123,19 +123,19 @@ class TextClarificationTests(unittest.TestCase):
             ("怎么报销？", "请上传电子发票。"),
             ("如何提交工单？", "请上传错误截图。"),
         ):
-            with self.subTest(question=question), patch("adp_chat.sse.open_request", return_value=response(text, 18)):
+            with self.subTest(question=question), patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)):
                 self.assertFalse(chat(question, config=self.config).needs_input)
 
     def test_agent_actions_after_collecting_input_are_not_user_instructions(self):
         """后续从句的执行者是助手时，保留真正的信息收集请求。"""
         text = "请提供报错截图，收到截图后我再帮您提交给 IT 排查。"
-        with patch("adp_chat.sse.open_request", return_value=response(text, 18)):
+        with patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)):
             self.assertTrue(chat("VPN 连不上", config=self.config).needs_input)
 
     def test_task_keywords_in_product_names_do_not_disable_detection(self):
         """模板和翻译出现在故障对象名称时，不等于用户在要求生成作品。"""
         for question in ("报销模板下载失败", "翻译软件连不上"):
-            with self.subTest(question=question), patch("adp_chat.sse.open_request", return_value=response("请提供完整的错误提示。", 18)):
+            with self.subTest(question=question), patch("adp_chat.adp.sse.open_request", return_value=response("请提供完整的错误提示。", 18)):
                 self.assertTrue(chat(question, config=self.config).needs_input)
 
     def test_instruction_topics_still_allow_missing_information(self):
@@ -144,14 +144,14 @@ class TextClarificationTests(unittest.TestCase):
             ("我想了解报销流程", "请先选择要查询的业务：IT、财务或采购。"),
             ("报销流程走到登录时出错", "请提供完整错误提示。"),
         ):
-            with self.subTest(question=question), patch("adp_chat.sse.open_request", return_value=response(text, 18)):
+            with self.subTest(question=question), patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)):
                 self.assertTrue(chat(question, config=self.config).needs_input)
 
     def test_original_task_survives_clarification_answers(self):
         """续轮保留原始翻译任务，不能把正常译文再当成向用户的信息请求。"""
         question = "请翻译这句英文：Could you provide your operating system and the exact error message?"
         for wrapped in (False, True):
-            with self.subTest(wrapped=wrapped), patch("adp_chat.sse.open_request", side_effect=[
+            with self.subTest(wrapped=wrapped), patch("adp_chat.adp.sse.open_request", side_effect=[
                 response("请问您需要直译还是意译？", 15), response("请提供操作系统和完整错误信息。", 18),
             ]):
                 provider = Mock(side_effect=["直译"])
@@ -166,13 +166,13 @@ class TextClarificationTests(unittest.TestCase):
 
     def test_acknowledgement_does_not_start_another_input_round(self):
         """用户已经明确结束时，可选扩展邀请不是未完成任务的追问。"""
-        with patch("adp_chat.sse.open_request", return_value=response("您需要我继续介绍操作流程吗？", 18)):
+        with patch("adp_chat.adp.sse.open_request", return_value=response("您需要我继续介绍操作流程吗？", 18)):
             self.assertFalse(chat("谢谢，明白了", config=self.config).needs_input)
 
     def test_text_detection_can_be_disabled_without_disabling_protocol(self):
         """关闭推断仍保留平台明确的澄清标记。"""
         config = replace(self.config, detect_text_clarification=False)
-        with patch("adp_chat.sse.open_request", side_effect=[response(POSITIVE[0], 18), response("请补充", 15)]):
+        with patch("adp_chat.adp.sse.open_request", side_effect=[response(POSITIVE[0], 18), response("请补充", 15)]):
             self.assertFalse(chat("问题", config=config).needs_input)
             explicit = chat("问题", config=config)
         self.assertTrue(explicit.needs_input)
@@ -181,7 +181,7 @@ class TextClarificationTests(unittest.TestCase):
     def test_text_continuation_stops_on_normal_answer(self):
         """文字补答可再次追问，正常结果立即停止。"""
         with (
-            patch("adp_chat.sse.open_request", side_effect=[
+            patch("adp_chat.adp.sse.open_request", side_effect=[
                 response("请提供操作系统。", 18), response("请补充具体报错。", 18),
                 response("请先重新连接 VPN，再登录系统。", 18),
             ]) as network,
@@ -198,20 +198,15 @@ class TextClarificationTests(unittest.TestCase):
         self.assertEqual(payloads[2]["Contents"], [{"Type": "text", "Text": "登录超时"}])
 
     def test_text_request_with_display_widget_uses_text_input(self):
-        """文本推断不得把同轮展示卡片误当作需要提交的交互卡片。"""
-        from adp_chat.cli import main
-
-        with (
-            patch("adp_chat.cli.load_config", return_value=self.config),
-            patch("builtins.input", side_effect=["Windows"]) as user_input,
-            patch("adp_chat.sse.open_request", side_effect=[
-                response("请提供操作系统。", 18, [{"Type": "widget", "Widget": {"WidgetId": "display", "WidgetRunId": "run"}}]),
-                response("请重新连接 VPN。", 18),
-            ]) as network,
-            contextlib.redirect_stdout(io.StringIO()),
-            contextlib.redirect_stderr(io.StringIO()) as prompts,
-        ):
-            self.assertEqual(main(["--ask", "VPN 连不上"]), 0)
-        user_input.assert_called_once()
-        self.assertNotIn("卡片动作 JSON", prompts.getvalue())
+        """展示 Widget 不会替代真实文字补答，仍只按文字提交。"""
+        provider = Mock(return_value="Windows")
+        with patch("adp_chat.adp.sse.open_request", side_effect=[
+            response("请提供操作系统。", 18, [{"Type": "widget", "Widget": {"WidgetId": "display", "WidgetRunId": "run"}}]),
+            response("请重新连接 VPN。", 18),
+        ]) as network:
+            final = chat_until_complete("VPN 连不上", config=self.config, answer_provider=provider)
+        provider.assert_called_once()
+        self.assertFalse(final.needs_input)
         self.assertEqual(network.call_count, 2)
+        payload = json.loads(network.call_args_list[1].args[0].data)
+        self.assertEqual(payload["Contents"], [{"Type": "text", "Text": "Windows"}])

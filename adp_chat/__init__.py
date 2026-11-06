@@ -1,10 +1,11 @@
-"""腾讯云 ADP Multi-Agent 的 Python 对话入口。"""
+"""腾讯云 ADP 对话核心入口。"""
 
-from .client import chat, chat_until_complete
-from .config import ChatConfig, load_config
-from .models import ChatError, ChatResult, ClarificationAnswer, Interaction, PreviewEvent
+from .adp.client import chat, chat_until_complete
+from .core.config import ChatConfig, default_config_path, load_config
+from .core.models import ChatError, ChatResult, ClarificationAnswer, Interaction, PreviewEvent
 
 __all__ = [
-    "ChatConfig", "ChatError", "ChatResult", "ClarificationAnswer", "Interaction", "PreviewEvent",
-    "chat", "chat_until_complete", "load_config",
+    "ChatConfig", "ChatError", "ChatResult", "ClarificationAnswer",
+    "Interaction", "PreviewEvent", "chat", "chat_until_complete",
+    "default_config_path", "load_config",
 ]

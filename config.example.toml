@@ -1,59 +1,29 @@
-# 复制为 config.toml；真实 AppKey 仅保存在本机，不提交 Git。
-# main.py 是默认单次入口；“高级接口”选项仅作用于旧 CLI/Library。
-
+# 复制为 adp_chat/config.toml。真实 AppKey 不提交 Git。
 [adp]
-# 必填：在已发布 ADP 应用 API 接入页复制 AppKey，不是腾讯云 SecretKey。
 app_key = ""
-# 必填：用户的稳定标识；同一用户保持不变，修改后需显式创建新会话。
-user_id = "local_adp_test_user_001"
-# 可选访问者标识：留空自动使用 user_id，通常无需填写。
+user_id = "local_adp_user"
 visitor_id = ""
-# 可选用户名称：留空不发送 UserName。
 user_name = ""
 
 [chat]
-# 单轮读取超时，单位秒，必须为正数；超时不会自动重试。
 chat_timeout_seconds = 180
-# true 请求增量文本；false 请求全量替换；最终以完成事件为准。
 incremental = true
-# 流式节流：0 沿用平台默认；非零值的单位和范围按应用 V2 协议设置。
 streaming_throttle = 0
-# 可选系统角色；留空沿用应用角色，不需要覆盖时勿填写。
 system_role = ""
-# 联网搜索："" 沿用应用设置，"enable" 开启，"disable" 关闭。
 search_network = ""
-# 工作流过程状态："" 沿用应用设置，"enable" 开启，"disable" 关闭。
 workflow_status = ""
-# 多意图开关：省略沿用应用设置；确需覆盖时取消注释并填 true 或 false。
-# enable_multi_intent = true
-# 高级接口：true 使用有限文字追问规则；main.py 始终关闭。
-detect_text_clarification = true
-# 高级接口：仅云端已配置业务 JSON 契约时设 true；main.py 始终关闭。
+detect_text_clarification = false
 structured_interaction = false
 
 [session]
-# main.py 会话路径；相对路径基于本配置目录，仅支持顺序启动。
-# 同应用同用户复用；切换身份时使用独立路径或运行 --new-session。
-session_file = "runtime/session.json"
-
-[cli]
-# 仅 python -m adp_chat：启动首问；留空等待输入。main.py 不使用此项。
-first_question = ""
-# 仅旧 CLI：true 在标准错误显示预览；false 只显示正式回复。
-show_preview = true
-# 仅旧 CLI：true 连续交互；false 完成 first_question 或 --ask 后退出。
-interactive = true
+# 路径相对于 adp_chat/config.toml 所在目录。
+session_file = "../runtime/session.json"
 
 [logging]
-# true 写本地日志；false 不创建日志。问答可能含业务信息，请按需关闭。
 log_enabled = true
-# 级别：DEBUG/INFO/WARNING/ERROR/CRITICAL；一般用 INFO，排障用 DEBUG。
-log_level = "DEBUG"
-# 日志路径：相对路径基于本配置目录；不输出到控制台。
-log_file = "logs/adp_chat.log"
-# 单份日志轮转阈值，单位字节，必须为正数；默认约 5 MiB。
+log_level = "INFO"
+log_file = "../logs/adp_chat.log"
 log_max_bytes = 5242880
-# 轮转备份份数，至少 1；默认保留 3 份旧日志。
 log_backup_count = 3
-# 回答脱敏后最多记录的 Unicode 字符数；0 不记录回答正文，问题仍完整记录。
-log_answer_chars = 100
+log_question = false
+log_answer_chars = 0

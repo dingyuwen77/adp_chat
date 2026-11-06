@@ -1,4 +1,6 @@
 config.toml
+deploy/config.toml
+.env
 .idea/
 .venv/
 __pycache__/

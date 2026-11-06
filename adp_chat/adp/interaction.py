@@ -2,7 +2,7 @@
 
 import json
 
-from .models import ChatError, Interaction
+from ..core.models import ChatError, Interaction
 
 
 def _unique_object(pairs: list[tuple]) -> dict:
