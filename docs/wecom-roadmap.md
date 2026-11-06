@@ -28,7 +28,7 @@
 
 实施：
 - 保留 [main.py](../main.py) CLI 和 [adp_chat/client.py](../adp_chat/client.py) 的单轮行为。
-- 使用已验签取得的 CorpID、AgentId、WeCom UserID 和**固定配置的 ADP 逻辑应用名**确定性计算 64 字节十六进制 ConversationId；UserId=VisitorId=WeCom UserID，跨进程不存 UserID→ConversationId。
+- 使用已验签取得的 CorpID、AgentId、WeCom UserID 和**固定配置的 ADP 逻辑应用名**确定性计算 64 个十六进制字符的 ConversationId；UserId=VisitorId=WeCom UserID，跨进程不存 UserID→ConversationId。
 - 核实当前 ADP V2 格式及上下文配置；单元测试和真实跨进程两轮测试分别证明 ID 相同及平台仍能回忆先前信息。
 
 验收：A1 同一员工同一逻辑应用跨重启 ID 一致；A2 不同员工/应用不相同；A3 当前 CLI 与 V2 兼容回归不退化；A4 明确提示“固定 ID 不等于永久记忆”。

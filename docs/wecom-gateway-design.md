@@ -81,7 +81,7 @@ sequenceDiagram
 
 1. 回调 GET 验证 URL，POST 验签/解密后核实 CorpID、AgentId、消息类型与 FromUserName。Token + EncodingAESKey 负责企微回调可信性；应用 Secret 用来换取企微 access_token；ADP AppKey 只用于调用 ADP。Secret 均不得进入仓库、业务消息文件或日志。
 2. 单企业内部员工场景，ADP UserId **直接取**已验证的企业微信 UserID；兼容当前 ADP V2，VisitorId=UserId。不支持将聊天正文中自称的用户身份传给模型作为鉴权。
-3. **每个员工只使用一个 ADP ConversationId**。但企微 UserID 往往短于 ADP V2 要求的 32～64 个字符，不直接原样赋值。建议 `sha256("adp_chat:wecom:v1" + 明确分隔的 CorpID、AgentId、ADP 逻辑应用名、UserID)` 的 64 位小写十六进制串，无须维护 UserID→ConversationId 映射文件。
+3. **每个员工只使用一个 ADP ConversationId**。但企微 UserID 往往短于 ADP V2 要求的 32～64 个字符，不直接原样赋值。建议 `sha256("adp_chat:wecom:v1" + 明确分隔的 CorpID、AgentId、ADP 逻辑应用名、UserID)` 的 64 个小写十六进制字符，无须维护 UserID→ConversationId 映射文件。
 4. ADP 逻辑应用名是固定配置值，不能使用可轮换的 AppKey；上线后派生算法、字段顺序/分隔和命名空间不可静默改变。测试应证明同用户跨重启 ID 一致、不同用户分离。
 5. ConversationId 恒定只确保网关复用同一会话标识，**不保证 ADP 永久记忆全部对话**；记忆由 ADP 应用配置与平台约束决定。
 6. 后续 ADP→会议 MCP 的写操作必须另外完成可信服务身份及用户权限校验、业务幂等；不能直接信任模型生成的 UserID。
