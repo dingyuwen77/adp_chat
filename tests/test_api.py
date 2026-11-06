@@ -1,6 +1,7 @@
 """FastAPI 合约回归：CLI 纯标准库环境可明确跳过。"""
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -67,6 +68,44 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json()["error"]["code"], "INTERNAL_ERROR")
         self.assertNotIn("sensitive exception", response.text)
+
+    def test_concurrent_request_returns_409(self):
+        """一轮正在调用 ADP 时，另一 HTTP 请求立即收到 409，且不进入网络层。"""
+        entered = threading.Event()
+        release = threading.Event()
+        results = []
+        errors = []
+        conversation_id = app.state.chat_service.initialize()
+
+        def blocking_adp(_message, *, config, conversation_id):
+            """保持第一轮占用，待主测试检查 HTTP 忙碌响应后放行。"""
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("并发测试放行超时")
+            return ChatResult("完成", conversation_id, "first-request")
+
+        def worker():
+            """模拟另一调用方保持第一轮请求未结束。"""
+            try:
+                results.append(self.client.post("/api/v1/chat", json={"message": "第一轮"}))
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch("adp_chat.application.chat_service.chat", side_effect=blocking_adp) as provider:
+            thread = threading.Thread(target=worker)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5), "第一轮未进入 ADP")
+                second = self.client.post("/api/v1/chat", json={"message": "第二轮"})
+                self.assertEqual(second.status_code, 409)
+                self.assertEqual(second.json()["error"]["code"], "CHAT_BUSY")
+                self.assertEqual(provider.call_count, 1)
+            finally:
+                release.set()
+                thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            self.assertFalse(errors)
+            self.assertEqual(results[0].status_code, 200)
 
     def test_upstream_error_and_timeout(self):
         """错误和超时不得返回 200，也不得泄露原始异常文本。"""
