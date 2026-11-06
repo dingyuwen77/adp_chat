@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Request
 
 from ..application.chat_service import ChatService
-from .schemas import ChatRequest, ChatResponse
+from .schemas import ChatRequest, ChatResponse, ErrorResponse
 
 router = APIRouter()
 
@@ -19,7 +19,10 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.post("/api/v1/chat", response_model=ChatResponse)
+@router.post(
+    "/api/v1/chat", response_model=ChatResponse,
+    responses={status: {"model": ErrorResponse} for status in (409, 422, 502, 503, 504, 500)},
+)
 def chat_endpoint(body: ChatRequest, request: Request) -> ChatResponse:
     """将文字转发一轮，返回正式 ADP 消息。"""
     result = _service(request).ask(body.message)

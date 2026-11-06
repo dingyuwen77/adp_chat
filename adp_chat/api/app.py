@@ -51,6 +51,11 @@ def create_app() -> FastAPI:
         """拦截校验报错，避免在响应中回显请求消息。"""
         return _error(422, "INVALID_REQUEST", "input", "请求必须包含非空文字 message。")
 
+    @app.exception_handler(Exception)
+    async def unexpected_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
+        """隐藏意外异常的正文，给调用方稳定的 500 响应。"""
+        return _error(500, "INTERNAL_ERROR", "service", "服务内部错误。")
+
     return app
 
 

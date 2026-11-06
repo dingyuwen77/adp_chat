@@ -59,6 +59,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["reply_contents"][0][1]["Type"], "image")
         self.assertEqual(provider.call_count, 1)
 
+    def test_unexpected_error_returns_safe_500(self):
+        """不可预期异常不把私密正文暴露给调用方。"""
+        with patch("adp_chat.application.chat_service.chat", side_effect=RuntimeError("sensitive exception")):
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post("/api/v1/chat", json={"message": "你好"})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"]["code"], "INTERNAL_ERROR")
+        self.assertNotIn("sensitive exception", response.text)
+
     def test_upstream_error_and_timeout(self):
         """错误和超时不得返回 200，也不得泄露原始异常文本。"""
         for error, status in [

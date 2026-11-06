@@ -171,6 +171,19 @@ class SingleTurnTests(unittest.TestCase):
         self.assertNotIn("内部", output.getvalue())
         self.assertNotIn("完成", errors.getvalue())
 
+    def test_default_package_config_uses_root_persistence_directories(self):
+        """包内默认配置即使省略路径字段，也使用仓库根目录持久数据。"""
+        from adp_chat.core.config import default_config_path
+
+        package = self.root / "adp_chat"
+        package.mkdir()
+        config_file = package / "config.toml"
+        config_file.write_text('[adp]\\napp_key="fixture"\\nuser_id="tester"\\n', encoding="utf-8")
+        with patch("adp_chat.core.config.default_config_path", return_value=config_file):
+            config = load_config()
+        self.assertEqual(Path(config.session_file).resolve(), (self.root / "runtime/session.json").resolve())
+        self.assertEqual(Path(config.log_file).resolve(), (self.root / "logs/adp_chat.log").resolve())
+
     def test_session_identity_corruption_new_and_failed_atomic_write(self):
         """损坏、身份冲突、显式重建和失败原子替换均有明确行为。"""
         from adp_chat.storage.session import load_session

@@ -111,6 +111,10 @@ def load_config(path: str | Path | None = None) -> ChatConfig:
                 raise ChatError("config", "unknown_key", f"配置分组 [{name}] 包含未知字段。")
             values[key] = value
 
+    # 标准配置放在包内时，默认日志/会话仍存于仓库根持久目录。
+    if path.absolute() == default_config_path().absolute():
+        values.setdefault("session_file", "../runtime/session.json")
+        values.setdefault("log_file", "../logs/adp_chat.log")
     values.setdefault("app_key", "")
     values.setdefault("user_id", "")
     config = ChatConfig(**values)
