@@ -9,10 +9,15 @@
 
 机器可读契约：[docs/interaction.schema.json](interaction.schema.json)（**保持原文件名和路径，不参与人读文档编号**）。业务说明只解释用法，精确机器约束以该 JSON Schema 为准。
 
+## 单用户常驻服务（已实现代码，服务器待验收）
+
+3. [docs/adp-chat/03_FastAPI服务架构.md](adp-chat/03_FastAPI服务架构.md)：单会话请求、锁、HTTP 契约和三种调用入口。
+4. [docs/adp-chat/04_Docker部署与运维.md](adp-chat/04_Docker部署与运维.md)：Linux 部署、IP/端口、跨机器调用、会话备份与回滚。
+
 ## 企业微信接入（设计中，尚未实现）
 
 1. [docs/wecom-integration/01_网关架构设计.md](wecom-integration/01_网关架构设计.md)：先了解企业微信回调、身份与单会话、文件状态、并发、重试、退出应用后的回复，以及现阶段实现边界。
 2. [docs/wecom-integration/02_结构化日志事件.md](wecom-integration/02_结构化日志事件.md)：再阅读结构化 JSONL 日志字段、关联 ID、脱敏、保存策略和未来接入 Cosmos DB 的约束。
 3. [docs/wecom-integration/03_实施路线图.md](wecom-integration/03_实施路线图.md)：最后按阶段 A～F 开发，包含阶段依赖、测试与验收标准。
 
-> 注意：设计文档不是已交付的运行功能。已实现能力以当前代码、配置和测试为准；企业微信消息网关、相关持久化及 Cosmos DB 日志采集仍未在本项目代码中实现。
+> 注意：设计文档不是已交付的运行功能。已实现能力以当前代码、配置和测试为准；通用 FastAPI 不等于企业微信网关，企业微信消息网关、相关持久化及 Cosmos DB 日志采集仍未在本项目代码中实现。
