@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.venv
+.idea
+__pycache__
+*.py[cod]
+**/config.toml
+.env
+runtime
+logs
+tests
+deploy
+*.egg-info
+build
+dist

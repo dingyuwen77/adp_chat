@@ -1,0 +1,18 @@
+services:
+  adp-chat:
+    build: .
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${ADP_BIND_IP:-10.102.70.82}:${ADP_HOST_PORT:-4560}:8000"
+    volumes:
+      - ./deploy/config.toml:/app/adp_chat/config.toml:ro
+      - ./runtime:/app/runtime
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 240s

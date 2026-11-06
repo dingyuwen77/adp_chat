@@ -3,7 +3,7 @@ import ssl
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
-from .models import ChatError
+from ..core.models import ChatError
 
 
 class _NoRedirect(HTTPRedirectHandler):

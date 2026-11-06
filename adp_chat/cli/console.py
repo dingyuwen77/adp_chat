@@ -3,7 +3,7 @@
 import json
 import sys
 
-from .models import ChatError, ChatResult, ClarificationAnswer
+from ..core.models import ChatError, ChatResult, ClarificationAnswer
 
 
 def _read(prompt: str, *, required: bool = True) -> str:
