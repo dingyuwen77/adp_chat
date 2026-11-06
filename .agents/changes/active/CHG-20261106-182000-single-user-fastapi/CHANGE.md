@@ -74,3 +74,9 @@ data_changes: [runtime/session.json]
 - 当前实现 revision `67692b623148706d1bc37246548d838cdd9b8203` 的原有 Windows / Python 3.14 CI run #9：85 tests，0 failed，5 skipped，成功。5 个 FastAPI/HTTPX API 用例因测试依赖未安装而跳过，不能据此认定 HTTP 契约已通过。
 - 当前会话执行环境安装有 FastAPI 等依赖，但没有项目源码的本地可执行 checkout、Python 3.14 或 Docker 引擎；未取得完整 API 真实测试与 Docker 构建/容器启动的直接证据。远程 Desktop Commander 离线，无法在目标服务器核验 10.102.70.82:4560 的网络边界。
 - 当前状态仍为 `in_progress`、完成门禁尚未达到 `ready_for_review`。仅豁免独立 Review 不自动解除缺失的必要验证。
+
+### 本轮补充验证（仅说明实际覆盖范围）
+
+- 在临时隔离环境（Python 3.13.5，FastAPI 0.128.2，HTTPX 0.28.1，Pydantic 2.13.5）运行 `python -B -X utf8 -m unittest discover -s tests -v`，获得 **5 tests, 0 failures, 0 skipped**。
+- 该环境中 `adp_chat/api/app.py`、`api/routes.py`、`api/schemas.py`、`application/chat_service.py` 及 `tests/test_api.py` 均逐文件验证与 PR 对应 GitHub Blob SHA 完全一致；但 `core/config.py`、`core/models.py`、`storage/session.py`、`adp/client.py` 用受控桩代替。因此它是 HTTP ASGI/并发入口的隔离验证，**不能替代 Python 3.14 真实全仓 API 集成测试、ADP Provider Probe 或 Docker/Linux 容器运行**。
+- 当前执行容器不具备 Docker CLI / daemon，关联的 Remote Desktop Commander 设备离线，无法形成本任务要求的 Docker build/up/健康/持久挂载和服务端网络 ACL 新鲜证据。
