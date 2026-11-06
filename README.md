@@ -70,7 +70,7 @@ python -m adp_chat --conversation-id "已知的有效会话ID" --ask "继续"
 
 旧 CLI 默认读取当前目录的配置，`--config` 可指定路径。交互输入 `/new` 换会话、`/exit` 退出。`--ask` 会完成已识别的追问后退出；旧 CLI 不使用本地 session.json 自动恢复，其文字行为保持兼容。追问时输入结束或取消会返回非零。
 
-高级接口的 `answer_provider` 获取真实答案，`on_result` 交付各轮结果；回调抛错即停止，不自动重试。问卷和 Widget 动作继续使用原协议。业务 JSON 模式仅在应用显式配置后开启，见 [docs/ADP对话/02_结构化业务状态.md](docs/ADP对话/02_结构化业务状态.md)；文字追问边界见 [docs/ADP对话/01_文字追问接口.md](docs/ADP对话/01_文字追问接口.md)。
+高级接口的 `answer_provider` 获取真实答案，`on_result` 交付各轮结果；回调抛错即停止，不自动重试。问卷和 Widget 动作继续使用原协议。业务 JSON 模式仅在应用显式配置后开启，见 [docs/adp-chat/02_结构化业务状态.md](docs/adp-chat/02_结构化业务状态.md)；文字追问边界见 [docs/adp-chat/01_文字追问接口.md](docs/adp-chat/01_文字追问接口.md)。
 
 ## 日志与验证
 
