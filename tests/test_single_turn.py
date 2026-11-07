@@ -193,8 +193,9 @@ class SingleTurnTests(unittest.TestCase):
         template = (ROOT / "config.example.toml").read_text(encoding="utf-8")
         self.path.write_text(template.replace('app_key = ""', 'app_key = "fixture"'), encoding="utf-8")
         config = load_config(self.path)
-        self.assertEqual(Path(config.session_file).resolve(), self.root / "runtime/session.json")
-        self.assertEqual(Path(config.log_file).resolve(), self.root / "logs/adp_chat.log")
+        # Windows 临时目录可能使用 8.3 短路径，两侧规范化后比较真实保存位置。
+        self.assertEqual(Path(config.session_file).resolve(), (self.root / "runtime/session.json").resolve())
+        self.assertEqual(Path(config.log_file).resolve(), (self.root / "logs/adp_chat.log").resolve())
 
     def test_example_explicitly_enables_question_logging(self):
         """复制模板后显式启用问题日志，代码默认关闭仍由独立回归保护。"""
