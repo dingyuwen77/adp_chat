@@ -107,7 +107,7 @@ E1支持复用同Worker+Store，不建新队列/状态源；E2/E3决定正式协
 # 需求追溯
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
-| --- | --- | --- | --- |
+| --- | --- | --- | --- | --- |
 | R1 | D1 正常/BUSY/限额/UNKNOWN通知隔离 | docs/wecom-integration/03_实施路线图.md#AC20 | satisfied | 正式统一Worker/发送器、17项协议与发送测试、回调成员拒绝回归、四场景独立HTTP/强杀恢复及完整147项回归，见下方证据 |
 | R2 | D2 发送失败未知不重调ADP/不锁用户 | docs/wecom-integration/03_实施路线图.md#AC21 | satisfied | 正式统一Worker/发送器、17项协议与发送测试、回调成员拒绝回归、四场景独立HTTP/强杀恢复及完整147项回归，见下方证据 |
 | R3 | D3 业务错误/无效用户/Token过期分类 | docs/wecom-integration/03_实施路线图.md#AC22 | satisfied | 正式统一Worker/发送器、17项协议与发送测试、回调成员拒绝回归、四场景独立HTTP/强杀恢复及完整147项回归，见下方证据 |
@@ -173,6 +173,8 @@ D实现/本地验证完成；独立Review、当前head CI、guarded merge、main
 ## 交付状态
 
 implementation=complete；delivery=incomplete；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
+
+D-GOVERNANCE：首次Ready检查发现Traceability表头5列而分隔行仅4列，未创建PR/未推送/未宣称Ready；修正为5列后重新运行门禁。运行代码与147项证据不受文档格式变化影响。
 
 ## 备注
 
