@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: CHG-20261107-214801-wecom-stage-a
 title: 企业微信阶段 A 多用户身份与真实会话续接
 level: L3
-status: ready_for_review
+status: done
 owner: codex
 branch: feature/wecom-stage-a
 created: 2026-11-07T21:48:01+08:00
-updated: 2026-11-07T21:59:00+08:00
+updated: 2026-11-07
 completion_gate: required
 depends_on: []
 affected_areas:
@@ -76,7 +76,7 @@ data_changes: []
 - [x] A3 旧脚本、CLI、单用户 API/配置兼容。
 - [x] A4 明确固定 ID 不等于永久记忆。
 - [x] A5 YNND 两个独立进程“我想改密码”→“windows”真实上下文与 SIYU 隔离有直接证据。
-- [ ] 当前 head 独立 Review/CI、guarded merge、main-fresh 和收尾完成。
+- [x] 当前 head 独立 Review/CI、guarded merge、main-fresh 和收尾完成。
 
 ## 范围
 
@@ -190,11 +190,15 @@ V3：2026-11-07 核对腾讯官方 SSE 文档 https://cloud.tencent.com/document
 
 ## 未验证内容与剩余风险
 
-实现、稳定回归和真实 Provider 语义验证完成；独立 Review、当前 head PR CI、guarded merge、main-fresh 与清理仍是交付门禁。PyCharm GUI 未操作；阶段 A 不改容器链路，网关容器留 E 验收。
+实现、稳定回归和真实 Provider 语义验证已交付；独立 Review、PR CI、guarded merge、main-fresh 与实现分支清理均完成。PyCharm GUI 未操作；阶段 A 不改容器链路，网关容器留 E 验收。
 
 ## 交付状态
 
-implementation=complete；delivery=incomplete；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式 Roadmap，不重复建 Issue）；cleanup=incomplete；end_to_end=incomplete。
+implementation=complete；delivery=merged；validation=complete；main_fresh=complete；change_archive=本地归档；requirement_closure=not_applicable（正式 Roadmap，无 Issue close 生命周期）；cleanup=complete（实现分支）；end_to_end=complete。
+
+V4：隔离只读 Reviewer /root/stage_a_review，base=2ba18da，head=4f75e00c937a1138376f8a01d41d250a17231d17，decision_epoch=1；独立 Deep Review 结论 NO_FINDINGS_WITHIN_SCOPE，零阻塞 Findings；Reviewer 实读真实 JSON，复验 8 tests / 0 skipped / exit 0；父 Agent 核实实际 diff 和底层证据。Validation Asset Redundancy=clean。
+
+V5：PR #12 https://github.com/dingyuwen77/adp_chat/pull/12，current-head CI run 42379664979 实跑 93 tests / OK；最终权限与保护回读 principal=dingyuwen77、push/admin=true、main unprotected、rulesets=[]、review threads=[]，base/head 未漂移。REST merge 使用 expected_head_sha=4f75e00c937a1138376f8a01d41d250a17231d17，实际 merge=7f82924fa2ee77da99f831a65f29393de0b25f8d。main-fresh run 42380434855 success（93 tests / OK）；本地 main 与 origin/main 一致，merge tree 与 reviewed head 无内容差异。Closure Audit 重新核对 A1～A5：身份稳定/隔离、兼容、边界文档及本次真实续接均有直接证据；正式 Roadmap 无单独关闭操作。实现远程分支由 GitHub 合并后自动删除，ls-remote 回读确认不存在；已确认祖先关系和 worktree 后删除本地 feature/wecom-stage-a。阶段收尾归档与 Roadmap 的发布由独立文档 PR 完成，不影响既有运行证据。
 
 ## 备注
 
