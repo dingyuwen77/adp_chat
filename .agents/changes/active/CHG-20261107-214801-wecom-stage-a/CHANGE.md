@@ -10,9 +10,21 @@ created: 2026-11-07T21:48:01+08:00
 updated: 2026-11-07T21:59:00+08:00
 completion_gate: required
 depends_on: []
-affected_areas: [core, adp, tests, docs]
-affected_paths: [src/core/config.py, src/core/identity.py, tests/test_employee_identity.py, tests/adp_conversation_probe.py, config.example.toml, README.md, docs]
-contracts: [wecom-conversation-v1]
+affected_areas:
+  - "core"
+  - "adp"
+  - "tests"
+  - "docs"
+affected_paths:
+  - "src/core/config.py"
+  - "src/core/identity.py"
+  - "tests/test_employee_identity.py"
+  - "tests/adp_conversation_probe.py"
+  - "config.example.toml"
+  - "README.md"
+  - "docs"
+contracts:
+  - "wecom-conversation-v1"
 data_changes: []
 ---
 
@@ -110,11 +122,11 @@ UserID 原样会话不满足长度；持久映射文件增加写入一致性和�
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | 跨进程稳定身份 | docs/wecom-integration/03_实施路线图.md 阶段 A / A1 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
-| R2 | 不同作用域隔离 | docs/wecom-integration/03_实施路线图.md 阶段 A / A2 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
-| R3 | 兼容旧入口 | docs/wecom-integration/03_实施路线图.md 阶段 A / A3 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
-| R4 | 平台记忆边界 | docs/wecom-integration/03_实施路线图.md 阶段 A / A4 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
-| R5 | 真实 ADP 跨进程语义与 SIYU 隔离 | docs/wecom-integration/03_实施路线图.md 阶段 A / A5；user:A～E真实续接验收 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
+| R1 | 跨进程稳定身份 | docs/wecom-integration/03_实施路线图.md#AC1 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
+| R2 | 不同作用域隔离 | docs/wecom-integration/03_实施路线图.md#AC2 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
+| R3 | 兼容旧入口 | docs/wecom-integration/03_实施路线图.md#AC3 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
+| R4 | 平台记忆边界 | docs/wecom-integration/03_实施路线图.md#AC4 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
+| R5 | 真实 ADP 跨进程语义与 SIYU 隔离 | docs/wecom-integration/03_实施路线图.md#AC5 | satisfied | 8 项身份/Probe 自动回归及 V2 真实证据，原 85 项兼容回归保持通过 |
 
 # 计划改动
 
