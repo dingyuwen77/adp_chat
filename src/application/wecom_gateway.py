@@ -5,7 +5,7 @@ import re
 from core.config import ChatConfig
 from storage.messages import MessageStore
 from wecom.crypto import WeComCrypto, invalid_callback, parse_xml, xml_field
-from wecom.models import InboundMessage
+from wecom.models import InboundMessage, is_employee_id
 
 
 class WeComGateway:
@@ -31,7 +31,7 @@ class WeComGateway:
                 or xml_field(inner, "AgentID") != str(self.config.agent_id)):
             raise invalid_callback()
         user_id = xml_field(inner, "FromUserName")
-        if not re.fullmatch(r"[A-Za-z0-9_@.\-]{1,64}", user_id):
+        if not is_employee_id(user_id):
             raise invalid_callback()
         if xml_field(inner, "MsgType") != "text":
             return None

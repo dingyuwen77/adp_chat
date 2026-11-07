@@ -6,16 +6,19 @@ from uuid import uuid4
 
 from adp.async_client import unknown_outcome
 from core.models import ChatError
+from wecom.sender import SendOutcome, unknown_send
 
 
 class GatewayWorker:
     """任务注册表只去重进程内调度；唯一事实仍是MessageStore快照。"""
 
-    def __init__(self, gateway, adp):
+    def __init__(self, gateway, adp, *, sender=None):
         """依赖由lifespan持有，测试与真实出站使用同一状态机制。"""
         self.gateway, self.adp = gateway, adp
         self.store, self.logger = gateway.store, gateway.logger
         self.tasks = {}
+        self.send_tasks = {}
+        self.sender = sender
         self.failure = None
         self._event = asyncio.Event()
         self._loop = None
@@ -38,6 +41,8 @@ class GatewayWorker:
                 await self._finish(record, unknown_outcome("process_recovery"))
                 self.logger.warning("adp_recovered_unknown message_key=%s request_id=%s",
                                     record["message_key"], record["request_id"])
+            if record["send_state"] == "SEND_ARMED":
+                await self._finish_notification(record, unknown_send(code="process_recovery"))
         self._runner = asyncio.create_task(self._dispatch(), name="wecom-dispatch")
         self.wake()
 
@@ -56,6 +61,9 @@ class GatewayWorker:
                     if record["adp_state"] == "RECEIVED" and key not in self.tasks:
                         self.tasks[key] = asyncio.create_task(self._execute(record), name=f"adp-{key[:12]}")
                         self.tasks[key].add_done_callback(lambda _done, key=key: self.tasks.pop(key, None))
+                    if self.sender is not None and record["send_state"] == "PENDING" and key not in self.send_tasks:
+                        self.send_tasks[key] = asyncio.create_task(self._execute_notification(record), name=f"notify-{key[:12]}")
+                        self.send_tasks[key].add_done_callback(lambda _done, key=key: self.send_tasks.pop(key, None))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -71,7 +79,49 @@ class GatewayWorker:
             notification_kind=outcome.state, send_state="PENDING")
         self.logger.info("adp_result_saved message_key=%s request_id=%s adp_state=%s local_session_released=true",
                          saved["message_key"], saved["request_id"], saved["adp_state"])
+        self.wake()
         return saved
+
+    async def _finish_notification(self, record, outcome):
+        """只提交独立发送维度，绝不修改ADP结果或重新占用员工。"""
+        saved = await asyncio.to_thread(self.store.update, record["message_key"],
+            expected_version=record["record_version"], send_state=outcome.state, send_result=asdict(outcome))
+        self.logger.info("wecom_send_result message_key=%s send_state=%s source=%s code=%s",
+                         saved["message_key"], saved["send_state"], outcome.source, outcome.code)
+        return saved
+
+    async def _execute_notification(self, record):
+        """通知武装先落盘，Token/消息网络或取消未知均不调用ADP或派生新通知。"""
+        armed = None
+        try:
+            plan = SendOutcome("SEND_ARMED", self.sender.source, None, None, None, "armed")
+            armed = await asyncio.to_thread(self.store.update, record["message_key"],
+                expected_version=record["record_version"], send_state="SEND_ARMED", send_result=asdict(plan))
+            self.logger.info("wecom_send_armed message_key=%s source=%s", armed["message_key"], self.sender.source)
+            outcome = await self.sender.send(armed)
+            await self._finish_notification(armed, outcome)
+        except asyncio.CancelledError:
+            try:
+                current = await asyncio.to_thread(self.store.get, record["message_key"])
+                if current is not None and current["send_state"] == "SEND_ARMED":
+                    await self._finish_notification(current, unknown_send(code="shutdown"))
+            except ChatError:
+                self.failure = "storage_unavailable"
+            raise
+        except ChatError as exc:
+            if armed is None and exc.code == "version_conflict":
+                self.wake()
+                return
+            self.failure = exc.code
+            self.logger.error("notification_state_failed message_key=%s code=%s", record["message_key"], exc.code)
+        except Exception:
+            if armed is not None:
+                try:
+                    await self._finish_notification(armed, unknown_send(code="unexpected_error"))
+                except ChatError:
+                    self.failure = "storage_unavailable"
+            else:
+                self.failure = "unexpected_error"
 
     async def _execute(self, record):
         """武装先落盘，取消/异常也保存UNKNOWN；任何路径都不再次调用ADP。"""
@@ -113,7 +163,7 @@ class GatewayWorker:
         if self._runner is not None:
             self._runner.cancel()
             await asyncio.gather(self._runner, return_exceptions=True)
-        tasks = list(self.tasks.values())
+        tasks = list(self.tasks.values()) + list(self.send_tasks.values())
         for task in tasks:
             task.cancel()
         if tasks:

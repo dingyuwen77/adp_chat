@@ -1,0 +1,203 @@
+"""统一通知适配器：正式企微协议与模拟证据分开，不调用ADP、不追踪已读。"""
+
+import asyncio
+import json
+import logging
+import ssl
+from dataclasses import dataclass
+from time import monotonic
+
+import httpx
+
+from core.config import ChatConfig
+from core.logging import HTTPQueryFilter
+from core.models import ChatError
+from .models import is_employee_id
+
+
+_BASE = "https://qyapi.weixin.qq.com"
+
+
+@dataclass(frozen=True)
+class SendOutcome:
+    """protocol_accepted仅说明协议解码；是否真实接受还必须核对source。"""
+
+    state: str
+    source: str
+    protocol_accepted: bool | None
+    accepted_parts: int | None
+    total_parts: int | None
+    code: str
+    provider_code: int | None = None
+
+
+def unknown_send(source="recovery", code="interrupted") -> SendOutcome:
+    """武装后结果不明保留未知，不把可能已接受的消息变成可自动重发。"""
+    return SendOutcome("SEND_UNKNOWN", source, None, None, None, code)
+
+
+def text_parts(text: str) -> list[str]:
+    """按官方2048 UTF8字节边界完整切片，不拆Unicode字符或静默截断。"""
+    if not isinstance(text, str) or not text:
+        raise ValueError("empty notification")
+    parts, current, size = [], [], 0
+    for character in text:
+        length = len(character.encode("utf-8"))
+        if size + length > 2048:
+            parts.append("".join(current))
+            current, size = [], 0
+        current.append(character)
+        size += length
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+class SimulatedSender:
+    """没有外部I/O的测试发送器，唯一成功状态为SEND_SIMULATED。"""
+
+    source = "simulated"
+
+    def __init__(self, config: ChatConfig):
+        """只允许显式测试环境，不能冒充正式发送。"""
+        if config.gateway_environment != "test":
+            raise ChatError("config", "invalid_notification", "模拟发送只允许测试环境。")
+
+    async def send(self, record: dict) -> SendOutcome:
+        """统一消费保存提示；不打印员工正文或构造平台接受证据。"""
+        if not is_employee_id(record.get("user_id")):
+            return SendOutcome("SEND_FAILED", self.source, False, 0, None, "invalid_target")
+        count = len(text_parts(record["notification"]))
+        return SendOutcome("SEND_SIMULATED", self.source, None, count, count, "simulated")
+
+    async def aclose(self):
+        """没有网络资源，但保持统一生命周期。"""
+
+
+class _ProtocolError(Exception):
+    """仅传递安全原因，不包含URL、凭据或供应方原始正文。"""
+
+
+class WeComSender:
+    """正式应用消息接口；注入Fake HTTP的成功只能形成模拟结果。"""
+
+    def __init__(self, config: ChatConfig, *, http_client=None):
+        """原生出站需production与Secret；D只使用注入的隔离HTTP。"""
+        if not config.wecom_app_secret.strip():
+            raise ChatError("config", "missing_wecom_secret", "正式发送适配器需要本机应用凭据。")
+        self._owned = http_client is None
+        if self._owned and config.gateway_environment != "production":
+            raise ChatError("config", "real_send_disabled", "测试环境不得使用真实企业微信出站。")
+        self.config = config
+        self.source = "wecom_api" if self._owned else "fake_http"
+        if http_client is None:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.load_default_certs()
+            transport = httpx.AsyncHTTPTransport(verify=context, retries=0,
+                limits=httpx.Limits(max_connections=None, max_keepalive_connections=20))
+            http_client = httpx.AsyncClient(transport=transport, follow_redirects=False,
+                                           trust_env=False, timeout=config.send_timeout_seconds)
+        self.http = http_client
+        self._token = None
+        self._expires = 0.0
+        self._token_lock = asyncio.Lock()
+        self._filter = HTTPQueryFilter()
+        logging.getLogger("httpx").addFilter(self._filter)
+
+    async def aclose(self):
+        """保持请求期间查询脱敏，关闭自有连接后撤销本实例filter。"""
+        try:
+            if self._owned:
+                await self.http.aclose()
+        finally:
+            logging.getLogger("httpx").removeFilter(self._filter)
+
+    async def _json(self, method, path, *, params, payload=None):
+        """有界消费官方JSON响应；HTTP非200或畸形正文不当成功。"""
+        async with self.http.stream(method, _BASE + path, params=params, json=payload) as response:
+            if response.status_code != 200:
+                raise _ProtocolError("http_error")
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(body) + len(chunk) > 65536:
+                    raise _ProtocolError("response_resource_limit")
+                body.extend(chunk)
+            try:
+                data = json.loads(body)
+            except (ValueError, UnicodeError):
+                raise _ProtocolError("invalid_response") from None
+            if not isinstance(data, dict) or type(data.get("errcode")) is not int:
+                raise _ProtocolError("invalid_response")
+            return data
+
+    async def _access_token(self, *, rejected_token=None):
+        """按应用缓存Token；并发发现旧Token失效时只由一个任务刷新。"""
+        async with self._token_lock:
+            if self._token and monotonic() < self._expires and (rejected_token is None or self._token != rejected_token):
+                return self._token
+            if rejected_token == self._token:
+                self._token, self._expires = None, 0.0
+            data = await self._json("GET", "/cgi-bin/gettoken",
+                                    params={"corpid": self.config.corp_id, "corpsecret": self.config.wecom_app_secret})
+            if data["errcode"] != 0:
+                return None, data["errcode"]
+            token, seconds = data.get("access_token"), data.get("expires_in")
+            if (not isinstance(token, str) or not token or len(token.encode("utf-8")) > 512
+                    or any(ord(c) < 32 for c in token) or type(seconds) is not int or not 0 < seconds <= 86400):
+                raise _ProtocolError("invalid_token_response")
+            self._token = token
+            self._expires = monotonic() + seconds - min(30, seconds / 10)
+            return token
+
+    async def send(self, record: dict) -> SendOutcome:
+        """仅Token明确失效允许一次纠正；其他发送失败/未知没有自动重发。"""
+        accepted, total, uncertain, last_code = 0, None, False, None
+        if not is_employee_id(record.get("user_id")):
+            return SendOutcome("SEND_FAILED", self.source, False, 0, None, "invalid_target")
+        try:
+            parts = text_parts(record["notification"])
+            total = len(parts)
+            async with asyncio.timeout(self.config.send_timeout_seconds):
+                for part in parts:
+                    token = await self._access_token()
+                    if isinstance(token, tuple):
+                        return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
+                    for correction in range(2):
+                        uncertain, last_code = True, None
+                        data = await self._json("POST", "/cgi-bin/message/send", params={"access_token": token},
+                            payload={"touser": record["user_id"], "msgtype": "text", "agentid": self.config.agent_id,
+                                     "text": {"content": part}, "safe": 0, "enable_id_trans": 0, "enable_duplicate_check": 0})
+                        code = data["errcode"]
+                        if code != 0:
+                            uncertain, last_code = False, code
+                        if code in {40014, 42001} and correction == 0:
+                            token = await self._access_token(rejected_token=token)
+                            if isinstance(token, tuple):
+                                return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
+                            continue
+                        if code != 0:
+                            return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "wecom_error", code)
+                        for field in ("invaliduser", "unlicenseduser"):
+                            if field in data and not isinstance(data[field], str):
+                                raise _ProtocolError("invalid_response")
+                            values = data.get(field, "").split("|")
+                            if any(value and not is_employee_id(value) for value in values):
+                                raise _ProtocolError("invalid_response")
+                            if record["user_id"].casefold() in {value.casefold() for value in values}:
+                                return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "invalid_user", 0)
+                        accepted += 1
+                        uncertain = False
+                        break
+            state = "SEND_ACCEPTED" if self.source == "wecom_api" else "SEND_SIMULATED"
+            return SendOutcome(state, self.source, True, accepted, total, "accepted")
+        except (TimeoutError, httpx.HTTPError, OSError, _ProtocolError, ValueError):
+            # Token阶段从未提交消息时可证明没有发送；提交后的传输/协议问题均保守未知。
+            return SendOutcome("SEND_UNKNOWN" if uncertain else "SEND_FAILED", self.source, None,
+                               accepted, total, "transport_or_protocol_error", last_code)
+
+
+def create_sender(config: ChatConfig):
+    """默认不发送；A～E显式选择simulated，production正式发送留F配置。"""
+    if config.notification_mode == "disabled":
+        return None
+    return SimulatedSender(config) if config.notification_mode == "simulated" else WeComSender(config)

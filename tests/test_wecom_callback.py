@@ -29,7 +29,7 @@ from wecom_callback_client import initialize_test_keys
 class PausedWorker:
     """B协议/接收隔离测试固定下游未启动；C另测真实worker且不绕过验签。"""
 
-    def __init__(self, *_args):
+    def __init__(self, *_args, **_kwargs):
         """不接管任何状态，保留RECEIVED直到接收断言结束。"""
 
     async def start(self):
@@ -109,6 +109,13 @@ class CallbackTests(unittest.TestCase):
         ciphertext = self.encrypted(b"url-test-echo")
         response = self.client.get("/wecom/callback", params={**self.signed(ciphertext), "echostr": ciphertext})
         self.assertEqual((response.status_code, response.content), (200, b"url-test-echo"))
+
+    def test_reserved_and_invalid_member_ids_are_rejected_before_storage(self):
+        """合法签名不能把@all等非成员目标变成可群发的可信员工。"""
+        for user in ("@all", "@ALL", "_member", ".member", "YNND|SIYU"):
+            with self.subTest(user=user):
+                self.assertEqual(self.post(self.xml(user=user)).status_code, 403)
+        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
 
     def test_post_is_durable_before_empty_ack_and_duplicate_has_no_new_intent(self):
         """落盘先于 ACK；相同 MsgId 不变成 BUSY，也不增加通知或 ADP 调用。"""

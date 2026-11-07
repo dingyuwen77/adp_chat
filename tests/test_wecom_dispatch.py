@@ -334,8 +334,13 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
             await worker._execute(record)
         key = record["message_key"]
         saved = self.gateway.store.get(key)
-        for state in ("SEND_ARMED", "SEND_ACCEPTED"):
-            saved = self.gateway.store.update(key, expected_version=saved["record_version"], send_state=state)
+        # D要求发送证据源；本测试只构造模拟终态，不制造真实平台接受证据。
+        for state in ("SEND_ARMED", "SEND_SIMULATED"):
+            details = {"state": state, "source": "simulated", "protocol_accepted": None,
+                       "accepted_parts": 1 if state == "SEND_SIMULATED" else None,
+                       "total_parts": 1, "code": "fixture", "provider_code": None}
+            saved = self.gateway.store.update(key, expected_version=saved["record_version"],
+                                              send_state=state, send_result=details)
         now = datetime.fromisoformat(saved["updated_at"])
         self.assertEqual(self.gateway.store.purge(now=now + timedelta(days=8)), 0)
         redacted = self.gateway.store.get(key)
@@ -416,15 +421,15 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         record = self.receive()
         self.gateway.close()
         path = self.root / "messages" / f"{record['message_key']}.json"
-        legacy = {k: v for k, v in record.items() if k not in {"record_version", "adp_result", "adp_error", "redacted", "updated_at"}}
+        legacy = {k: v for k, v in record.items() if k not in {"record_version", "adp_result", "adp_error", "redacted", "updated_at", "environment", "send_result"}}
         legacy["schema_version"] = 1
         path.write_text(json.dumps(legacy), encoding="utf-8")
         self.gateway = WeComGateway(self.config, logging.getLogger("wecom-c-test"))
         self.addCleanup(self.gateway.close)
         upgraded = self.gateway.store.get(record["message_key"])
-        self.assertEqual((upgraded["schema_version"], upgraded["adp_state"]), (2, "RECEIVED"))
+        self.assertEqual((upgraded["schema_version"], upgraded["adp_state"]), (3, "RECEIVED"))
         self.assertEqual(self.receive(), upgraded)
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 2)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 3)
 
     async def test_shutdown_during_disk_commit_reads_back_before_deciding_unknown(self):
         """取消to_thread不停止发布；武装提交变UNKNOWN，完成提交保持确定成功。"""

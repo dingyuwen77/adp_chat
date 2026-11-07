@@ -157,7 +157,7 @@ PyCharm 使用项目 `.venv` 运行上述 Probe 脚本；设置相同脚本参�
 
 ### 1.7 加密回调与可靠接收（阶段 B）
 
-这是本机协议模拟，不连接企业微信后台或发送员工消息。B 已实现正式回调、验签解密、企业/应用/员工校验、MsgId 去重和可靠快照；当前main已接入C异步ADP；先按1.8准备隔离Fake配置和Fake服务，再运行下列协议步骤。BUSY提示保存为PENDING等待D，ADP终态保存后释放占用；只有上一轮仍处理时才BUSY。
+这是本机协议模拟，不连接企业微信后台或发送员工消息。B 已实现正式回调、验签解密、企业/应用/员工校验、MsgId 去重和可靠快照；当前main已接入C异步ADP；先按1.8准备隔离Fake配置和Fake服务，再运行下列协议步骤。BUSY提示统一保存并交给D；默认disabled保持PENDING，显式simulated后闭合为SEND_SIMULATED，ADP终态保存后释放占用；只有上一轮仍处理时才BUSY。
 
 先按1.1安装依赖，在1.8的隔离测试配置中填写身份作用域；下例不修改含真实AppKey的根配置。初始化独立测试密钥：
 
@@ -240,11 +240,30 @@ Fake还支持`--mode reject --code 460031`、`disconnect`、`timeout`、`model-e
 
 真实ADP受控探测沿1.6执行，加`--async-client --config config.toml`即可验证C正式异步HTTPS/SSE；仍需显式`--execute-real-adp`和新输出路径，每个进程最多一次。先停Fake调试网关并移除其环境变量（`Remove-Item Env:ADP_CONFIG_FILE`），使用已发布测试应用、原真实逻辑作用域；不把Fake配置改成真实凭据。C已对SIYU一次安全文字探测取得正式completed，E再做完整跨进程两轮语义验收；不压力测试实际ADP、不改平台提示词。
 
-状态v2在首次网络调用前保存`ADP_SEND_ARMED`和UUID RequestId；终态、一次PENDING提示和本地释放同一原子快照。明确应用入口拒绝保留真实Code并提示手动重试；模型层QPM/TPM/余额/并发错误可能发生在工具之后，缺乏执行前证据时保守UNKNOWN。ReplyMethod7解释并发含义，但不编造Code或宣称未执行。UNKNOWN不是业务失败，也不保证旧云端请求停止；涉及会议须先核查。通知PENDING在C不会发送，不持续占用员工。
+状态v3（兼容B/C历史快照）在首次网络调用前保存`ADP_SEND_ARMED`和UUID RequestId；终态、一次PENDING提示和本地释放同一原子快照。明确应用入口拒绝保留真实Code并提示手动重试；模型层QPM/TPM/余额/并发错误可能发生在工具之后，缺乏执行前证据时保守UNKNOWN。ReplyMethod7解释并发含义，但不编造Code或宣称未执行。UNKNOWN不是业务失败，也不保证旧云端请求停止；涉及会议须先核查。当前通知模式默认disabled，显式simulated由D处理；发送状态不持续占用员工。
 
 Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共享删除读取；避免用持有普通文件句柄的编辑器/Get-Content持续轮询活动文件，Windows会阻止替换。更新使用保留ACL的ReplaceFileW，初次发布/Posix使用os.replace，均先flush/fsync；不是绕过写入失败。目录独占/版本/CAS检查，v1先全部校验再兼容升级；未知版本/损坏/原快照缺失但留暂存证据均保留现场并拒绝启动。此类发布故障需核查恢复，不能删除目录后盲重投。正常退出读回取消期间磁盘提交；已保存成功不会改写UNKNOWN，armed不确定结果不重投。
 
-启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。C没有实际发送，因此PENDING不会因时间清除；D/E继续完成发送与日志。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v2的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
+启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。默认disabled时PENDING不会因时间清除；D模拟发送可闭合，E继续完成日志。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v3的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
+
+### 1.9 统一通知与正式发送协议隔离测试（阶段 D）
+
+完整本机协议链路仍使用1.8的独立Fake配置，不需要真实企业微信Secret。将测试文件`[wecom].notification_mode="simulated"`、`gateway_environment="test"`后重启同一正式FastAPI；正常回答、BUSY、ADP拒绝和UNKNOWN都走同一Simulator，状态只会是SEND_SIMULATED。默认disabled继续保留PENDING。用1.7的`--inspect-state`查看环境、send_state与send_result.source，不显示正文、Token或Secret。
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -p test_wecom_sender.py -v
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_dispatch_smoke.py --simulate-notifications --report runtime/wecom-send-result.json
+```
+
+[tests/test_wecom_sender.py](../../tests/test_wecom_sender.py)通过Fake HTTP验证正式[src/wecom/sender.py](../../src/wecom/sender.py)：应用Token缓存/并发失效刷新、40014/42001一次纠正、2048 UTF8字节完整分片、HTTP200但业务错误、无效/未授权用户（忽略账号大小写）、@all群发/多人目标拒绝、消息网络未知、URL日志脱敏和用户会话独立。Fake HTTP即便解码到errcode0也只能产生SEND_SIMULATED/source=fake_http；protocol_accepted仅证明解码规则。Simulator为source=simulated，不代表任何企业微信API调用。
+
+[tests/wecom_dispatch_smoke.py](../../tests/wecom_dispatch_smoke.py)加上述flag后，真实独立Uvicorn+Fake ADP完成100员工/30名额、加密回调→ADP→已存提示→Simulator；另在SEND_ARMED后的模拟出口挂起并强杀自有网关，重启只记SEND_UNKNOWN，不重新发送旧通知。也保留ADP强杀恢复及独立员工/新消息验收。结束清理自有进程/监听/临时数据，无真实员工消息。
+
+通知状态和ADP状态独立。PENDING可恢复首次发送；SEND_ARMED后的崩溃、断线或响应丢失不能盲重发。明确发送失败或发送未知不再问ADP、不持续锁员工、不生成失败通知的失败通知；磁盘失败仍保留现场并停止不可靠接收。长文字只有全部分片确认才闭合，部分发送失败不重发已接受前片。API接受不表示员工在线、已读或客户端已展示。
+
+v1/v2先校验后兼容升级到v3，保存环境和发送证据源。测试目录不能切成production直接复用；旧记录若已有无法证明的发送终态，拒绝启动而非补造真实接受。已模拟完成的数据用独立测试目录按7/30天策略清理，不能计作真实SEND_ACCEPTED；UNKNOWN保留核查证据且不锁用户。回退必须停网关并备份全部状态，恢复兼容配置，禁止旧代码继续处理新格式。
+
+真实模式`wecom`要求`gateway_environment="production"`及未提交的本机应用Secret，属于未实施的F。本次不填写真实Secret、不启用该模式、不配置企业微信后台或可信出口IP。F前仍需管理员确认回调归属、可达地址/证书、应用可见范围/权限、出口IP、新生产状态目录及真实两员工端到端验收；本机Fake成功不替代这些检查。
 
 ## 二、Linux 服务器部署
 

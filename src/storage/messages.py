@@ -16,13 +16,14 @@ from uuid import UUID
 from core.config import ChatConfig
 from core.identity import employee_identity
 from core.models import ChatError
-from wecom.models import InboundMessage
+from wecom.models import InboundMessage, is_employee_id
 
 
 ACTIVE_ADP = {"RECEIVED", "ADP_SEND_ARMED"}
 FINAL_ADP = {"ADP_SUCCEEDED", "ADP_REJECTED", "ADP_UNKNOWN", "REJECTED_USER_BUSY"}
 FINAL_SEND = {"SEND_ACCEPTED", "SEND_SIMULATED", "SEND_FAILED", "SEND_UNKNOWN"}
 _V2_FIELDS = {"record_version", "adp_result", "adp_error", "redacted", "updated_at"}
+_V3_FIELDS = {"send_result", "environment"}
 
 
 def message_key(corp_id: str, agent_id: int, msg_id: str) -> str:
@@ -154,10 +155,12 @@ class MessageStore:
                 temporary.unlink()
             # 全部历史先校验，再逐条原子升级；中途故障可从v1/v2混合目录安全重开。
             for key, record in list(self._messages.items()):
-                if record["schema_version"] == 1:
-                    upgraded = {**record, "schema_version": 2, "record_version": 1,
-                                "adp_result": None, "adp_error": None, "redacted": False,
-                                "updated_at": record["received_at"]}
+                if record["schema_version"] < 3:
+                    upgraded = dict(record)
+                    if record["schema_version"] == 1:
+                        upgraded.update(record_version=1, adp_result=None, adp_error=None, redacted=False,
+                                        updated_at=record["received_at"])
+                    upgraded.update(schema_version=3, environment="test", send_result=None)
                     self._validate(upgraded, key)
                     self._write(upgraded)
                     self._messages[key] = upgraded
@@ -180,7 +183,7 @@ class MessageStore:
                 raise ValueError("field")
         if (type(record.get("agent_id")) is not int or record["corp_id"] != self.config.corp_id
                 or record["agent_id"] != self.config.agent_id
-                or not re.fullmatch(r"[A-Za-z0-9_@.\-]{1,64}", record["user_id"])
+                or not is_employee_id(record["user_id"])
                 or not record["content"].strip()
                 or not re.fullmatch(r"[0-9]{1,32}", record["msg_id"])
                 or type(record.get("create_time")) is not int or record["create_time"] < 0
@@ -204,7 +207,7 @@ class MessageStore:
         else:
             raise ValueError("adp state")
 
-    def _validate(self, record: object, key: str) -> None:
+    def _validate_v2(self, record: object, key: str) -> None:
         """v1兼容读取；v2按ADP和发送两个维度严格恢复，不接受歧义组合。"""
         if not isinstance(record, dict) or type(record.get("schema_version")) is not int:
             raise ValueError("schema")
@@ -249,7 +252,7 @@ class MessageStore:
                 if state in {"ADP_REJECTED", "ADP_UNKNOWN"} and not isinstance(record["adp_error"], dict):
                     raise ValueError("error")
         if record["redacted"] and (record["content"] is not None or record["notification"] is not None
-                or record["adp_result"] is not None or state == "ADP_UNKNOWN" or send != "SEND_ACCEPTED"):
+                or record["adp_result"] is not None or state == "ADP_UNKNOWN" or send not in {"SEND_ACCEPTED", "SEND_SIMULATED"}):
             raise ValueError("redaction")
         if busy and (record["adp_result"] is not None or record["adp_error"] is not None):
             raise ValueError("busy result")
@@ -265,6 +268,47 @@ class MessageStore:
         if error is not None and (not isinstance(error, dict) or not isinstance(error.get("code"), str)
                 or not isinstance(error.get("provider_code"), (str, type(None)))):
             raise ValueError("error")
+
+    def _validate(self, record: object, key: str) -> None:
+        """新快照绑定环境与发送证据源，Fake成功不能冒充平台接受。"""
+        if not isinstance(record, dict) or type(record.get("schema_version")) is not int:
+            raise ValueError("schema")
+        if record["schema_version"] in (1, 2):
+            if self.config.gateway_environment != "test" or record["send_state"] not in {"NONE", "PENDING"}:
+                raise ValueError("legacy send evidence")
+            return self._validate_v2(record, key)
+        if record["schema_version"] != 3 or not _V3_FIELDS <= set(record):
+            raise ValueError("schema")
+        projection = {k: v for k, v in record.items() if k not in _V3_FIELDS}
+        projection["schema_version"] = 2
+        self._validate_v2(projection, key)
+        if record["environment"] != self.config.gateway_environment:
+            raise ValueError("environment")
+        result, state = record["send_result"], record["send_state"]
+        if state in {"NONE", "PENDING"}:
+            if result is not None:
+                raise ValueError("unexpected send result")
+            return
+        fields = {"state", "source", "protocol_accepted", "accepted_parts", "total_parts", "code", "provider_code"}
+        if (not isinstance(result, dict) or set(result) != fields or result["state"] != state
+                or result["source"] not in {"simulated", "fake_http", "wecom_api", "recovery"}
+                or not isinstance(result["code"], str) or not result["code"]
+                or (result["protocol_accepted"] is not None and type(result["protocol_accepted"]) is not bool)
+                or (result["provider_code"] is not None and type(result["provider_code"]) is not int)):
+            raise ValueError("send result")
+        accepted, total = result["accepted_parts"], result["total_parts"]
+        if (accepted is not None and (type(accepted) is not int or accepted < 0)
+                or total is not None and (type(total) is not int or total < 1)
+                or accepted is not None and total is not None and accepted > total):
+            raise ValueError("parts")
+        if record["environment"] == "test" and result["source"] == "wecom_api":
+            raise ValueError("test evidence")
+        if state == "SEND_ACCEPTED" and (result["source"] != "wecom_api" or result["protocol_accepted"] is not True):
+            raise ValueError("acceptance evidence")
+        if state == "SEND_SIMULATED" and (record["environment"] != "test" or result["source"] not in {"simulated", "fake_http"}):
+            raise ValueError("simulation evidence")
+        if state in {"SEND_ACCEPTED", "SEND_SIMULATED"} and (total is None or accepted != total):
+            raise ValueError("incomplete acceptance")
 
     def _write(self, record: dict) -> None:
         """可靠发布单快照；任何提交异常关闭接收，避免磁盘与索引分裂。"""
@@ -312,7 +356,8 @@ class MessageStore:
             identity = employee_identity(self.config, message.user_id)
             busy = identity.conversation_id in self._occupied
             record = {
-                "schema_version": 2, "record_version": 1, "adp_result": None, "adp_error": None,
+                "schema_version": 3, "environment": self.config.gateway_environment, "send_result": None,
+                "record_version": 1, "adp_result": None, "adp_error": None,
                 "redacted": False, "message_key": key, **asdict(message),
                 "receive_sequence": self._sequence + 1,
                 "received_at": datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="milliseconds"),
@@ -349,7 +394,7 @@ class MessageStore:
                 raise _storage_error()
             previous = self._messages.get(key)
             allowed_fields = {"adp_state", "request_id", "adp_result", "adp_error", "notification",
-                              "notification_kind", "send_state"}
+                              "notification_kind", "send_state", "send_result"}
             if previous is None or previous["record_version"] != expected_version or not set(changes) <= allowed_fields:
                 raise _storage_error("version_conflict")
             record = {**previous, **deepcopy(changes), "record_version": expected_version + 1,
@@ -357,8 +402,8 @@ class MessageStore:
             before, after = previous["adp_state"], record["adp_state"]
             allowed = before == after or (before == "RECEIVED" and after == "ADP_SEND_ARMED") or (before == "ADP_SEND_ARMED" and after in FINAL_ADP - {"REJECTED_USER_BUSY"})
             sends = {"NONE": {"NONE", "PENDING"}, "PENDING": {"SEND_ARMED", "SEND_SIMULATED"},
-                     "SEND_ARMED": {"SEND_ACCEPTED", "SEND_FAILED", "SEND_UNKNOWN"}}
-            if (not allowed or (before == after and before in FINAL_ADP and set(changes) - {"send_state"})
+                     "SEND_ARMED": {"SEND_ACCEPTED", "SEND_SIMULATED", "SEND_FAILED", "SEND_UNKNOWN"}}
+            if (not allowed or (before == after and before in FINAL_ADP and set(changes) - {"send_state", "send_result"})
                     or (previous["request_id"] is not None and record["request_id"] != previous["request_id"])
                     or (record["send_state"] != previous["send_state"] and record["send_state"] not in sends.get(previous["send_state"], set()))):
                 raise _storage_error("invalid_transition")
@@ -390,7 +435,7 @@ class MessageStore:
                 raise _storage_error()
             for key, old in list(self._messages.items()):
                 if (old["adp_state"] in ACTIVE_ADP | {"ADP_UNKNOWN"}
-                        or old["send_state"] not in {"SEND_ACCEPTED", "SEND_FAILED"}):
+                        or old["send_state"] not in {"SEND_ACCEPTED", "SEND_SIMULATED", "SEND_FAILED"}):
                     continue
                 age = now - datetime.fromisoformat(old["received_at"])
                 accepted_age = now - datetime.fromisoformat(old["updated_at"])
@@ -402,7 +447,7 @@ class MessageStore:
                         raise _storage_error() from None
                     del self._messages[key]
                     removed += 1
-                elif accepted_age >= timedelta(days=7) and old["send_state"] == "SEND_ACCEPTED" and not old["redacted"]:
+                elif accepted_age >= timedelta(days=7) and old["send_state"] in {"SEND_ACCEPTED", "SEND_SIMULATED"} and not old["redacted"]:
                     record = {**old, "content": None, "notification": None, "adp_result": None,
                               "redacted": True, "record_version": old["record_version"] + 1}
                     self._validate(record, key)
