@@ -19,7 +19,7 @@ include-package-data = false
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true
-include = ["adp", "adp.*", "api", "api.*", "application", "application.*", "cli", "cli.*", "core", "core.*", "storage", "storage.*"]
+include = ["adp", "adp.*", "api", "api.*", "application", "application.*", "cli", "cli.*", "core", "core.*", "storage", "storage.*", "wecom", "wecom.*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

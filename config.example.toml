@@ -40,6 +40,16 @@ corp_id = ""
 agent_id = 0
 # 固定逻辑应用名，不能用可轮换 AppKey；上线后不要静默修改。
 adp_application = ""
+# 默认关闭；B 只可靠接收，尚不提交 ADP 或发送通知。
+gateway_enabled = false
+# 独立测试密钥在本机生成后填写，真实 F 凭据不得提交 Git。
+callback_token = ""
+encoding_aes_key = ""
+# 相对路径基于本配置目录，与旧单用户 session_file 分开。
+messages_dir = "runtime/messages"
+# 物理接收保护，不是 ADP 模型业务并发配额；触发时拒绝成功 ACK。
+callback_max_bytes = 65536
+max_unfinished_messages = 2000
 
 [logging]
 # true 写本地日志；false 不创建日志。问答可能含业务信息，请按需关闭。

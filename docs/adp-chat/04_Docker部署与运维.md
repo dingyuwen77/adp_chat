@@ -155,6 +155,55 @@ adp_application = "wecom-local-test"
 
 PyCharm 使用项目 `.venv` 运行上述 Probe 脚本；设置相同脚本参数，在身份函数和正式 ADP `chat()` 设置断点。此处仅提供配置方法，不代表已实际操作 PyCharm GUI；FastAPI 调试方式仍见上一节。
 
+### 1.7 加密回调与可靠接收（阶段 B）
+
+这是本机协议模拟，不连接企业微信后台或发送员工消息。B 已实现正式回调、验签解密、企业/应用/员工校验、MsgId 去重和可靠快照；**尚不调用 ADP、不发送 BUSY 通知**。BUSY 提示先保存为 PENDING，交给 D；RECEIVED 占用的释放由 C 的终态处理实现，因此本阶段同员工的新消息仍会 BUSY，不能靠反复发新 MsgId 绕过占用。
+
+先按 1.1 安装当前依赖，确认 1.6 的身份作用域已填写。然后在现有未纳入 Git 的根配置中初始化独立测试密钥：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --init-test-keys
+```
+
+这个命令只填充空测试 Token/EncodingAESKey，并将 `[wecom].gateway_enabled` 打开，不显示密钥；已有任何回调凭据或已启用网关时拒绝覆盖，保留原 AppKey、用户、路径和资源值。Windows 用 ReplaceFile 保留原配置 ACL。整个服务仍只从原有 `config.toml` / `ADP_CONFIG_FILE` 读取配置，不另建秘密来源。完整字段和默认值见 [config.example.toml](../../config.example.toml)。
+
+在独立终端启动同一正式应用（单 worker），也可按 1.4 在 PyCharm 运行模块 `uvicorn`：
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+在另一个终端，用 [tests/wecom_callback_client.py](../../tests/wecom_callback_client.py) 调正式 GET/POST：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --verify-url
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id YNND --msg-id 10001 --message "本地第一条"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id YNND --msg-id 10001 --message "相同 MsgId 的重复回调"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id YNND --msg-id 10002 --message "同员工忙碌拒绝"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id SIYU --msg-id 10003 --message "另一员工独立接收"
+```
+
+正常输出包含 `source=test_fixture`、`cloud_identity_verified=false`、HTTP 200 和 `expected_ack=true`。GET 原样返回解密 echo；POST 可靠保存后返回空包。相同 MsgId 的第二条只 ACK，原正文/接收决定不改变；新 MsgId 的忙碌拒绝会留下独立快照，SIYU 可独立获准。测试客户端只允许 loopback HTTP 地址，复用正式加密实现，没有跳过签名的服务端接口。
+
+查看状态（以下只显示必要标识和状态，不展示问答正文）：
+
+```powershell
+Get-ChildItem runtime/messages -Filter *.json | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Select-Object message_key,user_id,msg_id,adp_state,send_state
+```
+
+JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文件只负责目录独占，不是第二套员工状态。两个进程不能同时使用同一 `messages_dir`；PyCharm 与 Docker 的目录也应隔离。损坏或未知版本的快照会阻止启动，保留现场排查，不自动删除或当新消息处理。写入失败后不返回成功 ACK，并关闭后续接收直到重启核验快照；现有去重记录正常时，重复回调无需新写盘。
+
+默认入站上限 65536 字节、最多 2000 条未完成接收记录；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。JSONL 到 E 再实现。
+
+稳定回归与不占用现有目录的真实 HTTP 验收：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -p test_wecom_callback.py -v
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_local_smoke.py --report runtime/wecom-http-result.json
+```
+
+[tests/test_wecom_callback.py](../../tests/test_wecom_callback.py) 覆盖坏签名、密文/填充/长度、内外身份、恶意 XML/超大包、真实并发、fsync/replace 失败、损坏快照和配置安全初始化。[tests/wecom_local_smoke.py](../../tests/wecom_local_smoke.py) 自动创建临时测试配置和目录，启动/关闭两个正式 Uvicorn 进程，验证 HTTP 接线、跨进程去重/占用恢复及端口释放，随后删除自有临时数据；不调用 ADP。需要反复试验时优先用这个隔离入口，不手改现有消息快照。正式配置及人工测试快照需按本地数据管理要求备份/清理，不能把“ACK 成功”写成 ADP 完成或真实企微送达。
+
 ## 二、Linux 服务器部署
 
 ### 2.1 本机打包与手动上传

@@ -14,10 +14,10 @@ HTTP 请求响应模型以 [src/api/schemas.py](../src/api/schemas.py) 为准；
 - [examples/http_client.py](../examples/http_client.py)：Python 标准库请求 `http://10.102.70.82:4560/api/v1/chat`，打印正式结果及关联 ID。
 - [examples/http_client.ps1](../examples/http_client.ps1)：Windows PowerShell 远程调用；支持指定服务器地址和本轮文字。
 
-## 企业微信接入（HTTP 本地联调先行，网关尚未实现）
+## 企业微信接入（A 身份与 B 接收已实现）
 
 1. [docs/wecom-integration/01_网关架构设计.md](wecom-integration/01_网关架构设计.md)：企业微信回调、身份、同用户忙碌即拒绝、跨用户异步并发、ADP UNKNOWN 释放、独立发送状态。
 2. [docs/wecom-integration/02_结构化日志事件.md](wecom-integration/02_结构化日志事件.md)：网关 JSONL/Cosmos DB 日志设计，尚非已部署能力。
 3. [docs/wecom-integration/03_实施路线图.md](wecom-integration/03_实施路线图.md)：A～E 的 HTTP 本地/内网阶段和 F 的真实接入门禁、逐阶段验收。
 
-> 通用单用户 FastAPI 和离线部署脚本已有实现；具体服务器是否通过部署、ADP 连通和跨机访问验收，以该环境的实际结果为准。企业微信回调、消息调度、JSONL 与 Cosmos DB 目前均未实现。A～E 的 HTTP 模拟联调不要求公网回调，但不等于企业微信员工实际收发；F 需要额外的外部可达入口与真实应用验收。
+> 通用单用户 FastAPI 和离线部署脚本已有实现；具体服务器是否通过部署、ADP 连通和跨机访问验收，以该环境的实际结果为准。企业微信加密回调、身份与可靠接收已本地验证；消息调度、发送、JSONL 与 Cosmos DB 尚未实现。A～E 的 HTTP 模拟联调不要求公网回调，但不等于企业微信员工实际收发；F 需要额外的外部可达入口与真实应用验收。
