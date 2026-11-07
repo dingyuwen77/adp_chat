@@ -12,40 +12,59 @@ CHAT_URL = "https://wss.lke.cloud.tencent.com/adp/v2/chat"
 _LINE_BREAK = re.compile(rb"\r\n|\r|\n")
 
 
-def _lines(response) -> Iterator[bytes]:
-    """流式读取 LF、CRLF 和 CR 行，并处理跨网络块的 CRLF。"""
-    pending = bytearray()
-    after_cr = False
-    while chunk := response.read1(65536):
-        start = int(after_cr and chunk.startswith(b"\n"))
+class SSEDecoder:
+    """同步和异步传输共用逐块 UTF-8/SSE 解析，EOF不补造未闭合事件。"""
+
+    def __init__(self):
+        """保留跨块CRLF、中文与事件帧的少量解析状态。"""
+        self.pending = bytearray()
+        self.after_cr = False
+        self.first = True
+        self.name = ""
+        self.data = []
+
+    def feed(self, chunk: bytes):
+        """以完整行解码并仅在空行返回事件，兼容BOM和多行data。"""
+        start = int(self.after_cr and chunk.startswith(b"\n"))
         for end in _LINE_BREAK.finditer(chunk, start):
-            pending.extend(chunk[start:end.start()])
-            yield bytes(pending)
-            pending.clear()
+            self.pending.extend(chunk[start:end.start()])
+            line = self.pending.decode("utf-8-sig" if self.first else "utf-8")
+            self.first = False
+            self.pending.clear()
             start = end.end()
-        pending.extend(chunk[start:])
-        after_cr = chunk.endswith(b"\r")
+            if not line:
+                if self.data:
+                    yield self.name, "\n".join(self.data)
+                self.name, self.data = "", []
+            else:
+                field, _, value = line.partition(":")
+                value = value.removeprefix(" ")
+                if field == "event":
+                    self.name = value.strip()
+                elif field == "data":
+                    self.data.append(value)
+        self.pending.extend(chunk[start:])
+        self.after_cr = chunk.endswith(b"\r")
+
+
+def decode_event(name: str, data: str) -> tuple[str, dict] | None:
+    """共用V2 JSON投影；不在传输层判断ADP业务或副作用。"""
+    if data == "[DONE]":
+        return None
+    event = json.loads(data)
+    if not isinstance(event, dict):
+        raise ChatError("chat", "invalid_event", "SSE 事件的数据结构无效。")
+    kind = event.get("Type") or name
+    if not isinstance(kind, str):
+        raise ChatError("chat", "invalid_event", "SSE 事件类型无效。")
+    return kind, event
 
 
 def _frames(response) -> Iterator[tuple[str, str]]:
     """按空行切分 SSE 事件，丢弃断流时尚未闭合的事件。"""
-    name = ""
-    lines = []
-    for index, raw_line in enumerate(_lines(response)):
-        encoding = "utf-8-sig" if index == 0 else "utf-8"
-        line = raw_line.decode(encoding)
-        if not line:
-            if lines:
-                yield name, "\n".join(lines)
-            name = ""
-            lines = []
-            continue
-        field, _, value = line.partition(":")
-        value = value.removeprefix(" ")
-        if field == "event":
-            name = value.strip()
-        elif field == "data":
-            lines.append(value)
+    decoder = SSEDecoder()
+    while chunk := response.read1(65536):
+        yield from decoder.feed(chunk)
 
 
 def stream_events(payload: dict, timeout: float) -> Iterator[tuple[str, dict]]:
@@ -62,15 +81,10 @@ def stream_events(payload: dict, timeout: float) -> Iterator[tuple[str, dict]]:
             if content_type != "text/event-stream":
                 raise ChatError("chat", "invalid_response", "对话服务没有返回 SSE 流。")
             for name, data in _frames(response):
-                if data == "[DONE]":
+                decoded = decode_event(name, data)
+                if decoded is None:
                     return
-                event = json.loads(data)
-                if not isinstance(event, dict):
-                    raise ChatError("chat", "invalid_event", "SSE 事件的数据结构无效。")
-                kind = event.get("Type") or name
-                if not isinstance(kind, str):
-                    raise ChatError("chat", "invalid_event", "SSE 事件类型无效。")
-                yield kind, event
+                yield decoded
     except (UnicodeError, json.JSONDecodeError):
         raise ChatError("chat", "invalid_event", "SSE 事件不是有效的 UTF-8 JSON。") from None
     except TimeoutError:

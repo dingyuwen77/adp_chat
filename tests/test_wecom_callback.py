@@ -26,6 +26,19 @@ from wecom.crypto import WeComCrypto
 from wecom_callback_client import initialize_test_keys
 
 
+class PausedWorker:
+    """B协议/接收隔离测试固定下游未启动；C另测真实worker且不绕过验签。"""
+
+    def __init__(self, *_args):
+        """不接管任何状态，保留RECEIVED直到接收断言结束。"""
+
+    async def start(self):
+        """接收专项没有ADP出站，不读取真实配置。"""
+
+    async def stop(self):
+        """没有创建后台任务或外部副作用。"""
+
+
 class CallbackTests(unittest.TestCase):
     """从正式 HTTP 边界验证，没有绕过签名的测试路由。"""
 
@@ -44,6 +57,9 @@ class CallbackTests(unittest.TestCase):
             log_enabled=False,
         )
         self.app = create_app()
+        worker = patch("api.app.GatewayWorker", PausedWorker)
+        worker.start()
+        self.addCleanup(worker.stop)
         configuration = patch("api.app.load_config", return_value=self.config)
         configuration.start()
         self.addCleanup(configuration.stop)
@@ -248,7 +264,7 @@ class CallbackTests(unittest.TestCase):
         self.app.state.wecom_gateway.store.close()
         path = next((self.root / "messages").glob("*.json"))
         original = json.loads(path.read_text(encoding="utf-8"))
-        for content in (b"broken json", json.dumps({**original, "schema_version": 2}).encode(),
+        for content in (b"broken json", json.dumps({**original, "schema_version": 999}).encode(),
                         json.dumps({**original, "request_id": "unexpected"}).encode()):
             path.write_bytes(content)
             with self.subTest(content=content[:12]), self.assertRaises(ChatError):

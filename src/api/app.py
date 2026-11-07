@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 
 from application.chat_service import ChatService
 from application.wecom_gateway import WeComGateway
+from application.wecom_worker import GatewayWorker
+from adp.async_client import AsyncADPClient
 from core.config import load_config
 from core.logging import CallbackAccessFilter, diagnostic_logger
 from core.models import ChatError
@@ -34,7 +36,16 @@ async def lifespan(app: FastAPI):
             access.addFilter(access_filter)
             resources.callback(access.removeFilter, access_filter)
             app.state.wecom_gateway = gateway
-        yield
+            adp = AsyncADPClient(config)
+            worker = GatewayWorker(gateway, adp)
+            try:
+                await worker.start()
+                yield
+            finally:
+                await worker.stop()
+                await adp.aclose()
+        else:
+            yield
 
 
 def _error(status: int, code: str, stage: str, message: str, request_id: str | None = None) -> JSONResponse:

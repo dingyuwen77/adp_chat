@@ -1,4 +1,4 @@
-"""企业微信可靠接收编排；阶段 B 只接收，不调 ADP 或发送消息。"""
+"""企业微信可靠接收编排，沿同一快照通知后台首次转发。"""
 
 import re
 
@@ -17,6 +17,7 @@ class WeComGateway:
         self.logger = logger
         self.crypto = WeComCrypto(config.callback_token, config.encoding_aes_key, config.corp_id)
         self.store = MessageStore(config)
+        self.worker = None
 
     def decode(self, body: bytes, timestamp: str, nonce: str, signature: str) -> InboundMessage | None:
         """认证内外企业/应用与员工；非文字事件只忽略，不创建聊天任务。"""
@@ -44,9 +45,14 @@ class WeComGateway:
 
     def receive(self, message: InboundMessage) -> dict:
         """持久化成功才交回 ACK 决策，不记录员工身份、正文或密文。"""
+        if self.worker is not None and self.worker.failure is not None:
+            from core.models import ChatError
+            raise ChatError("gateway_storage", "dispatcher_unavailable", "后台状态处理不可用。")
         record, created = self.store.put_if_absent(message)
         self.logger.info("wecom_callback_received message_key=%s decision=%s duplicate=%s",
                          record["message_key"], record["adp_state"], not created)
+        if created and self.worker is not None:
+            self.worker.wake()
         return record
 
     def close(self) -> None:

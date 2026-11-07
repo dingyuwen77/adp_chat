@@ -83,6 +83,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=default_config_path())
     parser.add_argument("--init-test-keys", action="store_true")
+    parser.add_argument("--inspect-state", action="store_true", help="只读共享快照标识/状态，不显示正文或调用网络")
     parser.add_argument("--url", default="http://127.0.0.1:8000")
     parser.add_argument("--verify-url", action="store_true")
     parser.add_argument("--user-id", default="YNND")
@@ -96,6 +97,14 @@ def main(argv=None) -> int:
             print(json.dumps({"test_keys_initialized": True, "secrets_displayed": False}))
             return 0
         config = load_config(args.config)
+        if args.inspect_state:
+            from storage.messages import read_snapshot
+
+            fields = ("message_key", "user_id", "msg_id", "adp_state", "send_state", "request_id", "record_version")
+            records = [{k: r.get(k) for k in fields} for p in Path(config.messages_dir).glob("*.json")
+                       if (r := read_snapshot(p))]
+            print(json.dumps({"source": "local_snapshot", "records": records}, ensure_ascii=False))
+            return 0
         if not config.gateway_enabled:
             raise ValueError("请先在现有配置启用测试网关")
         target = urlsplit(args.url)

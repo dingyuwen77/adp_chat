@@ -2,19 +2,23 @@
 
 import asyncio
 import base64
+import contextlib
+import io
 import json
 import logging
 import os
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 from uuid import uuid4
 
 import httpx
 
-from adp.async_client import AsyncADPClient
+from adp.async_client import AsyncADPClient, unknown_outcome
 from application.wecom_gateway import WeComGateway
 from application.wecom_worker import GatewayWorker
 from core.config import ChatConfig
@@ -84,7 +88,7 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.config = ChatConfig("fake-c-key", "legacy", corp_id="wwf483023b734c570a", agent_id=1000053,
-            adp_application="wecom-c-fixture", gateway_enabled=True, callback_token="testC123",
+            adp_application="wecom-c-fixture", gateway_enabled=True, callback_token=os.urandom(12).hex(),
             encoding_aes_key=base64.b64encode(os.urandom(32)).decode()[:-1],
             messages_dir=str(self.root / "messages"), session_file=str(self.root / "legacy.json"), log_enabled=False)
         self.gateway = WeComGateway(self.config, logging.getLogger("wecom-c-test"))
@@ -196,7 +200,7 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeADP()
         async with httpx.AsyncClient(transport=httpx.MockTransport(fake.handle)) as http:
             worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http))
-            with patch("storage.messages.os.replace", side_effect=OSError("disk full")):
+            with patch("storage.messages._publish", side_effect=OSError("disk full")):
                 await worker.start()
                 await self.wait_for(lambda: worker.failure is not None)
             self.assertEqual(fake.calls, [])
@@ -263,6 +267,221 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.gateway.store.get(key), armed)
         self.assertEqual(self.gateway.store.purge(), 0)
         self.assertTrue(self.gateway.store.list_unfinished())
+
+    async def test_snapshot_reader_does_not_block_atomic_publication(self):
+        """Windows监视读取需共享DELETE权限，不能使正常结果保存变成WinError5。"""
+        from storage.messages import _snapshot_reader, read_snapshot
+
+        original = self.receive()
+        path = self.root / "messages" / f"{original['message_key']}.json"
+        with _snapshot_reader(path) as reader:
+            armed = self.gateway.store.update(original["message_key"], expected_version=original["record_version"],
+                                             adp_state="ADP_SEND_ARMED", request_id=str(uuid4()))
+            self.assertEqual(json.load(reader)["adp_state"], "RECEIVED")
+        self.assertEqual(read_snapshot(path)["request_id"], armed["request_id"])
+
+    async def test_stale_dispatch_snapshot_is_not_a_fatal_worker_error(self):
+        """扫描副本过时只能输掉CAS，不能把已完成请求误判成全局存储故障。"""
+        record = self.receive()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200,
+            headers={"Content-Type": "text/event-stream"}, content=answer(json.loads(r.content))))) as http:
+            worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http))
+            await worker._execute(record)
+            await worker._execute(record)
+            self.assertIsNone(worker.failure)
+            self.assertEqual(self.gateway.store.get(record["message_key"])["adp_state"], "ADP_SUCCEEDED")
+
+    async def test_result_commit_failure_preserves_armed_and_recovers_unknown_without_call(self):
+        """已执行却结果未保存时保留armed，重启只能未知，不再询问ADP。"""
+        record = self.receive()
+        calls = []
+
+        async def reply(request):
+            """只在结果发布阶段注入磁盘错误，武装已成功。"""
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=answer(calls[-1]))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+            worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http))
+            original = self.gateway.store._write
+
+            def fail_result(value):
+                """正式_write的发布异常必须让store失效，不能只丢返回值。"""
+                if value["adp_state"] == "ADP_SUCCEEDED":
+                    with patch("storage.messages._publish", side_effect=OSError("disk full")):
+                        return original(value)
+                return original(value)
+
+            with patch.object(self.gateway.store, "_write", side_effect=fail_result):
+                await worker._execute(record)
+            self.assertIsNotNone(worker.failure)
+            self.assertEqual(self.gateway.store.get(record["message_key"])["adp_state"], "ADP_SEND_ARMED")
+            self.gateway.close()
+            self.gateway = WeComGateway(self.config, logging.getLogger("wecom-c-test"))
+            self.addCleanup(self.gateway.close)
+            recovering = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http))
+            await recovering.start()
+            await recovering.stop()
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(self.gateway.store.get(record["message_key"])["adp_state"], "ADP_UNKNOWN")
+
+    async def test_retention_never_deletes_unknown_or_pending_and_keeps_dedup(self):
+        """已接受后7天脱敏、首次接收30天去重；未知不能按年龄丢弃。"""
+        record = self.receive()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200,
+            headers={"Content-Type": "text/event-stream"}, content=answer(json.loads(r.content))))) as http:
+            worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http))
+            await worker._execute(record)
+        key = record["message_key"]
+        saved = self.gateway.store.get(key)
+        for state in ("SEND_ARMED", "SEND_ACCEPTED"):
+            saved = self.gateway.store.update(key, expected_version=saved["record_version"], send_state=state)
+        now = datetime.fromisoformat(saved["updated_at"])
+        self.assertEqual(self.gateway.store.purge(now=now + timedelta(days=8)), 0)
+        redacted = self.gateway.store.get(key)
+        self.assertIsNone(redacted["content"])
+        self.assertIsNone(redacted["notification"])
+        self.assertEqual(self.receive(), redacted)
+        unknown = self.receive("SIYU", "2")
+        armed = self.gateway.store.update(unknown["message_key"], expected_version=1,
+                                         adp_state="ADP_SEND_ARMED", request_id=str(uuid4()))
+        await worker._finish(armed, unknown_outcome())
+        self.assertEqual(self.gateway.store.purge(now=now + timedelta(days=31)), 1)
+        self.assertIsNone(self.gateway.store.get(key))
+        self.assertEqual(self.gateway.store.get(unknown["message_key"])["adp_state"], "ADP_UNKNOWN")
+
+    async def test_partial_windows_replacement_failure_cannot_erase_execution_boundary(self):
+        """ReplaceFileW少数错误可移动原文件；必须保留暂存证据并阻止盲目空目录恢复。"""
+        record = self.receive()
+        path = self.root / "messages" / f"{record['message_key']}.json"
+
+        def lost_original(source, target):
+            """模拟官方1176类故障：原文件已移除，完整替换文件仍在。"""
+            target.unlink()
+            raise OSError("replacement outcome uncertain")
+
+        with patch("storage.messages._publish", side_effect=lost_original), self.assertRaises(ChatError):
+            self.gateway.store.update(record["message_key"], expected_version=1,
+                                      adp_state="ADP_SEND_ARMED", request_id=str(uuid4()))
+        self.gateway.close()
+        self.assertFalse(path.exists())
+        self.assertTrue(list(path.parent.glob(".message-*.tmp")))
+        with self.assertRaises(ChatError):
+            MessageStore(self.config)
+
+    async def test_bad_http_streams_are_unknown_once_and_always_closed(self):
+        """HTTP状态、断流、畸形JSON/身份和物理大小保护不自动重试或伪造成功。"""
+        record = {**self.receive(), "request_id": str(uuid4())}
+        responses = [
+            httpx.Response(429, content=b"private upstream body"),
+            httpx.Response(200, headers={"Content-Type": "application/json"}, content=b"{}"),
+            httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=b"data: invalid\n\n"),
+            httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=b"data: {}"),
+            httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=frame("request_ack", RequestAck={"Status": "success", "ConversationId": "wrong"})),
+            httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=frame("response.completed", Response={"Status": "failed"})),
+            httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=b":" + b"a" * 17000),
+        ]
+        for response in responses:
+            calls = []
+
+            def handle(request):
+                """只计真实传输调用；失败后任何第二次请求都会被断言发现。"""
+                calls.append(request)
+                return response
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+                outcome = await AsyncADPClient(replace(self.config, adp_response_max_bytes=16384), http_client=http).request(record)
+            self.assertEqual(outcome.state, "ADP_UNKNOWN")
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(response.is_closed)
+            self.assertNotIn("private", outcome.notification)
+
+    async def test_factory_does_not_enable_tls_keylog_redirects_retry_or_model_connection_quota(self):
+        """真正HTTP工厂的参数有安全/并发意义，不能只靠注入Mock证明。"""
+        fake = FakeADP()
+        transport = httpx.MockTransport(fake.handle)
+        with patch("adp.async_client.httpx.AsyncHTTPTransport", return_value=transport) as factory:
+            client = AsyncADPClient(self.config)
+            options = factory.call_args.kwargs
+            self.assertEqual(options["retries"], 0)
+            self.assertIsNone(options["limits"].max_connections)
+            self.assertTrue(options["verify"].check_hostname)
+            self.assertIsNone(options["verify"].keylog_filename)
+            self.assertFalse(client.http.follow_redirects)
+            self.assertFalse(client.http.trust_env)
+            await client.aclose()
+
+    async def test_v1_upgrade_is_compatible_and_preserves_admission_fact(self):
+        """B的历史文件先完整校验再升级，不把已接收记录当作新消息。"""
+        record = self.receive()
+        self.gateway.close()
+        path = self.root / "messages" / f"{record['message_key']}.json"
+        legacy = {k: v for k, v in record.items() if k not in {"record_version", "adp_result", "adp_error", "redacted", "updated_at"}}
+        legacy["schema_version"] = 1
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+        self.gateway = WeComGateway(self.config, logging.getLogger("wecom-c-test"))
+        self.addCleanup(self.gateway.close)
+        upgraded = self.gateway.store.get(record["message_key"])
+        self.assertEqual((upgraded["schema_version"], upgraded["adp_state"]), (2, "RECEIVED"))
+        self.assertEqual(self.receive(), upgraded)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 2)
+
+    async def test_shutdown_during_disk_commit_reads_back_before_deciding_unknown(self):
+        """取消to_thread不停止发布；武装提交变UNKNOWN，完成提交保持确定成功。"""
+        for index, boundary in enumerate(("ADP_SEND_ARMED", "ADP_SUCCEEDED"), 1):
+            record = self.receive(f"CANCEL{index}", str(index))
+            entered, release = Event(), Event()
+            original = self.gateway.store._write
+            calls = []
+
+            def publish(value):
+                """真实提交后暂停磁盘线程，制造取消与返回值交接的精确窗口。"""
+                original(value)
+                if value["message_key"] == record["message_key"] and value["adp_state"] == boundary:
+                    entered.set()
+                    if not release.wait(8):
+                        raise AssertionError("测试未释放磁盘提交屏障")
+
+            def respond(request):
+                """网络调用计数只允许一次，武装交接取消时应为零次。"""
+                calls.append(json.loads(request.content))
+                return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=answer(calls[-1]))
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+                worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http))
+                with patch.object(self.gateway.store, "_write", side_effect=publish):
+                    await worker.start()
+                    try:
+                        await self.wait_for(entered.is_set)
+                        task = worker.tasks[record["message_key"]]
+                        stopping = asyncio.create_task(worker.stop())
+                        await self.wait_for(lambda: task.cancelling() > 0)
+                        release.set()
+                        await stopping
+                    finally:
+                        release.set()
+                        await worker.stop()
+            self.assertIsNone(worker.failure)
+            self.assertEqual(len(calls), 0 if boundary == "ADP_SEND_ARMED" else 1)
+            self.assertEqual(self.gateway.store.get(record["message_key"])["adp_state"],
+                             "ADP_UNKNOWN" if boundary == "ADP_SEND_ARMED" else "ADP_SUCCEEDED")
+
+    async def test_local_snapshot_inspection_is_read_only_and_hides_body(self):
+        """本机状态查看沿共享读取，只展示标识/状态且不调用任何网络。"""
+        from wecom_callback_client import main
+
+        self.receive()
+        with (patch("wecom_callback_client.load_config", return_value=self.config),
+              patch("wecom_callback_client.urlopen") as network,
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(main(["--inspect-state"]), 0)
+            network.assert_not_called()
+        printed = output.getvalue()
+        data = json.loads(printed)
+        self.assertEqual(data["records"][0]["adp_state"], "RECEIVED")
+        self.assertNotIn("测试文字", printed)
+        self.assertNotIn(self.config.callback_token, printed)
+        self.assertEqual(self.receive()["adp_state"], "RECEIVED")
 
 
 if __name__ == "__main__":
