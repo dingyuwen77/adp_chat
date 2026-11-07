@@ -91,6 +91,45 @@ def stop(process, *, force=False):
         assert process.returncode == 0
 
 
+def event_report(config, records, *, quota, crash, notification_crash, notifications):
+    """解析实际JSONL并核对同一快照的关联，允许隔离强杀留下的单个末尾半行。"""
+    events, incomplete = [], 0
+    for path in Path(config.log_file).parent.glob("events-*.jsonl"):
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            if not line.endswith("\n"):
+                assert index == len(lines) - 1 and (crash or notification_crash)
+                incomplete += 1
+                continue
+            event = json.loads(line)
+            assert event["schema_version"] == "adp_chat.log.v1" and event["environment"] == "test"
+            events.append(event)
+    assert len({e["id"] for e in events}) == len(events)
+    assert {"service.started", "service.stopped", "adp.submit_armed", "adp.started", "adp.completed",
+            "message.session.released", "reply.persisted"} <= {e["event"] for e in events}
+    assert not any(e["event"] == "wecom.send.accepted" for e in events)
+    for record in records.values():
+        linked = [event for event in events if event["message_key"] == record["message_key"]]
+        assert linked and all(e["conversation_id"] == record["conversation_id"] for e in linked)
+        if record["request_id"] is not None:
+            assert any(e["request_id"] == record["request_id"] for e in linked)
+        if notifications:
+            assert any(e["event"] == ("wecom.send.unknown" if notification_crash and record["msg_id"] == "1"
+                                      else "wecom.send.simulated") for e in linked)
+    names = {e["event"] for e in events}
+    if quota:
+        assert "adp.rejected" in names and any(e.get("error_code") == "460031" for e in events)
+    if crash:
+        assert {"adp.unknown", "message.recovered"} <= names
+    if not crash and not notification_crash:
+        assert {"wecom.message.busy_rejected", "wecom.message.duplicate", "wecom.message.persisted"} <= names
+    raw = json.dumps(events, ensure_ascii=False)
+    for private in (config.app_key, config.callback_token, config.encoding_aes_key, "本机确定性测试", '"YNND"', '"SIYU"'):
+        assert private not in raw
+    return {"parsed_events": len(events), "incomplete_tails_isolated": incomplete,
+            "message_links_checked": len(records), "credentials_and_bodies_absent": True}
+
+
 def serve(args):
     """子进程复用正式应用或独立Fake，stdin触发正常退出。"""
     import uvicorn
@@ -231,6 +270,9 @@ def run_case(root, *, quota=0, crash=False, notifications=False, notification_cr
                           "old_notification_attempts": 1, "recovered_send_state": "SEND_UNKNOWN"}
         result["notifications"] = "simulated" if notifications else "disabled"
         result["processes"] = [p.pid for p in processes]
+        stop(gateway)
+        result["jsonl"] = event_report(config, snapshots(), quota=quota, crash=crash,
+                                      notification_crash=notification_crash, notifications=notifications)
         return result
     except Exception:
         # 失败也保留安全的状态诊断；临时目录随后清理，不能吞掉根因只留下超时。
