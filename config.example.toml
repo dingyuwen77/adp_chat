@@ -33,6 +33,14 @@ workflow_status = ""
 # 同应用同用户复用；切换身份时使用独立路径或运行 --new-session。
 session_file = "runtime/session.json"
 
+[wecom]
+# 阶段 A 身份作用域；不用网关时保留空值/0，或省略整个分组。
+# 配置时三项必须同时填写；仅为派生作用域，不代表真实企微身份已验证。
+corp_id = ""
+agent_id = 0
+# 固定逻辑应用名，不能用可轮换 AppKey；上线后不要静默修改。
+adp_application = ""
+
 [logging]
 # true 写本地日志；false 不创建日志。问答可能含业务信息，请按需关闭。
 log_enabled = true

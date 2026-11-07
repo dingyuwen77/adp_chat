@@ -2,6 +2,7 @@
 
 import io
 import json
+import contextlib
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,8 @@ from unittest.mock import patch
 from adp.client import chat
 from core.config import ChatConfig, load_config
 from core.identity import employee_identity
-from core.models import ChatError
+from core.models import ChatError, ChatResult
+from adp_conversation_probe import main as probe_main
 
 
 class EmployeeIdentityTests(unittest.TestCase):
@@ -125,3 +127,39 @@ class EmployeeIdentityTests(unittest.TestCase):
             path.write_text(base + '[wecom]\ncorp_id="corp"\nagent_id=1000053\n'
                             'adp_application="test-app"\n', encoding="utf-8")
             self.assertEqual(employee_identity(load_config(path), "YNND").user_id, "YNND")
+
+    def test_probe_is_offline_by_default_and_real_calls_disable_body_logs(self):
+        """Probe 默认零网络，显式调用保留证据且不复制协议或泄露密钥。"""
+        with tempfile.TemporaryDirectory() as directory, patch("adp_conversation_probe.load_config", return_value=self.config):
+            output = Path(directory) / "evidence.json"
+            with patch("adp_conversation_probe.chat") as provider, contextlib.redirect_stdout(io.StringIO()) as terminal:
+                self.assertEqual(probe_main(["--user-id", "YNND"]), 0)
+                provider.assert_not_called()
+                self.assertIs(json.loads(terminal.getvalue())["real_adp_requested"], False)
+            reply = ChatResult("测试正文", employee_identity(self.config, "YNND").conversation_id, "r" * 32)
+            with patch("adp_conversation_probe.chat", return_value=reply) as provider, contextlib.redirect_stdout(io.StringIO()) as terminal:
+                args = ["--user-id", "YNND", "--execute-real-adp", "--output", str(output)]
+                self.assertEqual(probe_main(args), 0)
+                called_config = provider.call_args.kwargs["config"]
+                self.assertFalse(called_config.log_enabled)
+                self.assertFalse(called_config.log_question)
+                self.assertEqual(called_config.log_answer_chars, 0)
+                saved = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(saved["response_text"], "测试正文")
+                self.assertEqual(saved["semantic_verdict"], "requires_review")
+                self.assertNotIn("测试正文", terminal.getvalue())
+                self.assertNotIn("test-key", output.read_text(encoding="utf-8"))
+                provider.reset_mock()
+                self.assertEqual(probe_main(args), 1)
+                provider.assert_not_called()
+
+    def test_probe_records_provider_error_once_without_retry(self):
+        """上游失败也保存实际 Code，不伪造成功或发第二次请求。"""
+        with tempfile.TemporaryDirectory() as directory, patch("adp_conversation_probe.load_config", return_value=self.config):
+            output = Path(directory) / "error.json"
+            error = ChatError("chat", "provider_error", "安全提示", provider_code="460701")
+            with patch("adp_conversation_probe.chat", side_effect=error) as provider, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(probe_main(["--user-id", "SIYU", "--execute-real-adp", "--output", str(output)]), 1)
+                self.assertEqual(provider.call_count, 1)
+            saved = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual((saved["status"], saved["provider_code"], saved["user_id"]), ("error", "460701", "SIYU"))

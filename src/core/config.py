@@ -30,6 +30,9 @@ class ChatConfig:
     log_answer_chars: int = 0
     log_question: bool = False
     session_file: str = "runtime/session.json"
+    corp_id: str = ""
+    agent_id: int = 0
+    adp_application: str = ""
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -56,6 +59,13 @@ class ChatConfig:
             raise ChatError("config", "invalid_logging", "日志路径、轮转参数和回答预览长度必须有效。")
         if not self.session_file.strip() or "\0" in self.session_file:
             raise ChatError("config", "invalid_session_path", "会话文件路径不能为空或含有空字符。")
+        scope = (self.corp_id, self.agent_id, self.adp_application)
+        if any(scope) and (
+            not self.corp_id or not self.adp_application or self.agent_id <= 0
+            or any(value != value.strip() or any(ord(c) < 32 for c in value)
+                   for value in (self.corp_id, self.adp_application))
+        ):
+            raise ChatError("config", "invalid_wecom_scope", "[wecom] 的企业、应用 ID 和固定 ADP 逻辑应用名必须完整有效。")
 
 
 _SECTIONS = {
@@ -68,6 +78,7 @@ _SECTIONS = {
         "workflow_status": str, "enable_multi_intent": bool,
     },
     "session": {"session_file": str},
+    "wecom": {"corp_id": str, "agent_id": int, "adp_application": str},
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,
         "log_max_bytes": int, "log_backup_count": int,

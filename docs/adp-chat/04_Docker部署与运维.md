@@ -119,6 +119,42 @@ python tests/docker_smoke.py --image adp-chat:local
 
 该检查只使用临时配置/会话，验证正式镜像安装、启动、只读配置、可写日志、容器重建会话恢复，并清理测试资源；不请求腾讯 ADP。真实云端连通和服务器网络边界仍须在部署环境验证。
 
+### 1.6 多员工身份与真实 ADP 跨进程验收（阶段 A）
+
+身份入口在 [src/core/identity.py](../../src/core/identity.py)，配置仍由 [src/core/config.py](../../src/core/config.py) 从同一份根配置读取。单用户三种入口继续使用 `[adp].user_id` 和旧会话文件；员工 Probe 不读写该文件，也不创建员工映射表。
+
+在本机未纳入 Git 的 `config.toml` 中增加以下作用域，保留现有 AppKey 和其他实际配置：
+
+```toml
+[wecom]
+corp_id = "wwf483023b734c570a"
+agent_id = 1000053
+adp_application = "wecom-local-test"
+```
+
+三项必须同时填写；完全不用员工身份时，可全部留空/0 或省略整个分组。`adp_application` 表示已发布 ADP 应用的固定逻辑名称，不能填写 AppKey；同一实际应用重启时保持不变，切换实际应用应使用独立逻辑名。AppKey 轮换不改变会话。回退不认识该分组的旧代码前，备份实际配置并移除新增分组，旧 `session.json` 无需迁移。
+
+先检查离线派生，不访问 ADP：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --user-id YNND
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --user-id SIYU
+```
+
+再按顺序运行下列命令。每条命令各启动一个 Python 进程并退出；真实模式必须显式指定 `--execute-real-adp`，每个进程最多发一次请求，失败不自动重试。仅使用已授权的测试应用，发生费用的是这三次 ADP 请求，不触发企业微信发送。输出文件必须尚不存在，复验时换新文件名；不要通过删证据来盲目重复未知请求。
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --user-id YNND --message "我想改密码" --execute-real-adp --output runtime/probe-ynnd-1.json
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --user-id YNND --message "windows" --execute-real-adp --output runtime/probe-ynnd-2.json
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --user-id SIYU --message "windows" --execute-real-adp --output runtime/probe-siyu-1.json
+```
+
+检查 JSON 中两轮 YNND 的 `user_id/visitor_id/conversation_id` 相同、`request_id/pid` 不同，SIYU 的会话不同。随后实际阅读本地 `response_text`：首轮应澄清密码类型，续轮应把 Windows 作为这次密码请求的补充并给出对应指引；SIYU 无该前文时不应继承 YNND 的需求。Probe 不用关键词自动判通过，`semantic_verdict=requires_review` 表示需要人工或 AI 审查。固定 ID 不代表 ADP 永久记忆，实际结果受已发布应用配置及平台约束影响；失败时保留实际响应排查，不改平台生产提示词制造通过。
+
+[tests/adp_conversation_probe.py](../../tests/adp_conversation_probe.py) 复用正式 `chat()`，每轮覆盖员工 UserId/VisitorId，并关闭问答日志。控制台只显示标识/状态，完整回复留在指定本地证据文件，可能包含内部知识或链接；不提交这些文件和真实密钥。可共享的记录只保留请求标识、脱敏语义摘要和结论。稳定回归在 [tests/test_employee_identity.py](../../tests/test_employee_identity.py)，不访问真实 ADP；本阶段未接入企业微信，尚不能通过回调或模拟发送完成全链路。
+
+PyCharm 使用项目 `.venv` 运行上述 Probe 脚本；设置相同脚本参数，在身份函数和正式 ADP `chat()` 设置断点。此处仅提供配置方法，不代表已实际操作 PyCharm GUI；FastAPI 调试方式仍见上一节。
+
 ## 二、Linux 服务器部署
 
 ### 2.1 本机打包与手动上传
