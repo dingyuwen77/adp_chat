@@ -100,6 +100,12 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 正式对话入口在 [src/adp/client.py](src/adp/client.py)，服务编排在 [src/application/chat_service.py](src/application/chat_service.py)，HTTP 入口在 [src/api/routes.py](src/api/routes.py)，本地 CLI 在 [src/cli/runner.py](src/cli/runner.py)。
 
+## 企业微信网关（仅有设计，按阶段实施）
+
+当前版本只具备单用户 `POST /api/v1/chat`，尚未实现企业微信 `GET/POST /wecom/callback`；不能直接将现有内网 URL 填入企业微信后台。下一阶段按 [docs/wecom-integration/03_实施路线图.md](docs/wecom-integration/03_实施路线图.md) 依次开发：A 多用户身份/会话、B HTTP 回调和可靠 ACK、C 消息调度恢复、D 模拟发送、E JSONL 与本地/Docker HTTP 联调。**A～E 不要求公网 HTTPS/HTTP 地址**；F 才处理企业微信实际可达的回调地址（HTTP/HTTPS）和员工真实收发。HTTP/HTTPS 共用一条 FastAPI 业务路由，未来无需再造另一套网关。
+
+架构与边界见 [docs/wecom-integration/01_网关架构设计.md](docs/wecom-integration/01_网关架构设计.md)，日志事件见 [docs/wecom-integration/02_结构化日志事件.md](docs/wecom-integration/02_结构化日志事件.md)。现有 `/api/v1/chat` 无应用鉴权，继续只允许可信内网调用；不得因为后续接收企业微信回调而将其暴露公网。
+
 ## 测试
 
 先安装 `requirements-dev.txt`，它同时以 editable 方式安装本项目，供测试和 PyCharm 使用同一组业务模块。源码可直接修改，无需重复安装；新增构建元数据或控制台入口时再安装一次。
