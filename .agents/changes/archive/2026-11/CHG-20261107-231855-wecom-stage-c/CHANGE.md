@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: "CHG-20261107-231855-wecom-stage-c"
 title: "企业微信阶段 C 异步 ADP 与状态恢复"
 level: L3
-status: ready_for_review
+status: done
 owner: "codex"
 branch: "feature/wecom-stage-c"
 created: 2026-11-07
-updated: 2026-11-07
+updated: 2026-11-08
 completion_gate: required
 depends_on: []
 affected_areas:
@@ -175,13 +175,19 @@ C-DOCS：现有README、索引、架构、日志、Roadmap与运维同步。正�
 
 ## 未验证内容与剩余风险
 
-C实现已验证；独立Deep Review在head339ca2d PASS（1条LOW文档label规范项已修正），该head既有CI成功。新文档head定向复审/检查及merge/main-fresh/归档和清理尚未完成。D/E未开始，F排除。PyCharm GUI/Docker网关链路到E验证；本地进程恢复不证明整机断电/文件系统损坏零丢失。UNKNOWN旧云端仍可能执行；极端部分发布损坏需人工核查，不能自动当新消息。
+C实现、独立Deep Review/新head定向复审、当前head CI、guarded merge、main-fresh与实现分支清理均完成，LOW文档Finding已关闭。D/E未开始，F排除。PyCharm GUI/Docker网关链路到E验证；本地进程恢复不证明整机断电/文件系统损坏零丢失。UNKNOWN旧云端仍可能执行；极端部分发布损坏需人工核查，不能自动当新消息。
 
 ## 交付状态
 
-implementation=complete；delivery=incomplete；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
+implementation=complete；delivery=merged；validation=complete；main_fresh=complete；change_archive=本地归档；requirement_closure=not_applicable（正式Roadmap，无Issue close对象）；cleanup=complete（实现分支）；end_to_end=complete。
 
 C-REVIEW：隔离只读Reviewer /root/stage_c_review，base780b440，head339ca2d8d392f78527c894e5f8d8abd5e629eb3e，独立恢复C1～C8并双向核验，PASS/无阻塞。独立18项测试9.525s、完整129项日志与HTTP强杀/7个wheel源码实读。唯一LOW/IN_SCOPE/NON_BLOCKING/REPORT_ONLY：4个新增文档链接label未显示完整仓库路径，已修正；仅文档增量，不重跑产品验证，须新head定向复审。该head现有CI run42388794535/job128451778764 success，原始129tests/OK26.709s。Validation Asset Redundancy=clean。
+
+C-DELIVERY：PR #16 https://github.com/dingyuwen77/adp_chat/pull/16，最终head70e41141ada1ea9e789c48e6e26500951f6e2cc1；Reviewer定向复审PASS/无Finding，原LOW关闭，原A1/A2及18项独立测试继续有效。current-head CI run42389344766/job128453416641 success，原始129tests/OK24.921s。最终principal=dingyuwen77、push/admin=true、main unprotected、rulesets=[]、reviews/threads=[]、live PR Contract有效，base780b440/head未漂移。REST expected_head_sha=70e41141ada1ea9e789c48e6e26500951f6e2cc1 合并为1392716e9449fb421a72f1f6e9725d1fac2ce588，merge tree与reviewed head一致。本地main=origin/main。
+
+C-MAIN-FRESH：实际merge的push run42389725849/job128454566620 SUCCESS，原始runtime/wecom-stage-c-main-ci.log为129tests/OK26.936s；不拿PR CI替代。未新增或修改CI。
+
+C-CLOSURE：重新核对当前C1～C8：无模型业务配额的100员工并发、Fake30实际拒绝集合、同员工一次ADP、Code/阶段分类、UNKNOWN可靠保存/释放、新轮次可进入、armed真实强杀重启不重投、员工隔离及旧入口兼容均有直接证据。Roadmap为需求Owner，无单独Issue close动作。实现远程分支合并后自动删除、ls-remote读回无；确认ancestor/worktree后本地安全删除feature/wecom-stage-c。保留本机唯一原始证据；所有自有测试进程/监听和临时目录已清理。原Change同ID归档与Roadmap状态由独立文档PR同步，之后才进入D。
 
 ## 备注
 
