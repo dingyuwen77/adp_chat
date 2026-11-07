@@ -1,3 +1,2 @@
 -r requirements.txt
 -e .
-httpx==0.28.1

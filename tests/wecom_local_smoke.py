@@ -19,6 +19,8 @@ from wecom_callback_client import initialize_test_keys
 def serve(port: int) -> None:
     """复用正式 ASGI 应用，以父进程 stdin EOF/停止信号执行正常 lifespan 关闭。"""
     import uvicorn
+    from unittest.mock import patch
+    from test_wecom_callback import PausedWorker
 
     server = uvicorn.Server(uvicorn.Config("api.app:app", host="127.0.0.1", port=port, workers=1))
 
@@ -28,7 +30,9 @@ def serve(port: int) -> None:
         server.should_exit = True
 
     threading.Thread(target=stop_on_input, daemon=True).start()
-    server.run()
+    # 此脚本专测B接收/重启；C/E的全链路脚本另用真实worker和隔离FakeADP。
+    with patch("api.app.GatewayWorker", PausedWorker):
+        server.run()
 
 
 def main(argv=None) -> int:

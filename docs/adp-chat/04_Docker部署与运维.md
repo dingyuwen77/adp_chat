@@ -157,12 +157,12 @@ PyCharm 使用项目 `.venv` 运行上述 Probe 脚本；设置相同脚本参�
 
 ### 1.7 加密回调与可靠接收（阶段 B）
 
-这是本机协议模拟，不连接企业微信后台或发送员工消息。B 已实现正式回调、验签解密、企业/应用/员工校验、MsgId 去重和可靠快照；**尚不调用 ADP、不发送 BUSY 通知**。BUSY 提示先保存为 PENDING，交给 D；RECEIVED 占用的释放由 C 的终态处理实现，因此本阶段同员工的新消息仍会 BUSY，不能靠反复发新 MsgId 绕过占用。
+这是本机协议模拟，不连接企业微信后台或发送员工消息。B 已实现正式回调、验签解密、企业/应用/员工校验、MsgId 去重和可靠快照；当前main已接入C异步ADP；先按1.8准备隔离Fake配置和Fake服务，再运行下列协议步骤。BUSY提示保存为PENDING等待D，ADP终态保存后释放占用；只有上一轮仍处理时才BUSY。
 
-先按 1.1 安装当前依赖，确认 1.6 的身份作用域已填写。然后在现有未纳入 Git 的根配置中初始化独立测试密钥：
+先按1.1安装依赖，在1.8的隔离测试配置中填写身份作用域；下例不修改含真实AppKey的根配置。初始化独立测试密钥：
 
 ```powershell
-.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --init-test-keys
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --init-test-keys
 ```
 
 这个命令只填充空测试 Token/EncodingAESKey，并将 `[wecom].gateway_enabled` 打开，不显示密钥；已有任何回调凭据或已启用网关时拒绝覆盖，保留原 AppKey、用户、路径和资源值。Windows 用 ReplaceFile 保留原配置 ACL。整个服务仍只从原有 `config.toml` / `ADP_CONFIG_FILE` 读取配置，不另建秘密来源。完整字段和默认值见 [config.example.toml](../../config.example.toml)。
@@ -170,17 +170,18 @@ PyCharm 使用项目 `.venv` 运行上述 Probe 脚本；设置相同脚本参�
 在独立终端启动同一正式应用（单 worker），也可按 1.4 在 PyCharm 运行模块 `uvicorn`：
 
 ```powershell
+$env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-fake/config.toml).Path
 .\.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 在另一个终端，用 [tests/wecom_callback_client.py](../../tests/wecom_callback_client.py) 调正式 GET/POST：
 
 ```powershell
-.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --verify-url
-.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id YNND --msg-id 10001 --message "本地第一条"
-.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id YNND --msg-id 10001 --message "相同 MsgId 的重复回调"
-.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id YNND --msg-id 10002 --message "同员工忙碌拒绝"
-.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --user-id SIYU --msg-id 10003 --message "另一员工独立接收"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --verify-url
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --user-id YNND --msg-id 10001 --message "本地第一条"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --user-id YNND --msg-id 10001 --message "相同 MsgId 的重复回调"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --user-id YNND --msg-id 10002 --message "同员工忙碌拒绝"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --user-id SIYU --msg-id 10003 --message "另一员工独立接收"
 ```
 
 正常输出包含 `source=test_fixture`、`cloud_identity_verified=false`、HTTP 200 和 `expected_ack=true`。GET 原样返回解密 echo；POST 可靠保存后返回空包。相同 MsgId 的第二条只 ACK，原正文/接收决定不改变；新 MsgId 的忙碌拒绝会留下独立快照，SIYU 可独立获准。测试客户端只允许 loopback HTTP 地址，复用正式加密实现，没有跳过签名的服务端接口。
@@ -188,12 +189,12 @@ PyCharm 使用项目 `.venv` 运行上述 Probe 脚本；设置相同脚本参�
 查看状态（以下只显示必要标识和状态，不展示问答正文）：
 
 ```powershell
-Get-ChildItem runtime/messages -Filter *.json | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Select-Object message_key,user_id,msg_id,adp_state,send_state
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --inspect-state
 ```
 
 JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文件只负责目录独占，不是第二套员工状态。两个进程不能同时使用同一 `messages_dir`；PyCharm 与 Docker 的目录也应隔离。损坏或未知版本的快照会阻止启动，保留现场排查，不自动删除或当新消息处理。写入失败后不返回成功 ACK，并关闭后续接收直到重启核验快照；现有去重记录正常时，重复回调无需新写盘。
 
-默认入站上限 65536 字节、最多 2000 条未完成接收记录；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。JSONL 到 E 再实现。
+默认入站上限 65536 字节、最多2000条快照（既有字段max_unfinished_messages，包含待通知、未知和去重保留记录）；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。JSONL 到 E 再实现。
 
 稳定回归与不占用现有目录的真实 HTTP 验收：
 
@@ -202,7 +203,48 @@ JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文�
 .\.venv\Scripts\python.exe -B -X utf8 tests/wecom_local_smoke.py --report runtime/wecom-http-result.json
 ```
 
-[tests/test_wecom_callback.py](../../tests/test_wecom_callback.py) 覆盖坏签名、密文/填充/长度、内外身份、恶意 XML/超大包、真实并发、fsync/replace 失败、损坏快照和配置安全初始化。[tests/wecom_local_smoke.py](../../tests/wecom_local_smoke.py) 自动创建临时测试配置和目录，启动/关闭两个正式 Uvicorn 进程，验证 HTTP 接线、跨进程去重/占用恢复及端口释放，随后删除自有临时数据；不调用 ADP。需要反复试验时优先用这个隔离入口，不手改现有消息快照。正式配置及人工测试快照需按本地数据管理要求备份/清理，不能把“ACK 成功”写成 ADP 完成或真实企微送达。
+[tests/test_wecom_callback.py](../../tests/test_wecom_callback.py) 覆盖坏签名、密文/填充/长度、内外身份、恶意 XML/超大包、真实并发、fsync/replace 失败、损坏快照和配置安全初始化。[tests/wecom_local_smoke.py](../../tests/wecom_local_smoke.py) 自动创建临时测试配置和目录，启动/关闭两个正式 Uvicorn 进程，隔离下游worker，仅验证B的HTTP接线、跨进程去重/占用恢复及端口释放，随后删除自有临时数据；不调用ADP。C全链路另用1.8脚本验证。需要反复试验时优先用这个隔离入口，不手改现有消息快照。正式配置及人工测试快照需按本地数据管理要求备份/清理，不能把“ACK 成功”写成 ADP 完成或真实企微送达。
+
+### 1.8 异步 ADP与恢复（阶段 C）
+
+最短可重复验收（不改现有配置、不调用真实ADP）：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_dispatch_smoke.py --report runtime/wecom-dispatch-result.json
+.\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -p test_wecom_dispatch.py -v
+```
+
+[tests/wecom_dispatch_smoke.py](../../tests/wecom_dispatch_smoke.py)自动启动独立正式网关和[tests/wecom_fake_adp.py](../../tests/wecom_fake_adp.py)进程，以签名加密回调验证100员工真正同时等待、Fake30入口名额、同员工BUSY及重复回调；强杀自有网关进程后验证RECEIVED首次执行、armed恢复UNKNOWN不重投、同员工新消息可继续。结束核对进程退出和端口释放，删除自有临时配置/数据。30名额测试只核对Fake实际拒绝集合；本次保持30名额至手动屏障释放才观察到70拒绝，这不是实际ADP的固定失败数保证。
+
+手动/PyCharm调试使用**同一TOML体系的独立测试文件**：只在目标不存在时复制[config.example.toml](../../config.example.toml)到`runtime/wecom-fake/config.toml`，保留根真实配置。编辑以下字段，其他通用字段保留示例；不得把真实AppKey复制到Fake文件：
+
+| 字段 | Fake本地值 |
+| --- | --- |
+| `[adp].app_key` | `fake-local-adp-only`（Fake服务拒绝其他凭据） |
+| `[wecom].corp_id` / `agent_id` | `wwf483023b734c570a` / `1000053` |
+| `[wecom].adp_application` | `wecom-local-fake`，与真实测试分开 |
+| `[wecom].adp_url` | `http://127.0.0.1:8765/adp/v2/chat` |
+| `[logging].log_question` / `log_answer_chars` | `false` / `0` |
+
+相对session/messages/log路径都基于该测试配置目录，与根运行数据隔离。然后按1.7的`--config`初始化空测试密钥并启动正式网关；先在另一个终端启动Fake：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_fake_adp.py --port 8765 --quota 30 --hold
+# 查看Fake实际接收与拒绝集合；该控制路由只属于Fake，不在正式网关：
+Invoke-RestMethod http://127.0.0.1:8765/_test/status
+# 两名员工获准后保持未完成，继续发YNND新MsgId可稳定观察BUSY；释放后结果保存：
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/release
+```
+
+Fake还支持`--mode reject --code 460031`、`disconnect`、`timeout`、`model-error --code 460701`和`reply7`。不加`--hold`时立即结束；只在Fake做高并发/故障。正式网关没有模型限额信号量、配额队列或ADP自动重试；仅有快照容量、1MiB SSE总字节等物理保护。`[wecom].adp_url`只允许腾讯正式HTTPS端点或本机Fake地址，避免凭据跟随重定向或流向任意端点。
+
+真实ADP受控探测沿1.6执行，加`--async-client --config config.toml`即可验证C正式异步HTTPS/SSE；仍需显式`--execute-real-adp`和新输出路径，每个进程最多一次。先停Fake调试网关并移除其环境变量（`Remove-Item Env:ADP_CONFIG_FILE`），使用已发布测试应用、原真实逻辑作用域；不把Fake配置改成真实凭据。C已对SIYU一次安全文字探测取得正式completed，E再做完整跨进程两轮语义验收；不压力测试实际ADP、不改平台提示词。
+
+状态v2在首次网络调用前保存`ADP_SEND_ARMED`和UUID RequestId；终态、一次PENDING提示和本地释放同一原子快照。明确应用入口拒绝保留真实Code并提示手动重试；模型层QPM/TPM/余额/并发错误可能发生在工具之后，缺乏执行前证据时保守UNKNOWN。ReplyMethod7解释并发含义，但不编造Code或宣称未执行。UNKNOWN不是业务失败，也不保证旧云端请求停止；涉及会议须先核查。通知PENDING在C不会发送，不持续占用员工。
+
+Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共享删除读取；避免用持有普通文件句柄的编辑器/Get-Content持续轮询活动文件，Windows会阻止替换。更新使用保留ACL的ReplaceFileW，初次发布/Posix使用os.replace，均先flush/fsync；不是绕过写入失败。目录独占/版本/CAS检查，v1先全部校验再兼容升级；未知版本/损坏/原快照缺失但留暂存证据均保留现场并拒绝启动。此类发布故障需核查恢复，不能删除目录后盲重投。正常退出读回取消期间磁盘提交；已保存成功不会改写UNKNOWN，armed不确定结果不重投。
+
+启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。C没有实际发送，因此PENDING不会因时间清除；D/E继续完成发送与日志。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v2的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
 
 ## 二、Linux 服务器部署
 

@@ -9,6 +9,9 @@ from threading import TIMEOUT_MAX
 from .models import ChatError
 
 
+ADP_CHAT_URL = "https://wss.lke.cloud.tencent.com/adp/v2/chat"
+
+
 @dataclass(frozen=True, slots=True)
 class ChatConfig:
     """从一份 TOML 读取的不可变配置，可用于多次对话。"""
@@ -41,6 +44,8 @@ class ChatConfig:
     messages_dir: str = "runtime/messages"
     callback_max_bytes: int = 65536
     max_unfinished_messages: int = 2000
+    adp_url: str = ADP_CHAT_URL
+    adp_response_max_bytes: int = 1_048_576
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -84,6 +89,19 @@ class ChatConfig:
             if (not all(scope) or not valid_key or not self.callback_token.isascii()
                     or not self.callback_token.isalnum() or len(self.callback_token) > 32):
                 raise ChatError("config", "invalid_gateway_credentials", "启用网关需要完整身份作用域和有效的回调测试 Token/AES 密钥。")
+        from urllib.parse import urlsplit
+        try:
+            target = urlsplit(self.adp_url)
+            port = target.port
+        except ValueError:
+            raise ChatError("config", "invalid_adp_url", "网关 ADP 地址格式无效。") from None
+        if (self.adp_url != ADP_CHAT_URL and (target.scheme not in ("http", "https")
+                or target.hostname not in ("127.0.0.1", "localhost", "::1")
+                or target.path != "/adp/v2/chat" or target.query or target.fragment
+                or target.username is not None or target.password is not None or port == 0)):
+            raise ChatError("config", "invalid_adp_url", "网关 ADP 地址只允许正式 HTTPS 端点或本机 Fake 端点。")
+        if not 16_384 <= self.adp_response_max_bytes <= 1_048_576:
+            raise ChatError("config", "invalid_gateway_resources", "ADP 流物理大小保护须在16KiB至1MiB之间。")
 
 
 _SECTIONS = {
@@ -100,6 +118,7 @@ _SECTIONS = {
         "corp_id": str, "agent_id": int, "adp_application": str, "gateway_enabled": bool,
         "callback_token": str, "encoding_aes_key": str, "messages_dir": str,
         "callback_max_bytes": int, "max_unfinished_messages": int,
+        "adp_url": str, "adp_response_max_bytes": int,
     },
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,

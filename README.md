@@ -1,6 +1,6 @@
-# adp_chat：腾讯 ADP 单用户文字对话转发
+# adp_chat：腾讯 ADP 文字对话与企业微信网关
 
-本项目把 **同一套腾讯 ADP 对话能力**提供成三种运行方式：单次脚本、交互式 CLI 和 Linux Docker 常驻 FastAPI。每次只向 ADP 发送一轮文字；ADP 需要追问时，由调用方下一轮继续发消息。Python 不自动判断整项业务是否结束。
+本项目把 **同一套腾讯 ADP 对话能力**提供成单次脚本、交互式 CLI 和常驻 FastAPI；新增企业微信加密回调及多员工异步转发。每次只向 ADP 发送一轮文字；ADP 需要追问时，由调用方下一轮继续发消息。Python 不自动判断整项业务是否结束。
 
 **使用前提**：本地开发使用 Python 3.14；已发布且可访问的腾讯 ADP 应用 AppKey、固定 UserId。离线镜像部署的服务器需要 Linux、Docker Engine、Bash 和允许访问腾讯 ADP 的网络，无需安装 Python、Git 或 Compose。
 
@@ -101,13 +101,11 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 正式对话入口在 [src/adp/client.py](src/adp/client.py)，服务编排在 [src/application/chat_service.py](src/application/chat_service.py)，HTTP 入口在 [src/api/routes.py](src/api/routes.py)，本地 CLI 在 [src/cli/runner.py](src/cli/runner.py)。
 
-## 企业微信网关（阶段 B 可靠接收已实现，后续按阶段实施）
+## 企业微信网关（A～C 已实现，D/E 继续实施）
 
-当前已提供多员工身份派生、受控跨进程 ADP 验收和可选加密回调接收，操作见 [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md#16-多员工身份与真实-adp-跨进程验收阶段-a)。单用户 `POST /api/v1/chat` 保持原有行为；启用测试网关后已有正式 `GET/POST /wecom/callback`，先验证协议和可靠落盘。B 暂不转发 ADP 或发送通知，真实企业微信后台不在本次配置范围。后续按 [docs/wecom-integration/03_实施路线图.md](docs/wecom-integration/03_实施路线图.md) 依次开发 C 消息调度恢复、D 模拟发送、E JSONL 与本地/Docker HTTP 联调。**A～E 不要求公网 HTTPS/HTTP 地址**；F 才处理企业微信实际可达的回调地址（HTTP/HTTPS）和员工真实收发。HTTP/HTTPS 共用一条 FastAPI 业务路由，未来无需再造另一套网关。
+已有多员工身份、加密回调、可靠接收和真正异步 ADP 转发/状态恢复，操作见 [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md#18-异步-adp与恢复阶段-c)。旧单用户接口保持原行为；启用网关后会调用配置的ADP，默认正式HTTPS，测试请使用文档的隔离Fake配置。通知当前只保存为 PENDING，尚未实际发送。按 [docs/wecom-integration/03_实施路线图.md](docs/wecom-integration/03_实施路线图.md) 继续D发送和E JSONL/Docker验收，F真实企微接入仍未实施。
 
-**已确认但尚未实现的网关语义：**不同员工尽可能立即异步转发，不设置人为的 ADP 业务并发上限；同一员工上一轮仍在处理时，新 MsgId 立即拒绝并通知，不排队。ADP 明确执行前拒绝后解释真实错误码、提示手动重试；结果未知时保存证据、通知并释放**本地**会话，不自动重投 ADP。企业微信通知发送状态独立；接口明确接受即认为网关发送完成，不判断已读。接收侧去重、同用户占用和忙碌通知意图已在 B 实现；异步转发、终态释放和实际通知属于 C～F，不能由入站 ACK 推断已经完成。
-
-架构与边界见 [docs/wecom-integration/01_网关架构设计.md](docs/wecom-integration/01_网关架构设计.md)，日志事件见 [docs/wecom-integration/02_结构化日志事件.md](docs/wecom-integration/02_结构化日志事件.md)。现有 `/api/v1/chat` 无应用鉴权，继续只允许可信内网调用；不得因为后续接收企业微信回调而将其暴露公网。
+同员工忙碌立即拒绝、不排队；重复MsgId不重复执行/通知。不同员工不设人为模型并发限额。ADP零自动重试，UNKNOWN可靠保存提示并释放本地占用，旧云端请求可能仍在执行。**A～E的本地协议模拟和ADP测试不代表企业微信真实收发成功。**
 
 ## 测试
 
