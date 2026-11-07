@@ -10,10 +10,10 @@ created: 2026-11-07
 updated: 2026-11-07T22:55:04+08:00
 completion_gate: required
 depends_on: []
-affected_areas: 
+affected_areas:
   - "api"
   - "storage"
-affected_paths: 
+affected_paths:
   - "src/api"
   - "src/storage"
 contracts:
@@ -150,9 +150,9 @@ targeted 同步现有Owner，不新增重复文档主题。cryptography为协议
 
 B-RED：`.venv/Scripts/python.exe -B -X utf8 -m unittest discover -s tests -p test_wecom_callback.py -v`，exit 1，storage.messages 不存在；此前未写生产实现。
 
-B-GREEN：Windows Python 3.14.7，`.venv/Scripts/python.exe -B -X utf8 -m unittest discover -s tests -v`，110 passed / 0 failed / 0 skipped / exit 0，13.647s；新增 17 项接收/协议测试与原 93 项回归。完整底层输出 runtime/wecom-stage-b-regression.log，仅本机保存。
+B-GREEN：Windows Python 3.14.7，`.venv/Scripts/python.exe -B -X utf8 -m unittest discover -s tests -v`，111 passed / 0 failed / 0 skipped / exit 0；新增 18 项接收/协议测试与原 93 项回归。完整底层输出 runtime/wecom-stage-b-regression.log，仅本机保存。
 
-B-HTTP：`.venv/Scripts/python.exe -B -X utf8 tests/wecom_local_smoke.py --report runtime/wecom-stage-b-http.json`，exit 0；独立 Uvicorn PID 200、11720，前后两进程共用隔离测试目录；GET/POST→落盘→空 ACK，YNND 首条获准/第二条 BUSY、SIYU 独立获准、重启相同 MsgId 去重。3 条快照保持正确，最长客户端耗时 228.0ms（包含客户端进程启动，不是纯服务耗时）。正常 lifespan shutdown、两进程退出、监听释放、临时配置/数据清理均实查。没有调用 ADP/企微，测试身份不作云端认证证据。
+B-HTTP：`.venv/Scripts/python.exe -B -X utf8 tests/wecom_local_smoke.py --report runtime/wecom-stage-b-http.json`，exit 0；独立 Uvicorn PID 22972、27552，前后两进程共用隔离测试目录；GET/POST→落盘→空 ACK，YNND 首条获准/第二条 BUSY、SIYU 独立获准、重启相同 MsgId 去重。3 条快照保持正确，最长客户端耗时 201.7ms（包含客户端进程启动，不是纯服务耗时）。正常 lifespan shutdown、两进程退出、监听释放、临时配置/数据清理均实查。没有调用 ADP/企微，测试身份不作云端认证证据。
 
 B-PROTOCOL：本机 HTTPS 实际读取企业微信官方 https://developer.work.weixin.qq.com/document/path/90238、/90930、/90968 正文，使用官方公开测试向量经生产 WeComCrypto 解密并解析 Content=hello，结果 passed，不输出或提交向量里的示例密钥。自动回归使用动态随机测试密钥和独立 AES/SHA1 夹具，避免生产加解密自洽冒充协议兼容。
 
@@ -160,7 +160,9 @@ B-PACKAGE：`uv build --wheel --out-dir runtime/wecom-stage-b-package --index-ur
 
 B-DEPENDENCY：官方 PyPI 元数据核实 cryptography 50.0.2（2026-09-30，Apache-2.0 OR BSD-3-Clause），支持 Python3.14、Windows/Linux ARM64 wheels；新增 cffi 2.1.1、pycparser 3.12，uv.lock 对比现有版本变化={}。原官方源下载无进展后取消本任务 uv 进程并确认退出；临时使用当日核验的清华官方镜像说明 https://mirrors.tuna.tsinghua.edu.cn/help/pypi/，从既有 uv.lock 生成三包固定版本及全部允许 hash，`uv pip install --python .venv/Scripts/python.exe --no-deps --only-binary :all: --require-hashes --index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple -r runtime/wecom-crypto-install.txt --no-progress` 成功，保留 TLS/hash、canonical lock 来源和全局配置不变。非隔离 editable 构建曾因环境无 setuptools 失败，未改项目规则；按声明的隔离构建成功。
 
-B-DOCS：六份受影响现有文档同步（README、docs 索引、运维、架构、日志、路线图）；七份当前文档的本地链接解析无缺失；实际 config 与 example 的 section/key 相同，只补六个新字段且保留既有值；函数中文文档 AST 检查无缺失；git diff --check 无错误。
+B-DOCS：六份受影响现有文档同步（README、docs 索引、运维、架构、日志、路线图）；七份当前文档的本地链接解析无缺失；实际 config 与 example 的 section/key 相同，只补六个新字段且保留既有值；函数中文文档 AST 检查无缺失；完整 base→当前工作区的 git diff --check 无错误（初次只检查工作区遗漏已提交 Change 两处尾随空格，现已纠正）。
+
+B-REVIEW-F1：独立 Deep Review 在 head 34021b8 发现合法 CDATA 中 XML 示例误拒收（MEDIUM / BLOCKING）。先新增正式加密 POST 回归，Red exit1、两个子场景 403；改为 XMLParser 的 doctype 回调拒绝真实 DTD，Green 18 tests exit0，真实 DTD 仍拒绝。完整回归、HTTP 和 wheel 已重新执行。新 head 必须定向独立复审；不是旧 head 自动通过。另纠正两处 Change 尾随空格。
 
 ## 未验证内容与剩余风险
 

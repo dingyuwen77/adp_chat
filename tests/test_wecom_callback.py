@@ -189,6 +189,18 @@ class CallbackTests(unittest.TestCase):
             network.assert_not_called()
         self.assertEqual(list((self.root / "messages").glob("*.json")), [])
 
+    def test_cdata_and_comment_literals_are_not_mistaken_for_real_dtd(self):
+        """合法文字中的 XML 示例不属于文档声明，仍需原样可靠接收。"""
+        for index, literal in enumerate(("<!DOCTYPE html>", '<!ENTITY x "literal">'), 1):
+            plaintext = self.xml(str(index), f"CDATA_USER_{index}", "placeholder")
+            plaintext = plaintext.replace(b"<Content>placeholder</Content>",
+                                          ("<Content><![CDATA[" + literal + "]]></Content>").encode())
+            plaintext = plaintext.replace(b"</xml>", b"<!-- literal <!DOCTYPE example> --></xml>")
+            with self.subTest(literal=literal):
+                self.assertEqual(self.post(plaintext).status_code, 200)
+                self.assertEqual(self.stored(str(index))["content"], literal)
+                self.assertEqual(self.stored(str(index))["adp_state"], "RECEIVED")
+
     def test_replace_failure_never_acks_and_receiver_fails_closed(self):
         """原子提交失败不能 ACK，后续接收关闭直到重启，避免内存/磁盘分裂。"""
         with patch("storage.messages.os.replace", side_effect=OSError("disk failure")):

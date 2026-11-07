@@ -19,13 +19,19 @@ def invalid_callback() -> ChatError:
     return ChatError("wecom", "invalid_callback", "回调认证或消息格式无效。")
 
 
+class _NoDTDBuilder(ElementTree.TreeBuilder):
+    """在 XML 语法层拒绝真实 DTD，允许 CDATA 和注释里的普通字面内容。"""
+
+    def doctype(self, _name, _public_id, _system_id):
+        """声明在实体展开前被拒绝，不靠全文关键词猜测 XML 语法。"""
+        raise ValueError("DTD is not supported")
+
+
 def parse_xml(data: bytes) -> ElementTree.Element:
     """只接收有界调用方传入的 UTF-8 无 DTD XML，拒绝字段歧义。"""
     try:
         text = data.decode("utf-8")
-        if re.search(r"<!\s*(DOCTYPE|ENTITY)", text, re.I) or "\0" in text:
-            raise ValueError
-        root = ElementTree.fromstring(text)
+        root = ElementTree.fromstring(text, parser=ElementTree.XMLParser(target=_NoDTDBuilder()))
         tags = [child.tag for child in root]
         if root.tag != "xml" or len(set(tags)) != len(tags):
             raise ValueError
