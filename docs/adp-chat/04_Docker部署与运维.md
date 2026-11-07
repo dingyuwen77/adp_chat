@@ -214,9 +214,9 @@ JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文�
 .\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -p test_wecom_dispatch.py -v
 ```
 
-[wecom_dispatch_smoke.py](../../tests/wecom_dispatch_smoke.py)自动启动独立正式网关和[Fake ADP](../../tests/wecom_fake_adp.py)进程，以签名加密回调验证100员工真正同时等待、Fake30入口名额、同员工BUSY及重复回调；强杀自有网关进程后验证RECEIVED首次执行、armed恢复UNKNOWN不重投、同员工新消息可继续。结束核对进程退出和端口释放，删除自有临时配置/数据。30名额测试只核对Fake实际拒绝集合；本次保持30名额至手动屏障释放才观察到70拒绝，这不是实际ADP的固定失败数保证。
+[tests/wecom_dispatch_smoke.py](../../tests/wecom_dispatch_smoke.py)自动启动独立正式网关和[tests/wecom_fake_adp.py](../../tests/wecom_fake_adp.py)进程，以签名加密回调验证100员工真正同时等待、Fake30入口名额、同员工BUSY及重复回调；强杀自有网关进程后验证RECEIVED首次执行、armed恢复UNKNOWN不重投、同员工新消息可继续。结束核对进程退出和端口释放，删除自有临时配置/数据。30名额测试只核对Fake实际拒绝集合；本次保持30名额至手动屏障释放才观察到70拒绝，这不是实际ADP的固定失败数保证。
 
-手动/PyCharm调试使用**同一TOML体系的独立测试文件**：只在目标不存在时复制`config.example.toml`到`runtime/wecom-fake/config.toml`，保留根真实配置。编辑以下字段，其他通用字段保留示例；不得把真实AppKey复制到Fake文件：
+手动/PyCharm调试使用**同一TOML体系的独立测试文件**：只在目标不存在时复制[config.example.toml](../../config.example.toml)到`runtime/wecom-fake/config.toml`，保留根真实配置。编辑以下字段，其他通用字段保留示例；不得把真实AppKey复制到Fake文件：
 
 | 字段 | Fake本地值 |
 | --- | --- |

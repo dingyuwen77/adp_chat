@@ -103,7 +103,7 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 ## 企业微信网关（A～C 已实现，D/E 继续实施）
 
-已有多员工身份、加密回调、可靠接收和真正异步 ADP 转发/状态恢复，操作见 [本地运维](docs/adp-chat/04_Docker部署与运维.md#18-异步-adp与恢复阶段-c)。旧单用户接口保持原行为；启用网关后会调用配置的ADP，默认正式HTTPS，测试请使用文档的隔离Fake配置。通知当前只保存为 PENDING，尚未实际发送。按 [路线图](docs/wecom-integration/03_实施路线图.md) 继续D发送和E JSONL/Docker验收，F真实企微接入仍未实施。
+已有多员工身份、加密回调、可靠接收和真正异步 ADP 转发/状态恢复，操作见 [docs/adp-chat/04_Docker部署与运维.md](docs/adp-chat/04_Docker部署与运维.md#18-异步-adp与恢复阶段-c)。旧单用户接口保持原行为；启用网关后会调用配置的ADP，默认正式HTTPS，测试请使用文档的隔离Fake配置。通知当前只保存为 PENDING，尚未实际发送。按 [docs/wecom-integration/03_实施路线图.md](docs/wecom-integration/03_实施路线图.md) 继续D发送和E JSONL/Docker验收，F真实企微接入仍未实施。
 
 同员工忙碌立即拒绝、不排队；重复MsgId不重复执行/通知。不同员工不设人为模型并发限额。ADP零自动重试，UNKNOWN可靠保存提示并释放本地占用，旧云端请求可能仍在执行。**A～E的本地协议模拟和ADP测试不代表企业微信真实收发成功。**
 
