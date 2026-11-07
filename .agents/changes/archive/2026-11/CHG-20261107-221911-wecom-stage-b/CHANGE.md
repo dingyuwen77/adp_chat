@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: "CHG-20261107-221911-wecom-stage-b"
 title: "企业微信阶段 B 加密回调与可靠接收"
 level: L3
-status: ready_for_review
+status: done
 owner: "codex"
 branch: "feature/wecom-stage-b"
 created: 2026-11-07
-updated: 2026-11-07T22:55:04+08:00
+updated: 2026-11-07
 completion_gate: required
 depends_on: []
 affected_areas:
@@ -166,11 +166,17 @@ B-REVIEW-F1：独立 Deep Review 在 head 34021b8 发现合法 CDATA 中 XML 示
 
 ## 未验证内容与剩余风险
 
-B 实现和已选择验证完成，当前独立 Review/PR CI、guarded merge、main-fresh、归档及分支清理尚未完成。B 不包含 ADP 调度、真实企微接入、通知实际发送或 Docker 网关验收。
+B 实现、独立 Deep Review/修复复审、当前 head CI、guarded merge、main-fresh 和实现分支清理均完成。B 不包含 ADP 调度、真实企微接入、通知实际发送或 Docker 网关验收。
 
 ## 交付状态
 
-implementation=complete；delivery=incomplete；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
+implementation=complete；delivery=merged；validation=complete；main_fresh=complete；change_archive=本地归档；requirement_closure=not_applicable（正式 Roadmap，无 Issue close 生命周期）；cleanup=complete（实现分支）；end_to_end=complete。
+
+B-DELIVERY：独立 Reviewer /root/stage_b_review，base=76c3d2f8fc20afb57f66fce6da6820a2ec9ebee7，初审 head34021b8 发现 F1；修复 head=9b48edc14c4ed83ce5f819543a47dbf38797004c 定向复审 NO_FINDINGS_WITHIN_SCOPE/PASS，F1/F2 关闭、零阻塞。独立实跑18项协议测试及额外3类合法/7类恶意 XML 输入，复核111项日志、wheel源码与HTTP。Validation Asset Redundancy=clean。
+
+B-GIT：PR #14 https://github.com/dingyuwen77/adp_chat/pull/14，current-head CI run42384987111 success（111 tests / OK，14.201s）。最终身份 dingyuwen77/push+admin=true、main unprotected、rulesets=[]、reviews/threads=[]、base/head未漂移、live PR Contract有效。REST expected_head_sha=9b48edc14c4ed83ce5f819543a47dbf38797004c 合并为106dfb395d0469a2f4ea599e6a48aba5e1cb9a3d。main-fresh run42385273687/job128441209011 success，原始日志111 tests / OK，20.126s；merge tree与reviewed head一致。本地main与origin/main一致。未新增/修改CI，用户重申不新增远程CI。
+
+B-CLOSURE：重新读取B1～B6：协议、拒绝、原子BUSY、去重、失败不ACK和非文字隔离均对应正式测试/HTTP证据。Roadmap为正式需求Owner，无Issue close操作。实现远程分支GitHub自动删除，ls-remote确认不存在；本地确认ancestor和worktree后删除feature/wecom-stage-b。保留忽略目录底层验证证据；本任务HTTP进程/临时配置目录已退出清理。归档与Roadmap状态经独立文档PR回写，随后进入C。
 
 ## 备注
 
