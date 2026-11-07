@@ -31,7 +31,7 @@ class SingleTurnTests(unittest.TestCase):
         self.path = self.root / "config.toml"
         self.path.write_text(
             '[adp]\napp_key="fixture-key"\nuser_id="tester"\n'
-            '[chat]\nstructured_interaction=true\n'
+            '[chat]\nstream=false\n'
             '[logging]\nlog_enabled=false\n', encoding="utf-8",
         )
 
@@ -88,17 +88,21 @@ class SingleTurnTests(unittest.TestCase):
             self.assertIn("unsupported_command", errors)
             network.assert_not_called()
 
-    def test_legacy_attachment_config_is_ignored_without_retaining_secrets(self):
-        """旧本机配置仍可用于文本；已退役上传配置不进入运行时对象。"""
+    def test_retired_attachment_config_is_rejected_before_side_effects(self):
+        """废弃附件表明确拒绝，不发送问题、不保存会话且不泄露旧密钥。"""
         with self.path.open("a", encoding="utf-8") as destination:
-            destination.write('[attachments]\nsecret_key="retired-secret"\nallow_public_image_upload=true\n')
-        config = load_config(self.path)
-        self.assertFalse(hasattr(config, "secret_key"))
-        self.assertNotIn("retired-secret", repr(config))
-        code, output, errors, _, network = self.run_main(["问题"], return_value=FakeStream(completed()))
-        self.assertEqual(code, 0, errors)
-        self.assertEqual(output, "完整回答\n")
-        self.assertEqual(len(json.loads(network.call_args.args[0].data)["Contents"]), 1)
+            destination.write('[attachments]\nsecret_key="retired-secret"\n')
+        with self.assertRaises(ChatError) as caught:
+            load_config(self.path)
+        self.assertEqual(caught.exception.code, "unknown_section")
+        self.assertNotIn("retired-secret", str(caught.exception))
+        code, output, errors, keyboard, network = self.run_main(["问题"], return_value=FakeStream(completed()))
+        self.assertEqual(code, 1)
+        self.assertIn("unknown_section", errors)
+        self.assertNotIn("retired-secret", errors)
+        network.assert_not_called()
+        keyboard.assert_not_called()
+        self.assertFalse((self.root / "runtime/session.json").exists())
 
     def test_text_beginning_with_slash_remains_a_literal_question(self):
         """路径或其他以斜线开头的文字仍可转发，仅退役附件命令被拒绝。"""
@@ -189,8 +193,9 @@ class SingleTurnTests(unittest.TestCase):
         template = (ROOT / "config.example.toml").read_text(encoding="utf-8")
         self.path.write_text(template.replace('app_key = ""', 'app_key = "fixture"'), encoding="utf-8")
         config = load_config(self.path)
-        self.assertEqual(Path(config.session_file).resolve(), self.root / "runtime/session.json")
-        self.assertEqual(Path(config.log_file).resolve(), self.root / "logs/adp_chat.log")
+        # Windows 临时目录可能使用 8.3 短路径，两侧规范化后比较真实保存位置。
+        self.assertEqual(Path(config.session_file).resolve(), (self.root / "runtime/session.json").resolve())
+        self.assertEqual(Path(config.log_file).resolve(), (self.root / "logs/adp_chat.log").resolve())
 
     def test_example_explicitly_enables_question_logging(self):
         """复制模板后显式启用问题日志，代码默认关闭仍由独立回归保护。"""

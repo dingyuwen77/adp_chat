@@ -41,8 +41,7 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(first.ask("二").text, "二")
         self.assertEqual(network.call_count, 2)
         self.assertEqual({item[2] for item in seen}, {cid})
-        self.assertFalse(seen[0][1].detect_text_clarification)
-        self.assertFalse(seen[0][1].structured_interaction)
+        self.assertIs(seen[0][1], self.config)
 
     def test_busy_409_mechanism_and_lock_recovery(self):
         """用屏障控制真实线程交错，确保忙碌时不进入第二轮。"""

@@ -8,12 +8,11 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from adp.client import chat, chat_until_complete
+from adp.client import chat
 from core.config import ChatConfig, load_config
 from core.models import ChatError
 from core.logging import diagnostic_logger
-from test_clarification import response
-from test_chat import FakeStream, event
+from test_chat import FakeStream, event, response
 
 
 class LoggingTests(unittest.TestCase):
@@ -40,7 +39,7 @@ class LoggingTests(unittest.TestCase):
         content = Path(self.config.log_file).read_text(encoding="utf-8")
         self.assertIn(result.request_id, content)
         self.assertIn(result.conversation_id, content)
-        self.assertIn("clarification_source=text_rule", content)
+        self.assertIn("stream=False", content)
         self.assertIn("sse_completed", content)
         self.assertRegex(content, r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} client\.py L\d+\] \[INFO\]")
         self.assertIn('question="private-question-sentinel"', content)
@@ -239,21 +238,26 @@ class LoggingTests(unittest.TestCase):
         self.assertIn('question="问题"', content)
         self.assertNotIn("adp_answer", content)
 
-    def test_answer_callback_failure_is_logged_without_exception_body(self):
-        """补答取消在文件中可定位，调用方异常原样返回且不记录异常正文。"""
-        error = RuntimeError("private-callback-body")
+    def test_interruption_is_logged_without_exception_body(self):
+        """非预期读取异常原样传播，日志保留阶段但不记录异常正文。"""
+        error = RuntimeError("private-interruption-body")
 
-        def cancel(_):
-            """模拟宿主取消补充输入。"""
-            raise error
+        class BrokenStream(FakeStream):
+            """模拟传输适配器抛出的非预期异常。"""
 
-        with patch("adp.sse.open_request", return_value=response("请补充", 15)):
+            def read1(self, size):
+                """在正式读取路径触发中断。"""
+                raise error
+
+        stream = BrokenStream()
+        with patch("adp.sse.open_request", return_value=stream):
             with self.assertRaises(RuntimeError) as caught:
-                chat_until_complete("问题", config=self.config, answer_provider=cancel)
+                chat("问题", config=self.config)
         self.assertIs(caught.exception, error)
+        self.assertTrue(stream.closed)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
-        self.assertIn("answer_callback_failed", content)
-        self.assertNotIn("private-callback-body", content)
+        self.assertIn("request_interrupted", content)
+        self.assertNotIn("private-interruption-body", content)
 
     def test_default_diagnostics_hide_message_bodies(self):
         """生产默认不输出问题与回答正文。"""

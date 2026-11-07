@@ -49,7 +49,7 @@ def _frames(response) -> Iterator[tuple[str, str]]:
 
 
 def stream_events(payload: dict, timeout: float) -> Iterator[tuple[str, dict]]:
-    """发送一轮 V2 对话，交付已解码的事件，退出时关闭 HTTP 响应。"""
+    """解析 V2 的 SSE 响应并可靠关闭连接；关闭流式文本后仍使用此协议。"""
     request = Request(
         CHAT_URL,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
