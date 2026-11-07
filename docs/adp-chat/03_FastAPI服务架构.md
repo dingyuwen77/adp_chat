@@ -8,6 +8,10 @@
 
 `HTTP POST → Pydantic 输入校验 → ChatService 实例互斥锁 → ADP chat() → response.completed → ChatResponse`。
 
+ADP 请求固定使用 `Stream: "disable"`，让回复文本完整生成后输出。响应仍使用 SSE（`text/event-stream`）承载状态和消息事件，内部必须继续解析这些事件，确认 `response.completed` 成功后才能返回正式回复；不能直接按普通 JSON 读取上游响应。开关定义见[腾讯 ADP HTTP SSE 文档](https://cloud.tencent.com/document/product/1759/129202)。
+
+现有 `incremental` 只控制文本事件采用追加还是替换格式，`streaming_throttle` 控制流式模式下的回包频率，两者均不用于开启流式文本输出。旧配置继续兼容，对外 HTTP 字段、会话持久化、并发限制和错误处理沿用现有契约。
+
 - 服务生命周期和错误处理在 [src/api/app.py](../../src/api/app.py)；创建 HTTP 服务前完成配置/持久会话初始化，失败则不启动。
 - 路由在 [src/api/routes.py](../../src/api/routes.py)，HTTP Schema 在 [src/api/schemas.py](../../src/api/schemas.py)。
 - 单用户调用在 [src/application/chat_service.py](../../src/application/chat_service.py)；请求共享同一个服务实例，非阻塞获取实例内的互斥锁，失败返回 409，`finally` 释放。

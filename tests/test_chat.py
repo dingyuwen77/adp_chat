@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -52,16 +53,23 @@ class ChatTests(unittest.TestCase):
         self.config = load_config(self.config_path)
 
     def test_text_calls_reuse_session_and_keep_request_ids_distinct(self):
-        """同一会话跨轮保持身份和会话 ID，并生成独立的请求 ID。"""
+        """非流式跨轮保留会话和独立请求 ID，文本事件配置不重新开启流式。"""
         with patch("adp.sse.open_request", side_effect=[
             FakeStream(completed()), FakeStream(completed("第二轮")),
         ]) as transport:
             first = chat("第一轮", config=self.config)
-            second = chat("第二轮", config=self.config, conversation_id=first.conversation_id)
+            second = chat(
+                "第二轮", config=replace(self.config, incremental=False, streaming_throttle=20),
+                conversation_id=first.conversation_id,
+            )
 
         first_request, second_request = [
             json.loads(call.args[0].data) for call in transport.call_args_list
         ]
+        self.assertEqual([first_request["Stream"], second_request["Stream"]], ["disable", "disable"])
+        self.assertIs(first_request["Incremental"], True)
+        self.assertIs(second_request["Incremental"], False)
+        self.assertEqual(second_request["StreamingThrottle"], 20)
         self.assertEqual(first.text, "完整回答")
         self.assertEqual(second.text, "第二轮")
         self.assertEqual(first.conversation_id, second.conversation_id)

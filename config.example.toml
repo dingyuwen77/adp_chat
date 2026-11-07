@@ -14,9 +14,10 @@ user_name = "本地API测试"
 [chat]
 # 单轮读取超时，单位秒，必须为正数；超时不会自动重试。
 chat_timeout_seconds = 180
-# true 请求增量文本；false 请求全量替换；最终以完成事件为准。
+# 请求固定 Stream="disable"，回复文本完整生成后输出，仍以完成事件为准。
+# 本字段仅控制文本事件格式：true 为增量，false 为全量替换，不开启流式。
 incremental = true
-# 流式节流：0 沿用平台默认；非零值的单位和范围按应用 V2 协议设置。
+# 保留兼容的节流参数；当前关闭流式文本输出，调节它不会开启流式。
 streaming_throttle = 0
 # 可选系统角色；留空沿用应用角色，不需要覆盖时勿填写。
 system_role = ""

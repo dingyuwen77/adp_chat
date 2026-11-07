@@ -36,7 +36,7 @@ def _provider_error_message(code: str | None) -> str:
 
 
 def _payload(config: ChatConfig, request_id: str, conversation_id: str, contents: list) -> dict:
-    """以现有 V2 字段组装一轮文字对话请求。"""
+    """组装非流式文本请求；ADP 仍通过 SSE 事件交付状态和完整回复。"""
     payload = {
         "AppKey": config.app_key,
         "UserId": config.user_id,
@@ -44,7 +44,7 @@ def _payload(config: ChatConfig, request_id: str, conversation_id: str, contents
         "ConversationId": conversation_id,
         "RequestId": request_id,
         "Contents": contents,
-        "Stream": "enable",
+        "Stream": "disable",
         "Incremental": config.incremental,
     }
     optional = {
@@ -271,7 +271,11 @@ def chat(
     reply_to: ChatResult | None = None,
     on_preview: Callable[[PreviewEvent], None] | None = None,
 ) -> ChatResult:
-    """执行一轮 ADP 文字对话，不读取终端输入、不自动续答或重试。"""
+    """请求一轮非流式文字回复，等待成功完成后返回正式结果。
+
+    on_preview 兼容 ADP 返回的回复文本事件，不保证逐字回调或最终成功。
+    不读取终端输入、不自动续答或重试。
+    """
     if not isinstance(config, ChatConfig):
         raise ChatError("config", "invalid_config", "config 必须是 load_config() 返回的对话配置。")
     if reply_to is not None:
