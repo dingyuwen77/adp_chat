@@ -17,6 +17,7 @@ from xml.sax.saxutils import escape
 from core.config import default_config_path, load_config
 from core.models import ChatError
 from wecom.crypto import WeComCrypto
+from wecom.models import is_employee_id
 
 
 def initialize_test_keys(path: Path) -> None:
@@ -100,7 +101,8 @@ def main(argv=None) -> int:
         if args.inspect_state:
             from storage.messages import read_snapshot
 
-            fields = ("message_key", "user_id", "msg_id", "adp_state", "send_state", "request_id", "record_version")
+            fields = ("message_key", "user_id", "msg_id", "adp_state", "send_state", "request_id",
+                      "record_version", "environment", "send_result")
             records = [{k: r.get(k) for k in fields} for p in Path(config.messages_dir).glob("*.json")
                        if (r := read_snapshot(p))]
             print(json.dumps({"source": "local_snapshot", "records": records}, ensure_ascii=False))
@@ -111,7 +113,7 @@ def main(argv=None) -> int:
         if (target.scheme != "http" or target.hostname not in ("127.0.0.1", "localhost", "::1")
                 or target.username or target.password or target.query or target.fragment or target.path not in ("", "/")):
             raise ValueError("A～E 模拟客户端仅允许本机 HTTP 根地址")
-        if not re.fullmatch(r"[A-Za-z0-9_@.\-]{1,64}", args.user_id) or not re.fullmatch(r"[0-9]{1,32}", args.msg_id):
+        if not is_employee_id(args.user_id) or not re.fullmatch(r"[0-9]{1,32}", args.msg_id):
             raise ValueError("UserID 或 MsgId 格式无效")
         crypto = WeComCrypto(config.callback_token, config.encoding_aes_key, config.corp_id)
         timestamp, nonce = str(int(time.time())), secrets.token_hex(8)

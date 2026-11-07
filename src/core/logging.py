@@ -36,6 +36,21 @@ class CallbackAccessFilter(logging.Filter):
         return True
 
 
+class HTTPQueryFilter(logging.Filter):
+    """发送适配器存活时屏蔽HTTPX日志中的完整查询，Token/Secret不进入日志。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """在logger分发到任意Handler之前处理插值后的URL，不改HTTP请求。"""
+        def clean(match):
+            """GET查询中的corpsecret和access_token一律不展示。"""
+            value = match.group()
+            return value.partition("?")[0] + ("?[REDACTED]" if "?" in value else "")
+
+        record.msg = _URL.sub(clean, record.getMessage())
+        record.args = ()
+        return True
+
+
 def _prose_suffix(value: str) -> str:
     """保留URI凭据字段之后的中文语句；不解码值，避免把编码的敏感数据当正文。"""
     match = re.search(r"[，。！？；：、]", value)
@@ -86,7 +101,7 @@ def _mask_private_url(match: re.Match) -> str:
 
 def conversation_text(config: ChatConfig, text: str, *, limit: int | None = None) -> str:
     """完整脱敏后按Unicode字符截取，再转成单行JSON字符串，防止日志行伪造。"""
-    text = _mask_secrets(text, (config.app_key, config.callback_token, config.encoding_aes_key))
+    text = _mask_secrets(text, (config.app_key, config.callback_token, config.encoding_aes_key, config.wecom_app_secret))
     text = _URL.sub(_mask_private_url, text)
     if limit is not None:
         text = text[:limit]
@@ -158,7 +173,7 @@ def diagnostic_logger(config: ChatConfig):
         )
     except (OSError, ValueError):
         raise ChatError("logging", "unwritable", "无法创建日志文件，请检查 [logging] 的路径和权限。") from None
-    handler.setFormatter(_Formatter((config.app_key, config.callback_token, config.encoding_aes_key)))
+    handler.setFormatter(_Formatter((config.app_key, config.callback_token, config.encoding_aes_key, config.wecom_app_secret)))
     logger.addHandler(handler)
     try:
         yield logger

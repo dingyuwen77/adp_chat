@@ -94,6 +94,7 @@ def stop(process, *, force=False):
 def serve(args):
     """子进程复用正式应用或独立Fake，stdin触发正常退出。"""
     import uvicorn
+    from unittest.mock import patch
 
     target = create_fake_app(quota=args.quota, hold=True, calls_file=args.calls_file) if args.serve == "fake" else "api.app:app"
     server = uvicorn.Server(uvicorn.Config(target, host="127.0.0.1", port=args.port, workers=1,
@@ -105,10 +106,24 @@ def serve(args):
         server.should_exit = True
 
     threading.Thread(target=on_stop, daemon=True).start()
-    server.run()
+    if args.hold_notifications:
+        async def held_simulation(_sender, record):
+            """只在本测试子进程阻塞模拟出口，记录已进入发送边界，不是平台接受。"""
+            with args.simulation_calls_file.open("a", encoding="utf-8") as output:
+                output.write(json.dumps({"message_key": record["message_key"], "source": "simulated"}) + "\n")
+                output.flush()
+                os.fsync(output.fileno())
+            import asyncio
+
+            await asyncio.Event().wait()
+
+        with patch("wecom.sender.SimulatedSender.send", held_simulation):
+            server.run()
+    else:
+        server.run()
 
 
-def run_case(root, *, quota=0, crash=False):
+def run_case(root, *, quota=0, crash=False, notifications=False, notification_crash=False):
     """真实TCP/SSE与正式worker验证一套入站状态；测试数据用后清理。"""
     root.mkdir()
     fake_port, gateway_port = free_port(), free_port()
@@ -118,17 +133,22 @@ def run_case(root, *, quota=0, crash=False):
     config_file.write_text('[adp]\napp_key="fake-local-adp-only"\nuser_id="legacy-test"\n'
         '[logging]\nlog_enabled=true\nlog_question=false\nlog_answer_chars=0\n[wecom]\ncorp_id="wwf483023b734c570a"\nagent_id=1000053\n'
         f'adp_application="wecom-c-smoke"\ngateway_enabled=true\ncallback_token="{secrets.token_hex(12)}"\n'
-        f'encoding_aes_key="{key}"\nadp_url="{fake}/adp/v2/chat"\n', encoding="utf-8")
+        f'encoding_aes_key="{key}"\nadp_url="{fake}/adp/v2/chat"\n'
+        f'notification_mode="{"simulated" if notifications else "disabled"}"\ngateway_environment="test"\n', encoding="utf-8")
     config = load_config(config_file)
     processes, handles = [], []
     environment = {**os.environ, "ADP_CONFIG_FILE": str(config_file), "PYTHONDONTWRITEBYTECODE": "1"}
 
-    def launch(kind, port):
+    def launch(kind, port, *, hold_notifications=False):
         """保存自有Popen与日志句柄，只有这些资源可被回收。"""
         log = (root / f"{kind}-{len(processes)}.log").open("w", encoding="utf-8")
         handles.append(log)
-        process = subprocess.Popen([sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve()),
-            "--serve", kind, "--port", str(port), "--quota", str(quota), "--calls-file", str(root / "calls.jsonl")],
+        command = [sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve()),
+            "--serve", kind, "--port", str(port), "--quota", str(quota), "--calls-file", str(root / "calls.jsonl"),
+            "--simulation-calls-file", str(root / "simulation-calls.jsonl")]
+        if hold_notifications:
+            command.append("--hold-notifications")
+        process = subprocess.Popen(command,
             stdin=subprocess.PIPE, stdout=log, stderr=log, env=environment)
         processes.append(process)
         wait_for(lambda: process.poll() is None and json_http((fake if kind == "fake" else base) + ("/_test/status" if kind == "fake" else "/healthz")))
@@ -141,12 +161,12 @@ def run_case(root, *, quota=0, crash=False):
 
     try:
         launch("fake", fake_port)
-        if crash:
+        if crash or notification_crash:
             # 模拟上一进程只完成可靠接收，尚未武装；启动应执行首次请求。
             with MessageStore(config) as store:
                 store.put_if_absent(InboundMessage(config.corp_id, config.agent_id, "YNND", "1", "本机测试", 1))
-        gateway = launch("gateway", gateway_port)
-        if not crash:
+        gateway = launch("gateway", gateway_port, hold_notifications=notification_crash)
+        if not crash and not notification_crash:
             with ThreadPoolExecutor(max_workers=100) as pool:
                 durations = list(pool.map(lambda i: callback(config, base, f"EMP{i}", str(i + 1)), range(100)))
             observed = wait_for(lambda: (s if len((s := json_http(fake + "/_test/status"))["calls"]) == 100 else None))
@@ -160,35 +180,56 @@ def run_case(root, *, quota=0, crash=False):
             assert len(json_http(fake + "/_test/status")["calls"]) == 100
             json_http(fake + "/_test/release", b"")
             saved = wait_for(lambda: (s if (s := snapshots()) and all(r["adp_state"] not in {"RECEIVED", "ADP_SEND_ARMED"} for r in s.values()) else None))
+            if notifications:
+                saved = wait_for(lambda: (s if (s := snapshots()) and all(r["send_state"] == "SEND_SIMULATED" for r in s.values()) else None))
             denied = set(observed["rejected"])
             for r in saved.values():
                 if r["msg_id"] == "1001":
                     continue
                 assert r["adp_state"] == ("ADP_REJECTED" if r["request_id"] in denied else "ADP_SUCCEEDED")
-                assert r["send_state"] == "PENDING"
+                assert r["send_state"] == ("SEND_SIMULATED" if notifications else "PENDING")
+                if notifications:
+                    assert r["send_result"]["source"] == "simulated"
             result = {"case": f"quota-{quota}", "calls": 100, "peak": observed["peak"], "actual_rejections": len(denied),
                       "max_ack_ms": round(max(durations), 1)}
         else:
             wait_for(lambda: len(json_http(fake + "/_test/status")["calls"]) == 1)
             first_id = snapshots()["1"]["request_id"]
-            assert snapshots()["1"]["adp_state"] == "ADP_SEND_ARMED"
+            if notification_crash:
+                json_http(fake + "/_test/release", b"")
+                wait_for(lambda: (root / "simulation-calls.jsonl").exists())
+                wait_for(lambda: snapshots()["1"]["send_state"] == "SEND_ARMED")
+                assert snapshots()["1"]["adp_state"] == "ADP_SUCCEEDED"
+            else:
+                assert snapshots()["1"]["adp_state"] == "ADP_SEND_ARMED"
             stop(gateway, force=True)
             with MessageStore(config) as store:
                 store.put_if_absent(InboundMessage(config.corp_id, config.agent_id, "SIYU", "2", "本机测试", 1))
             gateway = launch("gateway", gateway_port)
-            wait_for(lambda: snapshots()["1"]["adp_state"] == "ADP_UNKNOWN")
+            wait_for(lambda: snapshots()["1"]["send_state"] == "SEND_UNKNOWN" if notification_crash
+                     else snapshots()["1"]["adp_state"] == "ADP_UNKNOWN")
             wait_for(lambda: len(json_http(fake + "/_test/status")["calls"]) == 2)
             callback(config, base, "YNND", "1")
             callback(config, base, "YNND", "3")
             wait_for(lambda: len(json_http(fake + "/_test/status")["calls"]) == 3)
             json_http(fake + "/_test/release", b"")
             wait_for(lambda: snapshots()["2"]["adp_state"] == snapshots()["3"]["adp_state"] == "ADP_SUCCEEDED")
+            if notifications:
+                wait_for(lambda: all(r["send_state"] == ("SEND_UNKNOWN" if notification_crash and r["msg_id"] == "1" else "SEND_SIMULATED")
+                                     for r in snapshots().values()))
             calls = [json.loads(line) for line in (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()]
             assert sum(c["RequestId"] == first_id for c in calls) == 1
             assert [c["UserId"] for c in calls] == ["YNND", "SIYU", "YNND"]
             assert calls[0]["ConversationId"] == calls[2]["ConversationId"] != calls[1]["ConversationId"]
             result = {"case": "forced-process-crash", "calls": 3, "old_request_calls": 1,
                       "received_resumed": True, "unknown_released": True}
+            if notification_crash:
+                attempts = [json.loads(line) for line in (root / "simulation-calls.jsonl").read_text(encoding="utf-8").splitlines()]
+                assert len(attempts) == 1 and attempts[0]["source"] == "simulated"
+                assert snapshots()["1"]["send_state"] == "SEND_UNKNOWN"
+                result = {"case": "forced-notification-crash", "calls": 3, "old_request_calls": 1,
+                          "old_notification_attempts": 1, "recovered_send_state": "SEND_UNKNOWN"}
+        result["notifications"] = "simulated" if notifications else "disabled"
         result["processes"] = [p.pid for p in processes]
         return result
     except Exception:
@@ -218,6 +259,9 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--quota", type=int, default=0)
     parser.add_argument("--calls-file", type=Path)
+    parser.add_argument("--simulation-calls-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--hold-notifications", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--simulate-notifications", action="store_true", help="使用D正式Simulator，并验证发送武装后强杀恢复")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     if args.serve:
@@ -225,7 +269,11 @@ def main(argv=None):
         return 0
     with tempfile.TemporaryDirectory(prefix="wecom-dispatch-") as directory:
         root = Path(directory)
-        cases = [run_case(root / "unlimited"), run_case(root / "quota", quota=30), run_case(root / "crash", crash=True)]
+        cases = [run_case(root / "unlimited", notifications=args.simulate_notifications),
+                 run_case(root / "quota", quota=30, notifications=args.simulate_notifications),
+                 run_case(root / "crash", crash=True, notifications=args.simulate_notifications)]
+        if args.simulate_notifications:
+            cases.append(run_case(root / "notification-crash", notifications=True, notification_crash=True))
     result = {"status": "passed", "source": "fake_adp", "real_wecom": False, "cases": cases,
               "cleanup": "owned_processes_exited_ports_released_temporary_data_removed"}
     if args.report:

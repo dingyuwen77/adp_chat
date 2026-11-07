@@ -1,6 +1,6 @@
 """FastAPI 常驻服务及统一异常边界。"""
 
-from contextlib import asynccontextmanager, ExitStack
+from contextlib import asynccontextmanager, ExitStack, AsyncExitStack
 import logging
 
 from fastapi import FastAPI, Request
@@ -11,6 +11,7 @@ from application.chat_service import ChatService
 from application.wecom_gateway import WeComGateway
 from application.wecom_worker import GatewayWorker
 from adp.async_client import AsyncADPClient
+from wecom.sender import create_sender
 from core.config import load_config
 from core.logging import CallbackAccessFilter, diagnostic_logger
 from core.models import ChatError
@@ -36,14 +37,16 @@ async def lifespan(app: FastAPI):
             access.addFilter(access_filter)
             resources.callback(access.removeFilter, access_filter)
             app.state.wecom_gateway = gateway
-            adp = AsyncADPClient(config)
-            worker = GatewayWorker(gateway, adp)
-            try:
+            async with AsyncExitStack() as outgoing:
+                adp = AsyncADPClient(config)
+                outgoing.push_async_callback(adp.aclose)
+                sender = create_sender(config)
+                if sender is not None:
+                    outgoing.push_async_callback(sender.aclose)
+                worker = GatewayWorker(gateway, adp, sender=sender)
+                outgoing.push_async_callback(worker.stop)
                 await worker.start()
                 yield
-            finally:
-                await worker.stop()
-                await adp.aclose()
         else:
             yield
 

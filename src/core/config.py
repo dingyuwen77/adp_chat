@@ -46,6 +46,10 @@ class ChatConfig:
     max_unfinished_messages: int = 2000
     adp_url: str = ADP_CHAT_URL
     adp_response_max_bytes: int = 1_048_576
+    notification_mode: str = "disabled"
+    gateway_environment: str = "test"
+    wecom_app_secret: str = field(default="", repr=False)
+    send_timeout_seconds: float = 15
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -102,6 +106,11 @@ class ChatConfig:
             raise ChatError("config", "invalid_adp_url", "网关 ADP 地址只允许正式 HTTPS 端点或本机 Fake 端点。")
         if not 16_384 <= self.adp_response_max_bytes <= 1_048_576:
             raise ChatError("config", "invalid_gateway_resources", "ADP 流物理大小保护须在16KiB至1MiB之间。")
+        if (self.notification_mode not in {"disabled", "simulated", "wecom"}
+                or self.gateway_environment not in {"test", "production"}
+                or (self.notification_mode == "simulated" and self.gateway_environment != "test")
+                or not 0 < self.send_timeout_seconds <= TIMEOUT_MAX):
+            raise ChatError("config", "invalid_notification", "通知模式、环境或超时配置无效。")
 
 
 _SECTIONS = {
@@ -119,6 +128,8 @@ _SECTIONS = {
         "callback_token": str, "encoding_aes_key": str, "messages_dir": str,
         "callback_max_bytes": int, "max_unfinished_messages": int,
         "adp_url": str, "adp_response_max_bytes": int,
+        "notification_mode": str, "gateway_environment": str, "wecom_app_secret": str,
+        "send_timeout_seconds": (int, float),
     },
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,

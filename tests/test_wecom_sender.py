@@ -9,7 +9,10 @@ import os
 import tempfile
 import unittest
 from dataclasses import replace
+from dataclasses import asdict
 from pathlib import Path
+from threading import Event
+from unittest.mock import patch
 
 import httpx
 
@@ -17,9 +20,9 @@ from adp.async_client import ADPOutcome, unknown_outcome
 from application.wecom_gateway import WeComGateway
 from application.wecom_worker import GatewayWorker
 from core.config import ChatConfig
-from core.models import ChatResult
+from core.models import ChatError, ChatResult
 from wecom.models import InboundMessage
-from wecom.sender import SendOutcome, SimulatedSender, WeComSender
+from wecom.sender import SendOutcome, SimulatedSender, WeComSender, create_sender
 
 
 class SenderTests(unittest.IsolatedAsyncioTestCase):
@@ -51,8 +54,8 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.005)
 
     def pending(self, user="YNND", text="模拟回答"):
-        """发送器只消费已保存通知；此处保留完整源身份供payload检查。"""
-        return {**self.receive(user), "notification": text}
+        """准备协议消费者所需字段；持久化闭环由下方真实Worker测试证明。"""
+        return {"user_id": user, "notification": text}
 
     async def test_payload_token_cache_and_fake_acceptance_remain_simulated(self):
         """同应用共享token，payload只发单一原用户；Fake成功永不标记真实接受。"""
@@ -140,7 +143,8 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
                  ({"errcode": 0, "invaliduser": "OTHER|YNND"}, "SEND_FAILED"),
                  ({"errcode": 0, "unlicenseduser": "YNND"}, "SEND_FAILED"),
                  ({"errcode": False}, "SEND_UNKNOWN"), ({"errcode": "0"}, "SEND_UNKNOWN"),
-                 ({"errcode": 0, "invaliduser": []}, "SEND_UNKNOWN")]
+                 ({"errcode": 0, "invaliduser": []}, "SEND_UNKNOWN"),
+                 ({"errcode": 0, "invaliduser": " ynnd"}, "SEND_UNKNOWN")]
         for body, expected in cases:
             with self.subTest(body=body):
                 posts = []
@@ -240,6 +244,337 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
             await worker.stop()
+
+    async def test_armed_recovery_never_resends_and_pending_recovers_first_send(self):
+        """有确定ADP结果的两条通知，只恢复未开始的一条，不再调ADP。"""
+        records = [self.receive("YNND", "1"), self.receive("SIYU", "2")]
+
+        class ADP:
+            """仅准备两条已完成Fake结果。"""
+
+            async def request(inner, record):
+                """每条一次，恢复阶段替换成禁止ADP以证明不重调。"""
+                result = ChatResult("独立模拟回答", record["conversation_id"], record["request_id"])
+                return ADPOutcome("ADP_SUCCEEDED", result.text, result=result)
+
+        preparing = GatewayWorker(self.gateway, ADP())
+        for record in records:
+            await preparing._execute(record)
+        first = self.gateway.store.get(records[0]["message_key"])
+        plan = SendOutcome("SEND_ARMED", "simulated", None, None, 1, "armed")
+        self.gateway.store.update(first["message_key"], expected_version=first["record_version"],
+                                  send_state="SEND_ARMED", send_result=asdict(plan))
+        self.gateway.close()
+        self.gateway = WeComGateway(self.config, logging.getLogger("wecom-d-test"))
+        self.addCleanup(self.gateway.close)
+        sent = []
+
+        class ForbiddenADP:
+            """恢复已完成结果不得穿过ADP边界。"""
+
+            async def request(inner, record):
+                """即使调用被Worker异常捕获，后续也断言没有调用。"""
+                sent.append("unexpected-adp")
+                raise AssertionError("不得重调ADP")
+
+        class Sender(SimulatedSender):
+            """在真实发送入口记录模拟目标。"""
+
+            async def send(inner, record):
+                """只允许第二条未武装通知进入。"""
+                sent.append(record["user_id"])
+                return await super().send(record)
+
+        worker = GatewayWorker(self.gateway, ForbiddenADP(), sender=Sender(self.config))
+        await worker.start()
+        try:
+            await self.wait_for(lambda: self.gateway.store.get(records[1]["message_key"])["send_state"] == "SEND_SIMULATED")
+            self.assertEqual(sent, ["SIYU"])
+            unknown = self.gateway.store.get(first["message_key"])
+            self.assertEqual((unknown["adp_state"], unknown["send_state"]), ("ADP_SUCCEEDED", "SEND_UNKNOWN"))
+            self.assertEqual(self.receive(msg="3")["adp_state"], "RECEIVED")
+        finally:
+            await worker.stop()
+
+    async def test_failed_and_unknown_send_never_hold_user_or_repeat_adp(self):
+        """企业微信故障只更新send维度，保存的ADP结果保持确定成功。"""
+        for index, state in enumerate(("SEND_FAILED", "SEND_UNKNOWN"), 1):
+            record = self.receive(f"EMP{index}", str(index))
+            calls = []
+
+            class ADP:
+                """仅计数一次获准ADP。"""
+
+                async def request(inner, current):
+                    """正式结果由同Worker保存。"""
+                    calls.append((current["msg_id"], current["request_id"]))
+                    result = ChatResult("模拟回答", current["conversation_id"], current["request_id"])
+                    return ADPOutcome("ADP_SUCCEEDED", result.text, result=result)
+
+            class Sender:
+                """模拟HTTP明确失败或响应未知。"""
+
+                source = "fake_http"
+
+                async def send(inner, current):
+                    """返回一次结果，不附带第二条通知意图。"""
+                    return SendOutcome(state, "fake_http", False if state == "SEND_FAILED" else None,
+                                       0, 1, "fixture_error")
+
+            worker = GatewayWorker(self.gateway, ADP(), sender=Sender())
+            await worker.start()
+            try:
+                await self.wait_for(lambda: self.gateway.store.get(record["message_key"])["send_state"] == state)
+                self.assertEqual(self.gateway.store.get(record["message_key"])["adp_state"], "ADP_SUCCEEDED")
+                self.assertEqual(sum(msg == str(index) for msg, _ in calls), 1)
+                self.assertEqual(len({request for _, request in calls}), len(calls))
+                self.assertEqual(self.receive(f"EMP{index}", str(100 + index))["adp_state"], "RECEIVED")
+                self.assertIsNone(worker.failure)
+            finally:
+                await worker.stop()
+
+    async def test_test_environment_cannot_enable_native_send_or_forge_acceptance(self):
+        """配置和快照共同防止测试成功误变成真实平台接受。"""
+        self.assertIsNone(create_sender(replace(self.config, notification_mode="disabled")))
+        with self.assertRaises(ChatError):
+            WeComSender(replace(self.config, wecom_app_secret=self.secret))
+        with self.assertRaises(ChatError):
+            replace(self.config, gateway_environment="production")
+        original = self.receive()
+        busy = self.receive(msg="2")
+        forged = SendOutcome("SEND_ACCEPTED", "fake_http", True, 1, 1, "accepted")
+        self.gateway.store.update(busy["message_key"], expected_version=1,
+            send_state="SEND_ARMED", send_result=asdict(SendOutcome("SEND_ARMED", "simulated", None, None, 1, "armed")))
+        current = self.gateway.store.get(busy["message_key"])
+        self.assertEqual(current["send_state"], "SEND_ARMED")
+        with self.assertRaises(ChatError):
+            self.gateway.store.update(current["message_key"], expected_version=current["record_version"],
+                                      send_state="SEND_ACCEPTED", send_result=asdict(forged))
+        self.assertEqual(self.gateway.store.get(original["message_key"])["adp_state"], "RECEIVED")
+
+    def busy_notice(self):
+        """接收Owner生成真实PENDING提示，避免测试自行拼业务终态。"""
+        self.receive()
+        return self.receive(msg="2")
+
+    async def test_arm_failure_prevents_sender_and_result_failure_never_resends(self):
+        """发送前武装失败不出站；出站结果保存失败重启未知且不重复发送。"""
+        pending = self.busy_notice()
+        calls = []
+
+        class Sender(SimulatedSender):
+            """把独立模拟发送作为可观察副作用边界。"""
+
+            async def send(inner, current):
+                """调用瞬间重读真实文件，必须已经可靠武装。"""
+                from storage.messages import read_snapshot
+
+                path = Path(self.config.messages_dir) / f"{current['message_key']}.json"
+                self.assertEqual(read_snapshot(path)["send_state"], "SEND_ARMED")
+                calls.append(current["message_key"])
+                return await super().send(current)
+
+        worker = GatewayWorker(self.gateway, None, sender=Sender(self.config))
+        with patch("storage.messages._publish", side_effect=OSError("disk failure")):
+            await worker._execute_notification(pending)
+        self.assertEqual(calls, [])
+        self.assertIsNotNone(worker.failure)
+        self.gateway.close()
+        self.gateway = WeComGateway(self.config, logging.getLogger("wecom-d-test"))
+        self.addCleanup(self.gateway.close)
+        pending = self.gateway.store.get(pending["message_key"])
+        self.assertEqual(pending["send_state"], "PENDING")
+        original = self.gateway.store._write
+
+        def fail_result(value):
+            """武装发布正常，只破坏模拟发送完成后的终态发布。"""
+            if value["send_state"] == "SEND_SIMULATED":
+                with patch("storage.messages._publish", side_effect=OSError("disk failure")):
+                    return original(value)
+            return original(value)
+
+        worker = GatewayWorker(self.gateway, None, sender=Sender(self.config))
+        with patch.object(self.gateway.store, "_write", side_effect=fail_result):
+            await worker._execute_notification(pending)
+        self.assertEqual(calls, [pending["message_key"]])
+        self.assertEqual(self.gateway.store.get(pending["message_key"])["send_state"], "SEND_ARMED")
+        self.gateway.close()
+        self.gateway = WeComGateway(self.config, logging.getLogger("wecom-d-test"))
+        self.addCleanup(self.gateway.close)
+        worker = GatewayWorker(self.gateway, None, sender=Sender(self.config))
+        # 保留已获准但尚未执行的消息，以挂起FakeADP只观察旧通知恢复，不篡改快照。
+        class HoldingADP:
+            """第一条获准消息尚未开始，允许首次请求但与通知重发无关。"""
+
+            async def request(inner, current):
+                """一直等待，关闭时由Worker可靠转换UNKNOWN。"""
+                await asyncio.Event().wait()
+
+        worker.adp = HoldingADP()
+        await worker.start()
+        try:
+            self.assertEqual(self.gateway.store.get(pending["message_key"])["send_state"], "SEND_UNKNOWN")
+            self.assertEqual(calls, [pending["message_key"]])
+        finally:
+            await worker.stop()
+
+    async def test_cancellation_during_notification_commit_reads_back_terminal_state(self):
+        """取消磁盘线程交接：未出站武装保守未知，已保存模拟完成不能覆盖成未知。"""
+        for index, boundary in enumerate(("SEND_ARMED", "SEND_SIMULATED"), 1):
+            self.receive(f"EMP{index}", str(index * 10))
+            notice = self.receive(f"EMP{index}", str(index * 10 + 1))
+            entered, release = Event(), Event()
+            original = self.gateway.store._write
+            sends = []
+
+            def publish(value):
+                """真实原子发布后暂停，让取消发生在await结果返回之前。"""
+                original(value)
+                if value["message_key"] == notice["message_key"] and value["send_state"] == boundary:
+                    entered.set()
+                    if not release.wait(8):
+                        raise AssertionError("未释放测试磁盘屏障")
+
+            class Sender(SimulatedSender):
+                """只记录是否越过发送边界。"""
+
+                async def send(inner, current):
+                    """返回模拟完成，不能产生真实平台接受。"""
+                    sends.append(current["message_key"])
+                    return await super().send(current)
+
+            worker = GatewayWorker(self.gateway, None, sender=Sender(self.config))
+            with patch.object(self.gateway.store, "_write", side_effect=publish):
+                task = asyncio.create_task(worker._execute_notification(notice))
+                try:
+                    await self.wait_for(entered.is_set)
+                    task.cancel()
+                    release.set()
+                    await asyncio.gather(task, return_exceptions=True)
+                finally:
+                    release.set()
+            self.assertIsNone(worker.failure)
+            self.assertEqual(len(sends), 0 if boundary == "SEND_ARMED" else 1)
+            self.assertEqual(self.gateway.store.get(notice["message_key"])["send_state"],
+                             "SEND_UNKNOWN" if boundary == "SEND_ARMED" else "SEND_SIMULATED")
+
+    async def test_refresh_network_failure_after_explicit_token_rejection_is_known_unsent(self):
+        """消息明确42001未接受，随后Token GET故障不应伪装消息可能已发送。"""
+        gets, posts = [], []
+
+        def handle(request):
+            """首次获取有效形式Token，消息过期拒绝后刷新连接失败。"""
+            if request.method == "GET":
+                gets.append(request)
+                if len(gets) > 1:
+                    raise httpx.ConnectError("private credential context")
+                return httpx.Response(200, json={"errcode": 0, "access_token": self.token, "expires_in": 7200})
+            posts.append(request)
+            return httpx.Response(200, json={"errcode": 42001})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+            try:
+                outcome = await sender.send(self.pending())
+            finally:
+                await sender.aclose()
+        self.assertEqual((len(gets), len(posts)), (2, 1))
+        self.assertEqual((outcome.state, outcome.accepted_parts), ("SEND_FAILED", 0))
+        self.assertEqual(outcome.provider_code, 42001)
+
+    async def test_concurrent_expiration_uses_one_refresh_and_bounded_resends(self):
+        """多员工共享旧Token失效时缓存按应用刷新，不形成刷新风暴。"""
+        gets, posts = [], []
+
+        async def handle(request):
+            """异步交接制造并发，平台只拒绝旧Token，不拒绝新Token。"""
+            await asyncio.sleep(0)
+            if request.method == "GET":
+                gets.append(request)
+                return httpx.Response(200, json={"errcode": 0, "access_token": self.token + str(len(gets)), "expires_in": 7200})
+            posts.append(request)
+            return httpx.Response(200, json={"errcode": 42001 if request.url.params["access_token"] == self.token + "1" else 0})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+            try:
+                outcomes = await asyncio.gather(*(sender.send(self.pending(f"EMP{i}")) for i in range(20)))
+            finally:
+                await sender.aclose()
+        self.assertEqual(len(gets), 2)
+        self.assertTrue(20 <= len(posts) <= 40)
+        self.assertTrue(all(x.state == "SEND_SIMULATED" and x.accepted_parts == 1 for x in outcomes))
+
+    async def test_v2_upgrade_and_environment_guard_keep_pending_evidence(self):
+        """C的PENDING兼容升级，但测试状态目录不能在production下静默发送。"""
+        from storage.messages import MessageStore, read_snapshot
+
+        pending = self.busy_notice()
+        self.gateway.close()
+        path = Path(self.config.messages_dir) / f"{pending['message_key']}.json"
+        old = {k: v for k, v in read_snapshot(path).items() if k not in {"environment", "send_result"}}
+        old["schema_version"] = 2
+        path.write_text(json.dumps(old), encoding="utf-8")
+        production = replace(self.config, gateway_environment="production", notification_mode="disabled")
+        with self.assertRaises(ChatError):
+            MessageStore(production)
+        self.assertEqual(read_snapshot(path)["schema_version"], 2)
+        self.gateway = WeComGateway(self.config, logging.getLogger("wecom-d-test"))
+        self.addCleanup(self.gateway.close)
+        upgraded = self.gateway.store.get(pending["message_key"])
+        self.assertEqual((upgraded["schema_version"], upgraded["environment"], upgraded["send_state"]), (3, "test", "PENDING"))
+        self.assertEqual(upgraded["notification"], pending["notification"])
+        self.gateway.close()
+        with self.assertRaises(ChatError):
+            MessageStore(production)
+
+    async def test_native_factory_validates_tls_and_disables_redirects_and_retries(self):
+        """只构造/关闭原生工厂不发送；检验真实F路径的证书与零传输重试参数。"""
+        transport = httpx.MockTransport(lambda request: (_ for _ in ()).throw(AssertionError("不得发送")))
+        config = replace(self.config, gateway_environment="production", notification_mode="wecom", wecom_app_secret=self.secret)
+        with patch("wecom.sender.httpx.AsyncHTTPTransport", return_value=transport) as factory:
+            sender = WeComSender(config)
+            options = factory.call_args.kwargs
+            self.assertTrue(options["verify"].check_hostname)
+            self.assertIsNone(options["verify"].keylog_filename)
+            self.assertEqual(options["retries"], 0)
+            self.assertFalse(sender.http.follow_redirects)
+            self.assertFalse(sender.http.trust_env)
+            await sender.aclose()
+
+    async def test_reserved_or_multiple_targets_never_reach_http(self):
+        """单员工契约禁止@all/多人列表，连Token请求也不应发出。"""
+        calls = []
+
+        def handle(request):
+            """Fake响应不能让非法群发目标混成成功。"""
+            calls.append(request)
+            return httpx.Response(200, json={"errcode": 0, "access_token": self.token, "expires_in": 7200})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+            try:
+                for target in ("@all", "@ALL", "YNND|SIYU", "_employee", "a" * 65, None):
+                    outcome = await sender.send(self.pending(target))
+                    self.assertEqual(outcome.state, "SEND_FAILED")
+            finally:
+                await sender.aclose()
+        self.assertEqual(calls, [])
+
+    async def test_invalid_user_comparison_respects_official_case_insensitive_ids(self):
+        """官方账号唯一性忽略大小写；不同大小写的无效目标也不能当成接受。"""
+        def handle(request):
+            """有效形式Token后返回errcode0但该员工无效。"""
+            return httpx.Response(200, json={"errcode": 0, "access_token": self.token, "expires_in": 7200}
+                                  if request.method == "GET" else {"errcode": 0, "invaliduser": "ynnd"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+            try:
+                outcome = await sender.send(self.pending("YNND"))
+            finally:
+                await sender.aclose()
+        self.assertEqual(outcome.state, "SEND_FAILED")
 
 
 if __name__ == "__main__":
