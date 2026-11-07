@@ -4,12 +4,10 @@
 
 ## ADP 单用户对话
 
-1. [docs/adp-chat/01_文字追问接口.md](adp-chat/01_文字追问接口.md)：直接 Python Library 调用保留的高级文字追问、Widget 和补答能力；单次脚本、交互 CLI、HTTP 每条消息都只调用一轮，不自动补答。
-2. [docs/adp-chat/02_结构化业务状态.md](adp-chat/02_结构化业务状态.md)：直接 Python Library 调用可选的结构化业务状态解析；必须由 ADP 应用显式遵守协议才有意义，三种默认入口均关闭该解析。
-3. [docs/adp-chat/03_FastAPI服务架构.md](adp-chat/03_FastAPI服务架构.md)：固定 ConversationId、单实例互斥、HTTP 状态及错误边界。
-4. [docs/adp-chat/04_Docker部署与运维.md](adp-chat/04_Docker部署与运维.md)：Python/PyCharm 本地调试、Linux 环境准备、Docker 部署、内网调用、测试、备份和回滚。
+1. [docs/adp-chat/03_FastAPI服务架构.md](adp-chat/03_FastAPI服务架构.md)：三入口共用的单轮实现、ADP 输出模式、固定 ConversationId、互斥及 HTTP 错误边界。
+2. [docs/adp-chat/04_Docker部署与运维.md](adp-chat/04_Docker部署与运维.md)：Python/PyCharm 本地调试、当前配置与迁移、Linux Docker 部署、内网调用、测试、备份和回滚。
 
-已有机器可读协议：[docs/interaction.schema.json](interaction.schema.json)。真正的 HTTP 请求响应模型以 [src/api/schemas.py](../src/api/schemas.py) 为准；不要把历史结构化业务协议误当作 FastAPI 输入格式。
+HTTP 请求响应模型以 [src/api/schemas.py](../src/api/schemas.py) 为准；旧高级追问与自定义业务状态实现及其文档已经退役。
 
 ## 可执行示例
 

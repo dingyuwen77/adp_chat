@@ -16,17 +16,12 @@ class ChatConfig:
     visitor_id: str = ""
     user_name: str = ""
     chat_timeout_seconds: float = 180
-    incremental: bool = True
+    stream: bool = False
     streaming_throttle: int = 0
     system_role: str = field(default="", repr=False)
     search_network: str = ""
     workflow_status: str = ""
     enable_multi_intent: bool | None = None
-    first_question: str = field(default="", repr=False)
-    show_preview: bool = True
-    interactive: bool = True
-    detect_text_clarification: bool = True
-    structured_interaction: bool = False
     log_enabled: bool = True
     log_level: str = "INFO"
     log_file: str = "logs/adp_chat.log"
@@ -68,13 +63,10 @@ _SECTIONS = {
         "app_key": str, "user_id": str, "visitor_id": str, "user_name": str,
     },
     "chat": {
-        "chat_timeout_seconds": (int, float), "incremental": bool,
+        "chat_timeout_seconds": (int, float), "stream": bool,
         "streaming_throttle": int, "system_role": str, "search_network": str,
         "workflow_status": str, "enable_multi_intent": bool,
-        "detect_text_clarification": bool,
-        "structured_interaction": bool,
     },
-    "cli": {"first_question": str, "show_preview": bool, "interactive": bool},
     "session": {"session_file": str},
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,
@@ -91,7 +83,7 @@ def default_config_path() -> Path:
 
 
 def load_config(path: str | Path | None = None) -> ChatConfig:
-    """读取应用配置；忽略服务器专用部署表及废弃附件表。"""
+    """读取当前应用配置；服务器专用部署表由部署脚本独立校验。"""
     path = Path(path) if path is not None else default_config_path()
     try:
         with path.open("rb") as source:
@@ -104,7 +96,7 @@ def load_config(path: str | Path | None = None) -> ChatConfig:
     values = {}
     for name, group in data.items():
         # 部署 IP/端口只由服务器脚本校验，不影响本地入口或进入 ADP 配置。
-        if name in ("attachments", "deployment") and isinstance(group, dict):
+        if name == "deployment" and isinstance(group, dict):
             continue
         if name not in _SECTIONS or not isinstance(group, dict):
             raise ChatError("config", "unknown_section", "配置包含未知分组或分组格式错误。")

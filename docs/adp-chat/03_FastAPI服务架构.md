@@ -8,9 +8,11 @@
 
 `HTTP POST → Pydantic 输入校验 → ChatService 实例互斥锁 → ADP chat() → response.completed → ChatResponse`。
 
-ADP 请求固定使用 `Stream: "disable"`，让回复文本完整生成后输出。响应仍使用 SSE（`text/event-stream`）承载状态和消息事件，内部必须继续解析这些事件，确认 `response.completed` 成功后才能返回正式回复；不能直接按普通 JSON 读取上游响应。开关定义见[腾讯 ADP HTTP SSE 文档](https://cloud.tencent.com/document/product/1759/129202)。
+配置 `[chat].stream=false`（默认）时向 ADP 发送 `Stream: "disable"`，完整生成回复文本后输出；设为 `true` 则发送 `Stream: "enable"`，接收逐段文本。两种模式均通过 SSE（`text/event-stream`）承载状态和消息事件，内部必须继续解析，确认 `response.completed` 成功后才能返回正式回复。FastAPI 均一次性返回完整 JSON。开关定义见[腾讯 ADP HTTP SSE 文档](https://cloud.tencent.com/document/product/1759/129202)。
 
-现有 `incremental` 只控制文本事件采用追加还是替换格式，`streaming_throttle` 控制流式模式下的回包频率，两者均不用于开启流式文本输出。旧配置继续兼容，对外 HTTP 字段、会话持久化、并发限制和错误处理沿用现有契约。
+`streaming_throttle` 只在流式模式发送，控制每次回包积攒的字符数。文本事件格式由客户端统一请求增量格式，最终回复只取成功完成事件，不依赖中间文本拼接。配置迁移见 [docs/adp-chat/04_Docker部署与运维.md](04_Docker部署与运维.md)。
+
+当前实现只做单轮文字转发，原样保留 JSON 文本、问卷和卡片等正式内容，不解析自定义业务完成状态，也不自动索取补答。旧的自动追问、业务状态、预览回调编排和对应配置已经移除；三个入口均共用当前单轮实现。
 
 - 服务生命周期和错误处理在 [src/api/app.py](../../src/api/app.py)；创建 HTTP 服务前完成配置/持久会话初始化，失败则不启动。
 - 路由在 [src/api/routes.py](../../src/api/routes.py)，HTTP Schema 在 [src/api/schemas.py](../../src/api/schemas.py)。

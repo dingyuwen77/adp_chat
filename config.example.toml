@@ -1,5 +1,5 @@
 # 复制为 config.toml；真实 AppKey 仅保存在本机，不提交 Git。
-# main.py 是默认单次入口；高级解析选项仅作用于直接 Python Library 调用。
+# main.py、adp-chat 和 FastAPI 共用同一套单轮对话配置。
 
 [adp]
 # 必填：在已发布 ADP 应用 API 接入页复制 AppKey，不是腾讯云 SecretKey。
@@ -12,12 +12,12 @@ visitor_id = ""
 user_name = "本地API测试"
 
 [chat]
+# ADP 文本输出开关：false 非流式（默认），true 流式；两种模式都使用 SSE。
+# 仅控制上游 ADP；main/CLI/FastAPI 仍等待本轮完成后一次输出正式结果。
+stream = false
 # 单轮读取超时，单位秒，必须为正数；超时不会自动重试。
 chat_timeout_seconds = 180
-# 请求固定 Stream="disable"，回复文本完整生成后输出，仍以完成事件为准。
-# 本字段仅控制文本事件格式：true 为增量，false 为全量替换，不开启流式。
-incremental = true
-# 保留兼容的节流参数；当前关闭流式文本输出，调节它不会开启流式。
+# 仅 stream=true 时发送：每积攒多少字符回包一次；0 使用平台默认。
 streaming_throttle = 0
 # 可选系统角色；留空沿用应用角色，不需要覆盖时勿填写。
 system_role = ""
@@ -25,25 +25,13 @@ system_role = ""
 search_network = ""
 # 工作流过程状态："" 沿用应用设置，"enable" 开启，"disable" 关闭。
 workflow_status = ""
-# 多意图开关：省略沿用应用设置；确需覆盖时取消注释并填 true 或 false。
+# 多意图开关：省略沿用平台设置；需要覆盖时取消注释。
 # enable_multi_intent = true
-# 高级 Library：true 使用有限文字追问规则；单次脚本、交互 CLI、HTTP 均关闭。
-detect_text_clarification = true
-# 高级 Library：仅云端已配置业务 JSON 契约时设 true；三种默认入口均关闭。
-structured_interaction = false
 
 [session]
 # 三种默认入口共用的会话路径；相对路径基于本配置目录，不支持多进程同时使用。
 # 同应用同用户复用；切换身份时使用独立路径或运行 --new-session。
 session_file = "runtime/session.json"
-
-[cli]
-# 兼容旧配置字段，当前入口不使用；单次提问使用 --ask 参数。
-first_question = ""
-# 兼容旧配置字段，当前入口不使用；当前 CLI 只展示正式回复。
-show_preview = true
-# 兼容旧配置字段，当前入口不使用；adp-chat 连续交互，main.py 默认单次。
-interactive = true
 
 [logging]
 # true 写本地日志；false 不创建日志。问答可能含业务信息，请按需关闭。

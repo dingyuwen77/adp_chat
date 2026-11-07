@@ -1,6 +1,5 @@
 """统一的单用户单会话调用入口。"""
 
-from dataclasses import replace
 from threading import Lock
 
 from adp.client import chat
@@ -13,8 +12,8 @@ class ChatService:
     """负责顺序提交同一 ADP 会话中的消息。"""
 
     def __init__(self, config: ChatConfig) -> None:
-        """关闭自动追问推断，并创建每个服务实例独有的互斥锁。"""
-        self.config = replace(config, detect_text_clarification=False, structured_interaction=False)
+        """共享当前配置，并创建每个服务实例独有的互斥锁。"""
+        self.config = config
         self._conversation_id: str | None = None
         self._lock = Lock()
 

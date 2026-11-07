@@ -66,7 +66,20 @@ if (-not (Test-Path config.toml)) { Copy-Item config.example.toml config.toml }
 
 进入后连续输入文字，每条消息只发送一轮；`/exit` 或 `/quit` 退出，`/new` **人工开启新会话**。不要在 FastAPI 容器仍使用同一个 `runtime/session.json` 时操作 `/new` 或发消息，否则进程内锁无法协调这两个独立进程。
 
-当前 CLI 由命令行参数和上述交互命令控制；`[cli]` 下的 `first_question`、`show_preview`、`interactive` 仅作为旧配置兼容字段读取，不影响当前入口。单次脚本、交互 CLI 和 HTTP 都关闭高级文字推断及结构化业务解析；直接 Python Library 的高级用法见 [docs/adp-chat/01_文字追问接口.md](01_文字追问接口.md)。
+当前 CLI 由命令行参数和上述交互命令控制，三种入口均只转发一轮，不自动索取补答或判断业务完成。
+
+上游 ADP 的输出模式在根配置中设置：
+
+```toml
+[chat]
+stream = false  # false 非流式（默认），true 流式
+```
+
+修改后重启 main、CLI 或 FastAPI 进程。此开关控制 ADP 的文本回包方式；三种入口均在 `response.completed` 成功后输出完整正式结果，FastAPI 不因此变成流式 HTTP 接口。`streaming_throttle` 仅在 `stream=true` 时有效，0 使用平台默认回包频率。
+
+**配置迁移：**新版已删除 `[cli]`（`first_question`、`show_preview`、`interactive`）、`[attachments]`，以及 `[chat]` 下的 `incremental`、`detect_text_clarification`、`structured_interaction`；加载器会拒绝这些退役项。将其删除后增加 `stream=false`，其他现用参数按 [config.example.toml](../../config.example.toml) 填写。旧自动追问/业务状态/补答/预览编排接口也已退役，当前单轮入口在 [src/adp/client.py](../../src/adp/client.py)。
+
+服务器升级前保留一份权限受限的旧配置备份，使用新镜像时同步采用新配置。回滚旧镜像时须同时恢复旧配置格式；部署脚本不会自动恢复配置内容，旧镜像不能直接加载新增的 `stream` 字段。现有会话文件无需迁移。本机配置清理不代表服务器已升级。
 
 ### 1.4 本地 FastAPI 与 PyCharm 调试
 
