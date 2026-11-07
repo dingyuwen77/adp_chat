@@ -16,7 +16,7 @@ HTTP 请求响应模型以 [src/api/schemas.py](../src/api/schemas.py) 为准；
 
 ## 企业微信接入（HTTP 本地联调先行，网关尚未实现）
 
-1. [docs/wecom-integration/01_网关架构设计.md](wecom-integration/01_网关架构设计.md)：企业微信回调、身份、消息生命周期及待实现边界。
+1. [docs/wecom-integration/01_网关架构设计.md](wecom-integration/01_网关架构设计.md)：企业微信回调、身份、同用户忙碌即拒绝、跨用户异步并发、ADP UNKNOWN 释放、独立发送状态。
 2. [docs/wecom-integration/02_结构化日志事件.md](wecom-integration/02_结构化日志事件.md)：网关 JSONL/Cosmos DB 日志设计，尚非已部署能力。
 3. [docs/wecom-integration/03_实施路线图.md](wecom-integration/03_实施路线图.md)：A～E 的 HTTP 本地/内网阶段和 F 的真实接入门禁、逐阶段验收。
 
