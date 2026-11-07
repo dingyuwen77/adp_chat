@@ -105,6 +105,8 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 当前版本只具备单用户 `POST /api/v1/chat`，尚未实现企业微信 `GET/POST /wecom/callback`；不能直接将现有内网 URL 填入企业微信后台。下一阶段按 [docs/wecom-integration/03_实施路线图.md](docs/wecom-integration/03_实施路线图.md) 依次开发：A 多用户身份/会话、B HTTP 回调和可靠 ACK、C 消息调度恢复、D 模拟发送、E JSONL 与本地/Docker HTTP 联调。**A～E 不要求公网 HTTPS/HTTP 地址**；F 才处理企业微信实际可达的回调地址（HTTP/HTTPS）和员工真实收发。HTTP/HTTPS 共用一条 FastAPI 业务路由，未来无需再造另一套网关。
 
+**已确认但尚未实现的网关语义：**不同员工尽可能立即异步转发，不设置人为的 ADP 业务并发上限；同一员工上一轮仍在处理时，新 MsgId 立即拒绝并通知，不排队。ADP 明确执行前拒绝后解释真实错误码、提示手动重试；结果未知时保存证据、通知并释放**本地**会话，不自动重投 ADP。企业微信通知发送状态独立；接口明确接受即认为网关发送完成，不判断已读。上述均属未来阶段 A～F 的实施要求，不是现有代码已经支持的能力。
+
 架构与边界见 [docs/wecom-integration/01_网关架构设计.md](docs/wecom-integration/01_网关架构设计.md)，日志事件见 [docs/wecom-integration/02_结构化日志事件.md](docs/wecom-integration/02_结构化日志事件.md)。现有 `/api/v1/chat` 无应用鉴权，继续只允许可信内网调用；不得因为后续接收企业微信回调而将其暴露公网。
 
 ## 测试
