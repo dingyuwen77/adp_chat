@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: "CHG-20261107-221911-wecom-stage-b"
 title: "企业微信阶段 B 加密回调与可靠接收"
 level: L3
-status: in_progress
+status: ready_for_review
 owner: "codex"
 branch: "feature/wecom-stage-b"
 created: 2026-11-07
-updated: 2026-11-07
+updated: 2026-11-07T22:55:04+08:00
 completion_gate: required
 depends_on: []
 affected_areas: 
@@ -16,8 +16,11 @@ affected_areas:
 affected_paths: 
   - "src/api"
   - "src/storage"
-contracts: []
-data_changes: []
+contracts:
+  - "GET/POST /wecom/callback"
+  - "schema_version=1 消息快照"
+data_changes:
+  - "messages_dir 单消息 JSON 接收状态"
 ---
 
 # 变更摘要
@@ -98,12 +101,12 @@ E1 支持复用既有模块；E2/E3 决定必须验签解密、校验内外企�
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | B1 正式 GET/POST 协议 | docs/wecom-integration/03_实施路线图.md#AC6 | not_satisfied | 开发中 |
-| R2 | B2 签名/解密/企业应用身份拒绝 | docs/wecom-integration/03_实施路线图.md#AC7 | not_satisfied | 开发中 |
-| R3 | B3 同用户竞态一次获准及 BUSY 提示 | docs/wecom-integration/03_实施路线图.md#AC8 | not_satisfied | 开发中 |
-| R4 | B4 重复消息一次接收 | docs/wecom-integration/03_实施路线图.md#AC9 | not_satisfied | 开发中 |
-| R5 | B5 落盘失败不能ACK | docs/wecom-integration/03_实施路线图.md#AC10 | not_satisfied | 开发中 |
-| R6 | B6 非文字/事件不投ADP | docs/wecom-integration/03_实施路线图.md#AC11 | not_satisfied | 开发中 |
+| R1 | B1 正式 GET/POST 协议 | docs/wecom-integration/03_实施路线图.md#AC6 | satisfied | 正式 GET/POST、独立 AES 布局回归及官方 path/90968 向量通过；真实 HTTP smoke 通过 |
+| R2 | B2 签名/解密/企业应用身份拒绝 | docs/wecom-integration/03_实施路线图.md#AC7 | satisfied | 签名/接收企业/内外企业和 AgentID/员工/MsgId/DTD/巨包/旧时间戳均在写盘前拒绝 |
+| R3 | B3 同用户竞态一次获准及 BUSY 提示 | docs/wecom-integration/03_实施路线图.md#AC8 | satisfied | Barrier 双线程真实 HTTP：一条 RECEIVED、一条 REJECTED_USER_BUSY/PENDING；跨员工独立获准 |
+| R4 | B4 重复消息一次接收 | docs/wecom-integration/03_实施路线图.md#AC9 | satisfied | 并发相同 MsgId 只有一条快照/一次接收序号；顺序重复和跨进程重复不改变原意图 |
+| R5 | B5 落盘失败不能ACK | docs/wecom-integration/03_实施路线图.md#AC10 | satisfied | 真实 fsync/replace 故障和发布后结果未知均不 ACK；关闭后续接收，重启按已保存快照去重 |
+| R6 | B6 非文字/事件不投ADP | docs/wecom-integration/03_实施路线图.md#AC11 | satisfied | 非文字和事件返回空 ACK，不创建状态、不调用 ADP（正式出站边界断言） |
 
 # 计划改动
 
@@ -136,24 +139,36 @@ targeted 同步现有Owner，不新增重复文档主题。cryptography为协议
 
 # 完成审计
 
-- [ ] upstream_re_read：重新读取 B1～B6。
-- [ ] change_coverage：上游要求完整映射。
-- [ ] reverse_audit：回调→可信身份→快照→ACK与失败。
-- [ ] unresolved_cleared：required证据完整。
+- [x] upstream_re_read：重新读取 B1～B6。
+- [x] change_coverage：上游要求完整映射。
+- [x] reverse_audit：回调→可信身份→快照→ACK与失败。
+- [x] unresolved_cleared：required证据完整。
 
 # 完成证据与状态
 
 ## 新鲜证据
 
-A的实现/交付证据在既有归档；B尚未运行Red/Green。
+B-RED：`.venv/Scripts/python.exe -B -X utf8 -m unittest discover -s tests -p test_wecom_callback.py -v`，exit 1，storage.messages 不存在；此前未写生产实现。
+
+B-GREEN：Windows Python 3.14.7，`.venv/Scripts/python.exe -B -X utf8 -m unittest discover -s tests -v`，110 passed / 0 failed / 0 skipped / exit 0，13.647s；新增 17 项接收/协议测试与原 93 项回归。完整底层输出 runtime/wecom-stage-b-regression.log，仅本机保存。
+
+B-HTTP：`.venv/Scripts/python.exe -B -X utf8 tests/wecom_local_smoke.py --report runtime/wecom-stage-b-http.json`，exit 0；独立 Uvicorn PID 200、11720，前后两进程共用隔离测试目录；GET/POST→落盘→空 ACK，YNND 首条获准/第二条 BUSY、SIYU 独立获准、重启相同 MsgId 去重。3 条快照保持正确，最长客户端耗时 228.0ms（包含客户端进程启动，不是纯服务耗时）。正常 lifespan shutdown、两进程退出、监听释放、临时配置/数据清理均实查。没有调用 ADP/企微，测试身份不作云端认证证据。
+
+B-PROTOCOL：本机 HTTPS 实际读取企业微信官方 https://developer.work.weixin.qq.com/document/path/90238、/90930、/90968 正文，使用官方公开测试向量经生产 WeComCrypto 解密并解析 Content=hello，结果 passed，不输出或提交向量里的示例密钥。自动回归使用动态随机测试密钥和独立 AES/SHA1 夹具，避免生产加解密自洽冒充协议兼容。
+
+B-PACKAGE：`uv build --wheel --out-dir runtime/wecom-stage-b-package --index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple --no-progress`，exit 0；zipfile 实读 adp_chat-0.1.0-py3-none-any.whl，确认五个新增正式模块和固定 cryptography==50.0.2 的 METADATA。正式 editable 安装也已更新。
+
+B-DEPENDENCY：官方 PyPI 元数据核实 cryptography 50.0.2（2026-09-30，Apache-2.0 OR BSD-3-Clause），支持 Python3.14、Windows/Linux ARM64 wheels；新增 cffi 2.1.1、pycparser 3.12，uv.lock 对比现有版本变化={}。原官方源下载无进展后取消本任务 uv 进程并确认退出；临时使用当日核验的清华官方镜像说明 https://mirrors.tuna.tsinghua.edu.cn/help/pypi/，从既有 uv.lock 生成三包固定版本及全部允许 hash，`uv pip install --python .venv/Scripts/python.exe --no-deps --only-binary :all: --require-hashes --index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple -r runtime/wecom-crypto-install.txt --no-progress` 成功，保留 TLS/hash、canonical lock 来源和全局配置不变。非隔离 editable 构建曾因环境无 setuptools 失败，未改项目规则；按声明的隔离构建成功。
+
+B-DOCS：六份受影响现有文档同步（README、docs 索引、运维、架构、日志、路线图）；七份当前文档的本地链接解析无缺失；实际 config 与 example 的 section/key 相同，只补六个新字段且保留既有值；函数中文文档 AST 检查无缺失；git diff --check 无错误。
 
 ## 未验证内容与剩余风险
 
-B实现、测试、Review与交付尚未完成。
+B 实现和已选择验证完成，当前独立 Review/PR CI、guarded merge、main-fresh、归档及分支清理尚未完成。B 不包含 ADP 调度、真实企微接入、通知实际发送或 Docker 网关验收。
 
 ## 交付状态
 
-implementation=incomplete；delivery=incomplete；validation=incomplete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
+implementation=complete；delivery=incomplete；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
 
 ## 备注
 

@@ -1,4 +1,6 @@
 import os
+import base64
+import binascii
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -33,6 +35,12 @@ class ChatConfig:
     corp_id: str = ""
     agent_id: int = 0
     adp_application: str = ""
+    gateway_enabled: bool = False
+    callback_token: str = field(default="", repr=False)
+    encoding_aes_key: str = field(default="", repr=False)
+    messages_dir: str = "runtime/messages"
+    callback_max_bytes: int = 65536
+    max_unfinished_messages: int = 2000
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -66,6 +74,16 @@ class ChatConfig:
                    for value in (self.corp_id, self.adp_application))
         ):
             raise ChatError("config", "invalid_wecom_scope", "[wecom] 的企业、应用 ID 和固定 ADP 逻辑应用名必须完整有效。")
+        if not self.messages_dir.strip() or "\0" in self.messages_dir or not 1024 <= self.callback_max_bytes <= 1_048_576 or self.max_unfinished_messages < 1:
+            raise ChatError("config", "invalid_gateway_resources", "网关目录或物理资源保护配置无效。")
+        if self.gateway_enabled:
+            try:
+                valid_key = len(self.encoding_aes_key) == 43 and len(base64.b64decode(self.encoding_aes_key + "=", validate=True)) == 32
+            except (ValueError, binascii.Error):
+                valid_key = False
+            if (not all(scope) or not valid_key or not self.callback_token.isascii()
+                    or not self.callback_token.isalnum() or len(self.callback_token) > 32):
+                raise ChatError("config", "invalid_gateway_credentials", "启用网关需要完整身份作用域和有效的回调测试 Token/AES 密钥。")
 
 
 _SECTIONS = {
@@ -78,7 +96,11 @@ _SECTIONS = {
         "workflow_status": str, "enable_multi_intent": bool,
     },
     "session": {"session_file": str},
-    "wecom": {"corp_id": str, "agent_id": int, "adp_application": str},
+    "wecom": {
+        "corp_id": str, "agent_id": int, "adp_application": str, "gateway_enabled": bool,
+        "callback_token": str, "encoding_aes_key": str, "messages_dir": str,
+        "callback_max_bytes": int, "max_unfinished_messages": int,
+    },
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,
         "log_max_bytes": int, "log_backup_count": int,
@@ -125,4 +147,7 @@ def load_config(path: str | Path | None = None) -> ChatConfig:
     session_path = Path(config.session_file)
     if not session_path.is_absolute():
         config = replace(config, session_file=str(Path(path).absolute().parent / session_path))
+    messages_path = Path(config.messages_dir)
+    if not messages_path.is_absolute():
+        config = replace(config, messages_dir=str(Path(path).absolute().parent / messages_path))
     return config

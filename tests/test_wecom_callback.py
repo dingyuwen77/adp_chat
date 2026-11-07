@@ -23,6 +23,7 @@ from core.config import ChatConfig
 from core.models import ChatError
 from storage.messages import MessageStore, message_key
 from wecom.crypto import WeComCrypto
+from wecom_callback_client import initialize_test_keys
 
 
 class CallbackTests(unittest.TestCase):
@@ -136,6 +137,22 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual([r["adp_state"] for r in (first, second)], ["RECEIVED"] * 2)
         self.assertNotEqual(first["conversation_id"], second["conversation_id"])
 
+    def test_concurrent_duplicate_callbacks_commit_only_one_snapshot(self):
+        """相同 MsgId 真正并发时也只产生一次获准状态，没有额外 BUSY 通知。"""
+        barrier = Barrier(2)
+
+        def submit(_index):
+            """同时通过正式 HTTP 提交同一消息身份。"""
+            barrier.wait(timeout=5)
+            return self.post().status_code
+
+        with ThreadPoolExecutor(2) as pool:
+            self.assertEqual(list(pool.map(submit, range(2))), [200, 200])
+        records = list((self.root / "messages").glob("*.json"))
+        self.assertEqual(len(records), 1)
+        saved = self.stored("1")
+        self.assertEqual((saved["adp_state"], saved["send_state"], saved["receive_sequence"]), ("RECEIVED", "NONE", 1))
+
     def test_signature_receiver_outer_and_inner_identity_are_all_checked(self):
         """每个认证/身份投影都在持久化和 ACK 前拒绝。"""
         ciphertext = self.encrypted(self.xml())
@@ -179,6 +196,64 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(list((self.root / "messages").glob("*.json")), [])
         self.assertEqual(self.post().status_code, 503)
 
+    def test_fsync_failure_and_physical_resource_limit_never_fake_reception(self):
+        """文件同步失败不 ACK；物理保护拒绝新消息，已保存重复仍可 ACK。"""
+        with patch("storage.messages.os.fsync", side_effect=OSError("fsync failure")):
+            self.assertEqual(self.post().status_code, 503)
+        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
+        self.app.state.wecom_gateway.store.close()
+        limited = replace(self.config, max_unfinished_messages=1)
+        self.app.state.wecom_gateway.store = MessageStore(limited)
+        self.assertEqual(self.post().status_code, 200)
+        self.assertEqual(self.post(self.xml("2", "SIYU")).status_code, 503)
+        self.assertEqual(self.post().status_code, 200)
+        self.assertIsNone(self.stored("2"))
+
+    def test_failure_after_atomic_publication_recovers_without_second_reception(self):
+        """发布已生效但调用报错时关闭接收，重启以落盘事实去重并恢复占用。"""
+        replace_file = os.replace
+
+        def publish_then_fail(source, target):
+            """在真实原子发布后注入结果未知，不撤销已生效文件。"""
+            replace_file(source, target)
+            raise OSError("publication outcome uncertain")
+
+        with patch("storage.messages.os.replace", side_effect=publish_then_fail):
+            self.assertEqual(self.post().status_code, 503)
+        self.assertEqual(len(list((self.root / "messages").glob("*.json"))), 1)
+        self.assertEqual(self.post(self.xml("2")).status_code, 503)
+        self.app.state.wecom_gateway.store.close()
+        self.app.state.wecom_gateway.store = MessageStore(self.config)
+        saved = self.stored("1")
+        self.assertEqual(self.post(self.xml("1", content="不得替换原内容")).status_code, 200)
+        self.assertEqual(self.stored("1"), saved)
+        self.assertEqual(self.post(self.xml("2")).status_code, 200)
+        self.assertEqual(self.stored("2")["adp_state"], "REJECTED_USER_BUSY")
+
+    def test_corrupt_or_unsupported_snapshot_is_preserved_and_blocks_restart(self):
+        """版本/结构损坏不能静默当作空目录，避免重复接收已处理消息。"""
+        self.post()
+        self.app.state.wecom_gateway.store.close()
+        path = next((self.root / "messages").glob("*.json"))
+        original = json.loads(path.read_text(encoding="utf-8"))
+        for content in (b"broken json", json.dumps({**original, "schema_version": 2}).encode(),
+                        json.dumps({**original, "request_id": "unexpected"}).encode()):
+            path.write_bytes(content)
+            with self.subTest(content=content[:12]), self.assertRaises(ChatError):
+                MessageStore(self.config)
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_cryptographic_padding_and_claimed_plaintext_length_are_strict(self):
+        """有合法签名的畸形加密包也不能通过认证边界。"""
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+        for raw in (b"x" * 31 + b"\0", b"x" * 28 + b"\4\4\3\4",
+                    b"r" * 16 + struct.pack("!I", 999999) + b"x" * 11 + b"\1"):
+            encryptor = Cipher(algorithms.AES(self.key), modes.CBC(self.key[:16])).encryptor()
+            ciphertext = base64.b64encode(encryptor.update(raw) + encryptor.finalize()).decode()
+            with self.subTest(raw=raw[:4]):
+                self.assertEqual(self.post(ciphertext=ciphertext).status_code, 403)
+
     def test_directory_is_exclusive_and_restart_restores_busy_from_snapshot(self):
         """OS 锁拒绝第二实例；同目录重开从唯一消息事实恢复占用。"""
         self.post()
@@ -187,6 +262,9 @@ class CallbackTests(unittest.TestCase):
         self.app.state.wecom_gateway.store.close()
         with MessageStore(self.config) as store:
             self.assertEqual(store.get(message_key(self.config.corp_id, self.config.agent_id, "1"))["adp_state"], "RECEIVED")
+            self.app.state.wecom_gateway.store = store
+            self.assertEqual(self.post(self.xml("2")).status_code, 200)
+            self.assertEqual(self.stored("2")["adp_state"], "REJECTED_USER_BUSY")
         self.assertTrue((self.root / "messages").is_dir())
 
     def test_crypto_encrypt_interoperates_with_independent_decoder(self):
@@ -200,3 +278,35 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(raw[16:20], struct.pack("!I", len(b"reference-layout")))
         self.assertEqual(raw[20:-raw[-1]], b"reference-layout" + self.config.corp_id.encode())
         self.assertEqual(raw[-raw[-1]:], bytes([raw[-1]]) * raw[-1])
+
+    def test_test_key_initializer_preserves_existing_configuration_and_refuses_rotation(self):
+        """本机初始化仅填空测试密钥，保留既有配置且拒绝再次覆盖。"""
+        from core.config import load_config
+
+        path = self.root / "config.toml"
+        path.write_text('[adp]\napp_key="existing-fake"\nuser_id="legacy"\n'
+                        '[wecom]\ncorp_id="corp"\nagent_id=1000053\nadp_application="local"\n'
+                        'messages_dir="keep-this-directory"\n', encoding="utf-8")
+        initialize_test_keys(path)
+        config = load_config(path)
+        self.assertEqual((config.app_key, config.user_id), ("existing-fake", "legacy"))
+        self.assertTrue(config.gateway_enabled)
+        self.assertEqual(config.messages_dir, str(self.root / "keep-this-directory"))
+        self.assertEqual(len(base64.b64decode(config.encoding_aes_key + "=")), 32)
+        self.assertNotIn(config.callback_token, repr(config))
+        saved = path.read_bytes()
+        with self.assertRaises(ValueError):
+            initialize_test_keys(path)
+        self.assertEqual(path.read_bytes(), saved)
+
+    def test_access_log_drops_signed_query_even_on_encoded_callback_path(self):
+        """Uvicorn 原始路径的不同编码不能绕过密文/签名查询串脱敏。"""
+        import logging
+        from core.logging import CallbackAccessFilter
+
+        record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
+                                   '%s - "%s %s HTTP/%s" %d',
+                                   ("127.0.0.1", "GET", "/%77ecom/callback?msg_signature=hidden&echostr=hidden", "1.1", 200), None)
+        self.assertTrue(CallbackAccessFilter().filter(record))
+        self.assertNotIn("hidden", record.getMessage())
+        self.assertNotIn("?", record.getMessage())
