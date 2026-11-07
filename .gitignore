@@ -10,5 +10,6 @@ __pycache__/
 build/
 dist/
 logs/
+log/
 runtime/
 .agents/project-context.json

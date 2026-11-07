@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from adp_chat.core.config import ChatConfig
-from adp_chat.core.models import ChatError, ChatResult
+from core.config import ChatConfig
+from core.models import ChatError, ChatResult
 
 try:
     from fastapi.testclient import TestClient
-    from adp_chat.api.app import app
+    from api.app import app
 except ImportError:
     TestClient = None
     app = None
@@ -29,7 +29,7 @@ class ApiTests(unittest.TestCase):
             "fixture-app-key", "only-user", log_enabled=False,
             session_file=str(Path(directory.name) / "session.json"),
         )
-        loader = patch("adp_chat.api.app.load_config", return_value=self.config)
+        loader = patch("api.app.load_config", return_value=self.config)
         loader.start()
         self.addCleanup(loader.stop)
         self.client = TestClient(app)
@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
 
     def test_health_and_invalid_input(self):
         """健康检查和 422 不发送 ADP。"""
-        with patch("adp_chat.application.chat_service.chat") as provider:
+        with patch("application.chat_service.chat") as provider:
             self.assertEqual(self.client.get("/healthz").json(), {"status": "ok"})
             for payload in ({}, {"message": "  "}, {"message": 3}, {"message": "ok", "extra": 1}):
                 response = self.client.post("/api/v1/chat", json=payload)
@@ -53,7 +53,7 @@ class ApiTests(unittest.TestCase):
             "完成", cid, "request-1", record_id="record-1", reply_method=18,
             reply_contents=(({"Type": "text", "Text": "完成"}, {"Type": "image", "Image": {"Url": "fixture"}}),),
         )
-        with patch("adp_chat.application.chat_service.chat", return_value=result) as provider:
+        with patch("application.chat_service.chat", return_value=result) as provider:
             response = self.client.post("/api/v1/chat", json={"message": "您好"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["conversation_id"], cid)
@@ -62,7 +62,7 @@ class ApiTests(unittest.TestCase):
 
     def test_unexpected_error_returns_safe_500(self):
         """不可预期异常不把私密正文暴露给调用方。"""
-        with patch("adp_chat.application.chat_service.chat", side_effect=RuntimeError("sensitive exception")):
+        with patch("application.chat_service.chat", side_effect=RuntimeError("sensitive exception")):
             with TestClient(app, raise_server_exceptions=False) as client:
                 response = client.post("/api/v1/chat", json={"message": "你好"})
         self.assertEqual(response.status_code, 500)
@@ -91,7 +91,7 @@ class ApiTests(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
 
-        with patch("adp_chat.application.chat_service.chat", side_effect=blocking_adp) as provider:
+        with patch("application.chat_service.chat", side_effect=blocking_adp) as provider:
             thread = threading.Thread(target=worker)
             thread.start()
             try:
@@ -113,7 +113,7 @@ class ApiTests(unittest.TestCase):
             (ChatError("chat", "timeout", "private body"), 504),
             (ChatError("chat", "network_error", "private body"), 502),
         ]:
-            with self.subTest(status=status), patch("adp_chat.application.chat_service.chat", side_effect=error):
+            with self.subTest(status=status), patch("application.chat_service.chat", side_effect=error):
                 response = self.client.post("/api/v1/chat", json={"message": "你好"})
             self.assertEqual(response.status_code, status)
             self.assertNotIn("private body", response.text)

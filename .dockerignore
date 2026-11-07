@@ -9,6 +9,7 @@ __pycache__
 .env
 runtime
 logs
+log
 tests
 deploy
 *.egg-info

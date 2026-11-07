@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from adp_chat import ChatConfig, ChatError, chat, load_config
+from adp.client import chat
+from core.config import ChatConfig, load_config
+from core.models import ChatError
 
 
 def event(kind, **fields):
@@ -51,7 +53,7 @@ class ChatTests(unittest.TestCase):
 
     def test_text_calls_reuse_session_and_keep_request_ids_distinct(self):
         """同一会话跨轮保持身份和会话 ID，并生成独立的请求 ID。"""
-        with patch("adp_chat.adp.sse.open_request", side_effect=[
+        with patch("adp.sse.open_request", side_effect=[
             FakeStream(completed()), FakeStream(completed("第二轮")),
         ]) as transport:
             first = chat("第一轮", config=self.config)
@@ -82,7 +84,7 @@ class ChatTests(unittest.TestCase):
             + completed()
         )
         preview = []
-        with patch("adp_chat.adp.sse.open_request", return_value=stream):
+        with patch("adp.sse.open_request", return_value=stream):
             result = chat("问题", config=self.config, on_preview=preview.append)
 
         self.assertEqual([(item.kind, item.text) for item in preview], [
@@ -104,7 +106,7 @@ class ChatTests(unittest.TestCase):
         ]:
             with self.subTest(code=code):
                 stream = FakeStream(data)
-                with patch("adp_chat.adp.sse.open_request", return_value=stream):
+                with patch("adp.sse.open_request", return_value=stream):
                     with self.assertRaises(ChatError) as caught:
                         chat("问题", config=self.config)
                 self.assertEqual(caught.exception.stage, "chat")
@@ -117,7 +119,7 @@ class ChatTests(unittest.TestCase):
     def test_stream_accepts_cr_line_endings(self):
         """允许使用单独回车符作为 SSE 分隔符。"""
         stream = FakeStream(completed().replace(b"\r\n", b"\r"))
-        with patch("adp_chat.adp.sse.open_request", return_value=stream):
+        with patch("adp.sse.open_request", return_value=stream):
             self.assertEqual(chat("问题", config=self.config).text, "完整回答")
 
     def test_preview_callback_error_keeps_caller_context_and_closes_stream(self):
@@ -133,7 +135,7 @@ class ChatTests(unittest.TestCase):
             """模拟调用方在收到预览时主动停止。"""
             raise error
 
-        with patch("adp_chat.adp.sse.open_request", return_value=stream):
+        with patch("adp.sse.open_request", return_value=stream):
             with self.assertRaises(ChatError) as caught:
                 chat("问题", config=self.config, on_preview=stop)
         self.assertIs(caught.exception, error)
@@ -145,7 +147,7 @@ class ChatTests(unittest.TestCase):
         stream = FakeStream(event("error", Error={
             "Code": 460501, "RequestId": "provider-request", "TraceId": "trace-id",
         }))
-        with patch("adp_chat.adp.sse.open_request", return_value=stream):
+        with patch("adp.sse.open_request", return_value=stream):
             with self.assertRaises(ChatError) as caught:
                 chat("问题", config=self.config)
         self.assertEqual(caught.exception.provider_request_id, "provider-request")
@@ -156,7 +158,7 @@ class ChatTests(unittest.TestCase):
         stream = FakeStream(event("error", Error={
             "Code": 460701, "Message": "test-key", "RequestId": "server-request", "TraceId": "server-trace",
         }))
-        with patch("adp_chat.adp.sse.open_request", return_value=stream) as network:
+        with patch("adp.sse.open_request", return_value=stream) as network:
             with self.assertRaises(ChatError) as caught:
                 chat("我想改密码", config=self.config)
         error = caught.exception
@@ -172,7 +174,7 @@ class ChatTests(unittest.TestCase):
 
     def test_invalid_input_does_not_start_network(self):
         """错误问题或会话 ID 在联网前拒绝。"""
-        with patch("adp_chat.adp.sse.open_request") as transport:
+        with patch("adp.sse.open_request") as transport:
             for question, kwargs in [
                 ("", {}), ("问题", {"conversation_id": "short"}),
             ]:

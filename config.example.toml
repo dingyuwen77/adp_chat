@@ -1,29 +1,68 @@
-# 复制为 adp_chat/config.toml。真实 AppKey 不提交 Git。
+# 复制为 config.toml；真实 AppKey 仅保存在本机，不提交 Git。
+# main.py 是默认单次入口；高级解析选项仅作用于直接 Python Library 调用。
+
 [adp]
+# 必填：在已发布 ADP 应用 API 接入页复制 AppKey，不是腾讯云 SecretKey。
 app_key = ""
-user_id = "local_adp_user"
+# 必填：用户的稳定标识；同一用户保持不变，修改后需显式创建新会话。
+user_id = "local_adp_test_user_001"
+# 可选访问者标识：留空自动使用 user_id，通常无需填写。
 visitor_id = ""
-user_name = ""
+# 可选用户名称：留空不发送 UserName。
+user_name = "本地API测试"
 
 [chat]
+# 单轮读取超时，单位秒，必须为正数；超时不会自动重试。
 chat_timeout_seconds = 180
+# true 请求增量文本；false 请求全量替换；最终以完成事件为准。
 incremental = true
+# 流式节流：0 沿用平台默认；非零值的单位和范围按应用 V2 协议设置。
 streaming_throttle = 0
+# 可选系统角色；留空沿用应用角色，不需要覆盖时勿填写。
 system_role = ""
+# 联网搜索："" 沿用应用设置，"enable" 开启，"disable" 关闭。
 search_network = ""
+# 工作流过程状态："" 沿用应用设置，"enable" 开启，"disable" 关闭。
 workflow_status = ""
-detect_text_clarification = false
+# 多意图开关：省略沿用应用设置；确需覆盖时取消注释并填 true 或 false。
+# enable_multi_intent = true
+# 高级 Library：true 使用有限文字追问规则；单次脚本、交互 CLI、HTTP 均关闭。
+detect_text_clarification = true
+# 高级 Library：仅云端已配置业务 JSON 契约时设 true；三种默认入口均关闭。
 structured_interaction = false
 
 [session]
-# 路径相对于 adp_chat/config.toml 所在目录。
-session_file = "../runtime/session.json"
+# 三种默认入口共用的会话路径；相对路径基于本配置目录，不支持多进程同时使用。
+# 同应用同用户复用；切换身份时使用独立路径或运行 --new-session。
+session_file = "runtime/session.json"
+
+[cli]
+# 兼容旧配置字段，当前入口不使用；单次提问使用 --ask 参数。
+first_question = ""
+# 兼容旧配置字段，当前入口不使用；当前 CLI 只展示正式回复。
+show_preview = true
+# 兼容旧配置字段，当前入口不使用；adp-chat 连续交互，main.py 默认单次。
+interactive = true
 
 [logging]
+# true 写本地日志；false 不创建日志。问答可能含业务信息，请按需关闭。
 log_enabled = true
-log_level = "INFO"
-log_file = "../logs/adp_chat.log"
+# 级别：DEBUG/INFO/WARNING/ERROR/CRITICAL；一般用 INFO，排障用 DEBUG。
+log_level = "DEBUG"
+# 日志路径：相对路径基于本配置目录；不输出到控制台。
+log_file = "logs/adp_chat.log"
+# 单份日志轮转阈值，单位字节，必须为正数；默认约 5 MiB。
 log_max_bytes = 5242880
+# 轮转备份份数，至少 1；默认保留 3 份旧日志。
 log_backup_count = 3
-log_question = false
-log_answer_chars = 0
+# true 记录脱敏后的用户问题；false 不记录问题正文。
+log_question = true
+# 回答脱敏后最多记录的 Unicode 字符数；0 不记录回答正文，与问题开关独立。
+log_answer_chars = 100
+
+[deployment]
+# 仅服务器 run.sh/upgrade.sh 读取；本地 CLI、直接 Uvicorn 和源码 Compose 忽略。
+# 服务器真实拥有的 IPv4 地址；容器内部仍固定监听 0.0.0.0:8000。
+bind_ip = "10.102.70.82"
+# 服务器对外发布的端口，必须为 1 至 65535 的整数。
+host_port = 4560

@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from adp_chat.application.chat_service import ChatService
-from adp_chat.core.config import ChatConfig
-from adp_chat.core.models import ChatError, ChatResult
+from application.chat_service import ChatService
+from core.config import ChatConfig
+from core.models import ChatError, ChatResult
 
 
 class ServiceTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class ServiceTests(unittest.TestCase):
             seen.append((message, config, conversation_id))
             return ChatResult(message, conversation_id, "request-" + str(len(seen)))
 
-        with patch("adp_chat.application.chat_service.chat", side_effect=respond) as network:
+        with patch("application.chat_service.chat", side_effect=respond) as network:
             self.assertEqual(first.ask("一").text, "一")
             self.assertEqual(first.ask("二").text, "二")
         self.assertEqual(network.call_count, 2)
@@ -65,7 +65,7 @@ class ServiceTests(unittest.TestCase):
             except ChatError as error:
                 errors.append(error.code)
 
-        with patch("adp_chat.application.chat_service.chat", side_effect=block) as network:
+        with patch("application.chat_service.chat", side_effect=block) as network:
             thread = threading.Thread(target=worker)
             thread.start()
             try:
@@ -79,13 +79,13 @@ class ServiceTests(unittest.TestCase):
                 thread.join(timeout=5)
             self.assertFalse(thread.is_alive())
             self.assertEqual(errors, ["network_error"])
-        with patch("adp_chat.application.chat_service.chat", return_value=ChatResult("ok", service.initialize(), "new")):
+        with patch("application.chat_service.chat", return_value=ChatResult("ok", service.initialize(), "new")):
             self.assertEqual(service.ask("第三轮").text, "ok")
 
     def test_bad_input_has_no_side_effect(self):
         """空消息和附件命令均不触发持久化或网络。"""
         service = ChatService(self.config)
-        with patch("adp_chat.application.chat_service.chat") as network:
+        with patch("application.chat_service.chat") as network:
             for question in (" ", "/file private"):
                 with self.assertRaises(ChatError):
                     service.ask(question)

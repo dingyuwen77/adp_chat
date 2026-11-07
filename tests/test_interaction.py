@@ -3,7 +3,9 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-from adp_chat import ChatConfig, ChatError, chat, chat_until_complete
+from adp.client import chat, chat_until_complete
+from core.config import ChatConfig
+from core.models import ChatError
 from test_chat import FakeStream, event
 from test_clarification import response
 
@@ -24,7 +26,7 @@ class InteractionTests(unittest.TestCase):
     def test_business_status_overrides_question_like_text_and_preserves_method(self):
         """业务声明已回答时，即使正文像追问也不额外询问。"""
         answer = Mock(side_effect=AssertionError("不应取答案"))
-        with patch("adp_chat.adp.sse.open_request", return_value=response(envelope("ANSWER", "COMPLETED", "请提供发票。"), 18)):
+        with patch("adp.sse.open_request", return_value=response(envelope("ANSWER", "COMPLETED", "请提供发票。"), 18)):
             result = chat_until_complete("报销需要什么材料", config=self.config, answer_provider=answer)
         self.assertEqual(result.reply_method, 18)
         self.assertEqual(result.text, "请提供发票。")
@@ -38,7 +40,7 @@ class InteractionTests(unittest.TestCase):
             {"Type": "json_text", "Text": envelope("CLARIFICATION", "WAITING_USER", "需要费用类型", ["expense_type"])},
         ]}]}
         with (
-            patch("adp_chat.adp.sse.open_request", side_effect=[
+            patch("adp.sse.open_request", side_effect=[
                 FakeStream(event("response.completed", Response=first)),
                 response(envelope("ANSWER", "COMPLETED", "报销说明"), 18),
             ]) as network,
@@ -55,7 +57,7 @@ class InteractionTests(unittest.TestCase):
 
     def test_confirmation_waits_for_human_and_never_invents_consent(self):
         """操作确认保留独立类型，只向调用方要答案，不默认同意。"""
-        with patch("adp_chat.adp.sse.open_request", return_value=response(envelope("CONFIRMATION", "WAITING_USER", "确认继续查询", confirmation=True), 18)):
+        with patch("adp.sse.open_request", return_value=response(envelope("CONFIRMATION", "WAITING_USER", "确认继续查询", confirmation=True), 18)):
             result = chat("查询", config=self.config)
         self.assertTrue(result.needs_input)
         self.assertEqual(result.interaction.type, "CONFIRMATION")
@@ -70,14 +72,14 @@ class InteractionTests(unittest.TestCase):
             envelope("ANSWER", "COMPLETED", "回答", ["unneeded"]),
             envelope("CLARIFICATION", "COMPLETED", "追问"),
         ):
-            with self.subTest(text=text), patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)):
+            with self.subTest(text=text), patch("adp.sse.open_request", return_value=response(text, 18)):
                 with self.assertRaises(ChatError) as caught:
                     chat("问题", config=self.config)
                 self.assertEqual(caught.exception.code, "invalid_interaction")
 
     def test_native_questionnaire_remains_supported(self):
         """应用走原生问卷分支时，结构化模式仍可保留并处理原生交互。"""
-        with patch("adp_chat.adp.sse.open_request", return_value=response("", 18, [{"Type": "questionnaire", "Questionnaire": {"Questions": [{"Question": "费用类型"}]}}])):
+        with patch("adp.sse.open_request", return_value=response("", 18, [{"Type": "questionnaire", "Questionnaire": {"Questions": [{"Question": "费用类型"}]}}])):
             result = chat("报销", config=self.config)
         self.assertTrue(result.needs_input)
         self.assertEqual(result.clarification_source, "questionnaire")
@@ -86,7 +88,7 @@ class InteractionTests(unittest.TestCase):
         """未声明云端契约的普通应用中，JSON示例保持作品内容。"""
         config = replace(self.config, structured_interaction=False, detect_text_clarification=False)
         text = envelope("CLARIFICATION", "WAITING_USER", "测试示例")
-        with patch("adp_chat.adp.sse.open_request", return_value=response(text, 18)):
+        with patch("adp.sse.open_request", return_value=response(text, 18)):
             result = chat("输出一个JSON示例", config=config)
         self.assertIsNone(result.interaction)
         self.assertFalse(result.needs_input)

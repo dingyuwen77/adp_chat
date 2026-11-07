@@ -6,7 +6,12 @@ services:
     ports:
       - "${ADP_BIND_IP:-10.102.70.82}:${ADP_HOST_PORT:-4560}:8000"
     volumes:
-      - ./deploy/config.toml:/app/adp_chat/config.toml:ro
+      - type: bind
+        source: ./config.toml
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
       - ./runtime:/app/runtime
       - ./logs:/app/logs
     healthcheck:

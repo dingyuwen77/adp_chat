@@ -3,20 +3,30 @@ name: 文字对话回归
 on:
   pull_request:
     paths:
-      - 'adp_chat/**'
+      - 'scripts/**'
+      - '.gitattributes'
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'src/**'
       - 'tests/**'
       - 'main.py'
       - 'pyproject.toml'
       - 'config.example.toml'
+      - 'requirements*.txt'
       - '.github/workflows/tests.yml'
   push:
     branches: [main]
     paths:
-      - 'adp_chat/**'
+      - 'scripts/**'
+      - '.gitattributes'
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'src/**'
       - 'tests/**'
       - 'main.py'
       - 'pyproject.toml'
       - 'config.example.toml'
+      - 'requirements*.txt'
       - '.github/workflows/tests.yml'
 
 permissions:
@@ -32,5 +42,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
+      - name: 安装正式及 API 测试依赖
+        run: python -m pip install -r requirements-dev.txt
       - name: 运行确定性文字回归
         run: python -B -X utf8 -m unittest discover -s tests

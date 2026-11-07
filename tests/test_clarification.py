@@ -5,7 +5,9 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-from adp_chat import ChatConfig, ChatError, ClarificationAnswer, chat, chat_until_complete
+from adp.client import chat, chat_until_complete
+from core.config import ChatConfig
+from core.models import ChatError, ClarificationAnswer
 from test_chat import FakeStream, event
 
 
@@ -27,7 +29,7 @@ class ClarificationTests(unittest.TestCase):
     def test_normal_answer_does_not_request_user_input_even_with_question_mark(self):
         """普通答案即使含问号也应直接结束，不能误触发追问。"""
         answer = Mock(side_effect=AssertionError("不应询问用户"))
-        with patch("adp_chat.adp.sse.open_request", return_value=response("你可以输入“为什么？”查询原因。")):
+        with patch("adp.sse.open_request", return_value=response("你可以输入“为什么？”查询原因。")):
             result = chat_until_complete("问题", config=self.config, answer_provider=answer)
         self.assertFalse(result.needs_input)
         self.assertEqual(result.input_kind, "question")
@@ -38,7 +40,7 @@ class ClarificationTests(unittest.TestCase):
         supplied = Mock(side_effect=["北京", "明天"])
         results = []
         with (
-            patch("adp_chat.adp.sse.open_request", side_effect=[
+            patch("adp.sse.open_request", side_effect=[
                 response("请补充城市", 15), response("请补充日期", 15), response("最终答案"),
             ]) as transport,
         ):
@@ -65,7 +67,7 @@ class ClarificationTests(unittest.TestCase):
                 {"Label": "北京"}, {"Label": "上海"},
             ]},
         ]}
-        with patch("adp_chat.adp.sse.open_request", return_value=response("", 18, [
+        with patch("adp.sse.open_request", return_value=response("", 18, [
             {"Type": "questionnaire", "Questionnaire": questionnaire},
         ])):
             result = chat("问题", config=self.config)
@@ -79,7 +81,7 @@ class ClarificationTests(unittest.TestCase):
             "Questions": [{"Question": "城市"}],
             "Answers": [{"Question": "城市", "SelectedLabels": ["北京"]}],
         }
-        with patch("adp_chat.adp.sse.open_request", return_value=response("完成", 18, [
+        with patch("adp.sse.open_request", return_value=response("完成", 18, [
             {"Type": "questionnaire", "Questionnaire": questionnaire},
             {"Type": "widget", "Widget": {"WidgetId": "output", "WidgetRunId": "run"}},
         ])):
@@ -91,7 +93,7 @@ class ClarificationTests(unittest.TestCase):
 
     def test_questionnaire_console_collects_single_and_multiple_choices(self):
         """终端保留未填题目并校验单选和多选，将选择汇总为文本续答。"""
-        from adp_chat.cli.console import read_clarification
+        from cli.console import read_clarification
 
         questionnaire = {"Questions": [
             {"Question": "已填题"},
@@ -101,7 +103,7 @@ class ClarificationTests(unittest.TestCase):
         with (
             patch("builtins.input", side_effect=["1,2", "2", "1，2"]),
             contextlib.redirect_stderr(io.StringIO()) as output,
-            patch("adp_chat.adp.sse.open_request", side_effect=[
+            patch("adp.sse.open_request", side_effect=[
                 response("", 18, [{"Type": "questionnaire", "Questionnaire": questionnaire}]),
                 response("完成"),
             ]) as transport,
@@ -117,7 +119,7 @@ class ClarificationTests(unittest.TestCase):
         """调用方提供实际动作名称，组件按 V2 结构提交给原会话。"""
         widget = {"WidgetId": "widget-config", "WidgetRunId": "widget-instance", "View": "{}", "State": "请确认"}
         action = {"WidgetId": "widget-config", "WidgetRunId": "widget-instance", "ActionType": "fixture-action", "Payload": '{"city":"北京"}'}
-        with patch("adp_chat.adp.sse.open_request", side_effect=[
+        with patch("adp.sse.open_request", side_effect=[
             response("", 15, [{"Type": "widget", "Widget": widget}]), response("完成"),
         ]) as transport:
             result = chat_until_complete(
@@ -131,9 +133,9 @@ class ClarificationTests(unittest.TestCase):
 
     def test_invalid_continuation_is_rejected_before_network(self):
         """跨会话误答或提交其他卡片动作必须在外部副作用之前失败。"""
-        with patch("adp_chat.adp.sse.open_request", return_value=response("补充信息", 15)):
+        with patch("adp.sse.open_request", return_value=response("补充信息", 15)):
             pending = chat("问题", config=self.config)
-        with patch("adp_chat.adp.sse.open_request") as network:
+        with patch("adp.sse.open_request") as network:
             with self.assertRaises(ChatError) as caught:
                 chat("答案", config=self.config, reply_to=pending, conversation_id="a" * 32)
             self.assertEqual(caught.exception.code, "conflicting_conversation")
@@ -148,7 +150,7 @@ class ClarificationTests(unittest.TestCase):
         """调用方取消原样传播，不修改异常、不重试、不再发送补充回答。"""
         error = ChatError("caller", "cancel", "调用方取消")
         error.request_id = "caller-id"
-        with patch("adp_chat.adp.sse.open_request", return_value=response("补充城市", 15)) as transport:
+        with patch("adp.sse.open_request", return_value=response("补充城市", 15)) as transport:
             with self.assertRaises(ChatError) as caught:
                 chat_until_complete("问题", config=self.config, answer_provider=Mock(side_effect=error))
         self.assertIs(caught.exception, error)
@@ -157,18 +159,18 @@ class ClarificationTests(unittest.TestCase):
 
     def test_unmarked_agent_question_is_recognized_as_text_inference(self):
         """新要求覆盖真实漏判句式，推断来源与正式协议状态明确区分。"""
-        with patch("adp_chat.adp.sse.open_request", return_value=response("请问想了解报销标准，还是系统流程？", 18)):
+        with patch("adp.sse.open_request", return_value=response("请问想了解报销标准，还是系统流程？", 18)):
             result = chat("我想报销", config=self.config)
         self.assertTrue(result.needs_input)
         self.assertEqual(result.clarification_source, "text_rule")
 
     def test_questionnaire_takes_priority_over_display_widget(self):
         """同轮存在明确问卷和展示卡片时，按问卷收集而非索取卡片动作。"""
-        from adp_chat.cli.console import read_clarification
+        from cli.console import read_clarification
 
         questionnaire = {"Questions": [{"Question": "城市", "Required": True}]}
         with (
-            patch("adp_chat.adp.sse.open_request", return_value=response("", 18, [
+            patch("adp.sse.open_request", return_value=response("", 18, [
                 {"Type": "questionnaire", "Questionnaire": questionnaire},
                 {"Type": "widget", "Widget": {"WidgetId": "display", "WidgetRunId": "run"}},
             ])),

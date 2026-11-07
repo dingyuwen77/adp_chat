@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adp-chat"
+version = "0.1.0"
+description = "腾讯 ADP 单用户文字对话与 HTTP 服务"
+requires-python = ">=3.14,<3.15"
+dynamic = ["dependencies"]
+
+[project.scripts]
+adp-chat = "cli.runner:entrypoint"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+include = ["adp", "adp.*", "api", "api.*", "application", "application.*", "cli", "cli.*", "core", "core.*", "storage", "storage.*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}

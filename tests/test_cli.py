@@ -6,12 +6,13 @@ import json
 import os
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from adp_chat.cli.runner import main
+from cli.runner import main
 from test_chat import FakeStream, completed
 
 
@@ -30,8 +31,9 @@ class CliTests(unittest.TestCase):
 
     def test_help(self):
         """模块启动帮助不需要 HTTP 依赖。"""
+        executable = Path(sysconfig.get_path("scripts")) / ("adp-chat.exe" if os.name == "nt" else "adp-chat")
         result = subprocess.run(
-            [sys.executable, "-B", "-m", "adp_chat", "--help"],
+            [str(executable), "--help"],
             capture_output=True, encoding="utf-8", timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -42,7 +44,7 @@ class CliTests(unittest.TestCase):
         output, errors = io.StringIO(), io.StringIO()
         with (
             contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors),
-            patch("adp_chat.adp.sse.open_request", side_effect=[
+            patch("adp.sse.open_request", side_effect=[
                 FakeStream(completed()), FakeStream(b"data: [DONE]\n\n"),
             ]) as network,
         ):
@@ -58,7 +60,7 @@ class CliTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
             patch("builtins.input", side_effect=["第一轮", "第二轮", "/new", "新会话", "/exit"]),
-            patch("adp_chat.adp.sse.open_request", side_effect=[FakeStream(completed()) for _ in range(3)]) as network,
+            patch("adp.sse.open_request", side_effect=[FakeStream(completed()) for _ in range(3)]) as network,
         ):
             self.assertEqual(main(["--config", str(self.path)]), 0)
         payloads = [json.loads(call.args[0].data) for call in network.call_args_list]
@@ -67,7 +69,7 @@ class CliTests(unittest.TestCase):
 
     def test_file_command_and_flags_rejected(self):
         """附件参数和旧命令不会发送 ADP 请求。"""
-        with patch("adp_chat.adp.sse.open_request") as network, contextlib.redirect_stderr(io.StringIO()):
+        with patch("adp.sse.open_request") as network, contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as caught:
                 main(["--file", "local"])
             self.assertEqual(caught.exception.code, 2)
@@ -78,7 +80,7 @@ class CliTests(unittest.TestCase):
         """核心包导入不修改 root logger 与 TLS 变量。"""
         code = (
             "import logging,os,sys;h=list(logging.getLogger().handlers);"
-            "import adp_chat;assert os.environ['SSLKEYLOGFILE']=='fixture';"
+            "import adp.client,core.config;assert os.environ['SSLKEYLOGFILE']=='fixture';"
             "assert h==logging.getLogger().handlers;"
             "assert 'tencentcloud' not in sys.modules"
         )
