@@ -712,11 +712,8 @@ main() {
             return 0
         fi
         if [[ "$action" == run && "${CURRENT[RUNNING]}" == true ]]; then fail '配置或健康状态已变化，请使用升级入口重新验收。'; return 1; fi
-        # 切换前验证旧镜像也能读取当前配置与原会话，避免无法回退才发现不兼容。
+        # 目标镜像已完成预检；旧镜像不认识新配置不能阻止升级，实际失败后再尝试恢复。
         if [[ "$action" == upgrade ]]; then
-            TOOL_IMAGE=$OLD_IMAGE
-            python_tool preflight > "$WORK_DIR/recovery" || return 1
-            TOOL_IMAGE=$IMAGE_ID
             ROLLBACK_NEEDED=1
         fi
         current_hash=$(file_hash "$CONFIG_FILE") || return 1
