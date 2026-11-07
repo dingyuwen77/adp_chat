@@ -3,7 +3,7 @@ schema: coding-change/v1
 id: "CHG-20261108-001637-wecom-stage-d"
 title: "企业微信阶段 D 统一通知发送与恢复"
 level: L3
-status: ready_for_review
+status: done
 owner: "codex"
 branch: "feature/wecom-stage-d"
 created: 2026-11-08
@@ -168,13 +168,21 @@ D-PACKAGE/DOCS：`uv build --wheel --out-dir runtime/wecom-stage-d-package --ind
 
 ## 未验证内容与剩余风险
 
-D实现/本地验证完成；独立Review、当前head CI、guarded merge、main-fresh、归档及清理未完成。FakeHTTP不是真实企微；F明确排除；不追踪在线/已读/终端展示。
+D实现、本地验证、独立Deep Review、当前head CI、guarded merge、main-fresh与实现分支清理均完成；原Change同ID归档和Roadmap状态由本收尾PR同步。FakeHTTP不是真实企微；F明确排除；不追踪在线/已读/终端展示。
 
 ## 交付状态
 
-implementation=complete；delivery=incomplete；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
+implementation=complete；delivery=merged；validation=complete；main_fresh=complete；change_archive=本地归档；requirement_closure=not_applicable（正式Roadmap，无Issue close对象）；cleanup=complete（实现分支）；end_to_end=complete。
 
 D-GOVERNANCE：首次Ready检查发现Traceability表头5列而分隔行仅4列，未创建PR/未推送/未宣称Ready；修正为5列后重新运行门禁。运行代码与147项证据不受文档格式变化影响。
+
+D-REVIEW：隔离只读Reviewer /root/stage_d_review对base a16748b0ba7808ed300893a8dda25b72df26f212、head b9497ff8ec37b7fdd6b9ab4960982a6a0d005425完成L3 Deep Review，A1独立恢复D1～D5、A2沿调用链和文档反向审计均PASS，NO_FINDINGS_WITHIN_SCOPE。核对147项原始回归、四场景独立HTTP强杀、wheel CRC/8源码逐字节；补充内存Fake验证部分接受后第二片连续42001（accepted1/3、GET2/POST3）、第二片超时（UNKNOWN、accepted1/3、无重发）、预过期Token刷新，均exit0。自有挂起Fake资源已核对身份清理，未访问真实企微或根真实凭据。Validation Asset Redundancy=clean。
+
+D-DELIVERY：PR #18 https://github.com/dingyuwen77/adp_chat/pull/18；最终head b9497ff8ec37b7fdd6b9ab4960982a6a0d005425。current-head既有CI run42394873115/job128469980942 SUCCESS，原始147tests/OK18.553s（合成revision90a9d7985ca59aa7c0341f6b9dd5b06c9045a11a）；live PR Contract写后重新读取通过。合并前principal=dingyuwen77、admin/push=true、main unprotected、rulesets=[]、reviews/threads=[]，base/head无漂移。REST expected_head_sha guarded merge为713b66b2afbf1592a5dd503a01947b64fc99594c，正式源码/测试/文档树与reviewed head一致。
+
+D-MAIN-FRESH：真实merge push run42396112535/job128473716195 SUCCESS，原始runtime/wecom-stage-d-main-ci.log为147tests/OK25.405s，覆盖实际main713b66b；不以PR CI替代，未新增或修改CI。
+
+D-CLOSURE：重新读取当前正式Roadmap D1～D5并逐项核对：统一四类通知及员工隔离、失败/未知不重调ADP不锁用户、真实errcode/无效用户/Token纠正、SEND_ARMED强杀后不重发/PENDING首次恢复、Fake与真实证据严格隔离均有直接实现/验证。Roadmap是需求Owner，无Issue close动作。实现远程分支合并后自动删除，ls-remote读回为空；确认ancestor/worktree后本地安全删除feature/wecom-stage-d。保留唯一原始证据；测试进程/监听/临时目录已清理。同ID归档后以独立文档PR同步Roadmap，完成后再进入E。
 
 ## 备注
 
