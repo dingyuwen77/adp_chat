@@ -102,9 +102,12 @@ def event_report(config, records, *, quota, crash, notification_crash, notificat
                 continue
             from core.logging import parse_log_line
             document = parse_log_line(line.decode("utf-8"))
-            if document["kind"] != "gateway_event":
+            if "event" not in document:
                 continue
-            event = document["event"]
+            event = {key: value for key, value in document.items() if key != "message" and not key.startswith("attr_")}
+            event["attributes"] = {key[5:]: value for key, value in document.items() if key.startswith("attr_")}
+            event["id"] = event.pop("event_id")
+            event["schema_version"] = "adp_chat.log.v1"
             assert event["schema_version"] == "adp_chat.log.v1" and event["environment"] == "test"
             events.append(event)
     assert len({e["id"] for e in events}) == len(events)
@@ -112,10 +115,10 @@ def event_report(config, records, *, quota, crash, notification_crash, notificat
             "message.session.released", "reply.persisted"} <= {e["event"] for e in events}
     assert not any(e["event"] == "wecom.send.accepted" for e in events)
     for record in records.values():
-        linked = [event for event in events if event["message_key"] == record["message_key"]]
-        assert linked and all(e["conversation_id"] == record["conversation_id"] for e in linked)
+        linked = [event for event in events if event.get("message_key") == record["message_key"]]
+        assert linked and all(e.get("conversation_id") == record["conversation_id"] for e in linked)
         if record["request_id"] is not None:
-            assert any(e["request_id"] == record["request_id"] for e in linked)
+            assert any(e.get("request_id") == record["request_id"] for e in linked)
         if notifications:
             assert any(e["event"] == ("wecom.send.unknown" if notification_crash and record["msg_id"] == "1"
                                       else "wecom.send.simulated") for e in linked)

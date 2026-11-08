@@ -188,13 +188,13 @@ def run(image):
             result["log_events"] = event_report(config, snapshots(), quota=30, crash=True,
                                            notification_crash=False, notifications=False)
             from core.logging import parse_log_line
-            events = [document["event"]
+            events = [document
                       for path in (root / "logs").glob(Path(config.log_file).name + "*")
                       for line in path.read_bytes().splitlines(keepends=True) if line.endswith(b"\\n")
                       for document in [parse_log_line(line.decode("utf-8"))]
-                      if document["kind"] == "gateway_event"]
+                      if "event" in document]
             injected = snapshots()["2003"]["message_key"]
-            assert not any(e["message_key"] == injected and e["event"] in {"adp.started", "wecom.send.started", "wecom.send.simulated"}
+            assert not any(e.get("message_key") == injected and e["event"] in {"adp.started", "wecom.send.started", "wecom.send.simulated"}
                            for e in events)
             latest_start = max(e["timestamp"] for e in events if e["event"] == "service.started")
             assert any(e["event"] == "service.stopped" and e["timestamp"] >= latest_start for e in events)

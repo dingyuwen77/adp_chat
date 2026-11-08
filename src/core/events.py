@@ -1,12 +1,9 @@
 """网关事件 v1：与普通诊断共用一个 .log；消息快照仍是恢复事实源。"""
 
-import json
 import logging
 import re
-from datetime import datetime
 from uuid import uuid4
 
-from .logging import _BEIJING
 
 
 _EVENTS = {
@@ -36,7 +33,6 @@ _EVENTS = {
 }
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_\-:.]{1,128}\Z")
 _HASH = re.compile(r"[a-f0-9]{64}\Z")
-_SEGMENT = re.compile(r"events-([0-9]{8})-([0-9]+)-([a-f0-9]{12})-([0-9]+)\.jsonl\Z")
 _NUMBER_FIELDS = {"attempt", "duration_ms", "http_status"}
 _ID_FIELDS = {"provider_request_id", "provider_trace_id", "record_id", "error_code", "error_stage"}
 _COUNTS = {"reply_chars", "reply_method", "queue_depth", "removed", "accepted_parts", "total_parts"}
@@ -70,11 +66,7 @@ def _attributes(values):
 
 
 class GatewayEvents:
-    """统一业务事件：写入现有普通诊断 .log，不再创建独立 JSONL。
-
-    gateway_event 后的单行 JSON 是稳定机器字段，前面的日志前缀保持人工可读；
-    后续 Cosmos 采集可提取该字段而无需解析自由格式的诊断正文。
-    """
+    """网关业务事件以中文说明与结构化键值字段写入同一普通日志。"""
 
     def __init__(self, config, logger=None):
         self.config = config
@@ -100,14 +92,8 @@ class GatewayEvents:
                 or attributes.get("source") != "wecom_api"):
             return
         record = record if isinstance(record, dict) else {}
-        from inspect import currentframe
-        caller = currentframe().f_back
         data = {
-            "schema_version": "adp_chat.log.v1",
-            "id": str(uuid4()),
-            "timestamp": datetime.now(_BEIJING).isoformat(timespec="milliseconds"),
-            "level": _EVENTS[event][1],
-            "service": "adp_chat",
+            "event_id": str(uuid4()),
             "environment": self.config.gateway_environment,
             "component": _EVENTS[event][2],
             "event": event,
@@ -118,11 +104,8 @@ class GatewayEvents:
             "conversation_id": record.get("conversation_id") if isinstance(record.get("conversation_id"), str)
                 and _HASH.fullmatch(record["conversation_id"]) else None,
             "request_id": _identifier(record.get("request_id")),
-            "source_file": caller.f_code.co_filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1],
-            "source_line": caller.f_lineno,
             "attributes": attributes,
         }
-        del caller
         for key, value in fields.items():
             if key in _ID_FIELDS:
                 data[key] = _identifier(value)
@@ -130,18 +113,45 @@ class GatewayEvents:
                 data[key] = value
             elif key == "outcome_uncertain" and type(value) is bool:
                 data[key] = value
-        # 白名单之后再次脱敏；保留机器字段可供未来采集，避免解析自由文本。
+        # 保留事件白名单与所有合法属性；扁平键值便于人类排障和未来逐行解析。
         from .logging import _mask_secrets
         secrets = (self.config.app_key, self.config.callback_token,
                    self.config.encoding_aes_key, self.config.wecom_app_secret)
-        def redact(value):
-            if isinstance(value, str):
-                return _mask_secrets(value, secrets)
-            if isinstance(value, dict):
-                return {key: redact(item) for key, item in value.items()}
-            return value
-        payload = json.dumps(redact(data), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        self.logger.log(getattr(logging, _EVENTS[event][1]), "gateway_event %s", payload, stacklevel=2)
+        fields_out = {}
+        for key, value in data.items():
+            if key == "attributes":
+                for attr_key, attr_value in value.items():
+                    fields_out["attr_" + attr_key] = attr_value
+            elif value is not None and key != "user_ref":
+                fields_out[key] = _mask_secrets(value, secrets) if isinstance(value, str) else value
+        descriptions = {
+            "service.started": "服务启动完成", "service.stopped": "服务已停止",
+            "wecom.callback.rejected": "企业微信回调认证被拒绝",
+            "wecom.message.received": "收到企业微信消息",
+            "wecom.message.persisted": "企业微信消息已可靠保存",
+            "wecom.message.duplicate": "收到重复消息，已跳过处理",
+            "wecom.message.busy_rejected": "当前用户有进行中的请求，本次消息已拒绝",
+            "adp.submit_armed": "ADP请求已进入发送准备状态",
+            "adp.started": "开始调用ADP服务",
+            "adp.completed": "ADP请求已完成",
+            "adp.rejected": "ADP明确拒绝本次请求",
+            "adp.failed": "ADP请求失败",
+            "adp.unknown": "ADP执行结果不确定，禁止自动重试",
+            "message.session.released": "会话处理占用已释放",
+            "reply.persisted": "回复已持久化",
+            "wecom.send.started": "开始发送企业微信通知",
+            "wecom.send.accepted": "企业微信接口已接受发送请求",
+            "wecom.send.simulated": "企业微信通知已模拟发送",
+            "wecom.send.failed": "企业微信通知发送失败",
+            "wecom.send.unknown": "企业微信通知发送结果不确定",
+            "message.recovered": "重启恢复时处理未完成消息",
+            "message.cleanup.completed": "消息清理完成",
+            "message.cleanup.failed": "消息清理失败",
+        }
+        if "duration_ms" in fields_out:
+            fields_out["elapsed_ms"] = fields_out.pop("duration_ms")
+        self.logger.log(getattr(logging, _EVENTS[event][1]),
+                        descriptions[event], extra={"log_fields": fields_out}, stacklevel=2)
 
     def close(self):
         """共享 logger 由 lifespan 关闭；独立测试 logger 由自身释放。"""

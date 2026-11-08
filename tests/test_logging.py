@@ -28,27 +28,36 @@ class LoggingTests(unittest.TestCase):
         )
 
     def test_every_text_log_line_can_be_converted_to_one_document(self):
-        """普通诊断与网关事件均为人类可读单行，且每行可无损提取机器字段。"""
+        """普通诊断与网关事件共用可读前缀，正文与字段只有一个分隔符。"""
         from core.events import GatewayEvents
         with diagnostic_logger(self.config) as logger:
-            logger.info("request_started request_id=abc elapsed_ms=12")
-            logger.warning("multi-line\\nerror=redacted")
+            logger.info("请求开始 request_id=abc elapsed_ms=12")
+            logger.warning("异常行\\n诊断说明 | 不是字段")
             events = GatewayEvents(self.config, logger)
             events.emit("service.started")
         lines = Path(self.config.log_file).read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(lines), 3)
-        self.assertTrue(all(line.startswith("[") and " | record=" in line for line in lines))
+        self.assertTrue(all(line.startswith("[") and "record=" not in line for line in lines))
         records = [parse_log_line(line) for line in lines]
-        self.assertEqual(len({record["id"] for record in records}), 3)
-        self.assertEqual([record["kind"] for record in records],
-                         ["diagnostic", "diagnostic", "gateway_event"])
-        self.assertIn("request_id=abc", records[0]["message"])
-        self.assertEqual(records[0]["request_id"], "abc")
-        self.assertEqual(records[0]["elapsed_ms"], 12.0)
-        self.assertIn("error=redacted", records[1]["message"])
-        self.assertEqual(records[2]["event"]["event"], "service.started")
-        self.assertEqual(records[2]["id"], records[2]["event"]["id"])
+        self.assertEqual(records[2]["event"], "service.started")
+        self.assertEqual(records[2]["message"], "服务启动完成")
+        self.assertEqual(records[2]["status"], "success")
+        self.assertNotIn(" | ", lines[1].split("[WARNING] ", 1)[1])
         self.assertRaises(ValueError, parse_log_line, "[old format] [INFO] arbitrary")
+
+    def test_chinese_message_and_field_roundtrip(self):
+        with diagnostic_logger(self.config) as logger:
+            logger.info("调用失败：上游响应不完整", extra={"log_fields": {
+                "request_id": "abc", "error_code": "E=42", "elapsed_ms": 12.5,
+                "reason": "包含 | 引号\\n换行", "outcome_uncertain": True}})
+        line = Path(self.config.log_file).read_text(encoding="utf-8").strip()
+        doc = parse_log_line(line)
+        self.assertEqual(doc["message"], "调用失败：上游响应不完整")
+        self.assertEqual(doc["error_code"], "E=42")
+        self.assertEqual(doc["elapsed_ms"], 12.5)
+        self.assertTrue(doc["outcome_uncertain"])
+        self.assertEqual(doc["reason"], "包含 | 引号\\n换行")
+        self.assertNotIn("record=", line)
 
     def test_chat_logs_question_and_answer_only_to_file_and_preserves_host_logging(self):
         """按用户新要求记录问答，保持关联标识、密钥脱敏和控制台隔离。"""
@@ -63,7 +72,7 @@ class LoggingTests(unittest.TestCase):
         self.assertIn(result.request_id, content)
         self.assertIn(result.conversation_id, content)
         self.assertIn("stream=False", content)
-        self.assertIn("sse_completed", content)
+        self.assertIn("ADP SSE响应完成", content)
         self.assertRegex(content, r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} client\.py L\d+\] \[INFO\]")
         self.assertIn('question="private-question-sentinel"', content)
         self.assertIn('answer_preview="请提供完整报错。"', content)
@@ -104,8 +113,8 @@ class LoggingTests(unittest.TestCase):
         with patch("adp.sse.open_request", return_value=response("正常回答", 18)):
             chat(question, config=self.config)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
-        line = next(line for line in content.splitlines() if "user_question " in line)
-        logged = json.loads(parse_log_line(line)["message"].split(" question=", 1)[1])
+        line = next(line for line in content.splitlines() if "记录用户问题 | " in line)
+        logged = parse_log_line(line)["question"]
         self.assertIn("完整问题末尾", logged)
         self.assertIn("[REDACTED]", logged)
         self.assertNotIn("private-signature", content)
@@ -279,7 +288,7 @@ class LoggingTests(unittest.TestCase):
         self.assertIs(caught.exception, error)
         self.assertTrue(stream.closed)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
-        self.assertIn("request_interrupted", content)
+        self.assertIn("ADP请求被中断", content)
         self.assertNotIn("private-interruption-body", content)
 
     def test_default_diagnostics_hide_message_bodies(self):
@@ -290,7 +299,7 @@ class LoggingTests(unittest.TestCase):
         content = Path(config.log_file).read_text(encoding="utf-8")
         self.assertNotIn("保密答案", content)
         self.assertNotIn("保密问题", content)
-        self.assertIn("request_completed", content)
+        self.assertIn("ADP请求完成", content)
 
     def test_config_relative_logging_path_and_type_validation(self):
         """相对日志路径基于配置文件，不因运行目录改变；类型错误仍走配置异常。"""

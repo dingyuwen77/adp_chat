@@ -1,10 +1,10 @@
 # 统一日志与 Cosmos DB 接入设计
 
-> **状态：已确认的目标方案，尚未实施。** 本文描述后续普通日志改造与未来 Cosmos DB 接入的设计和验收标准，不代表当前代码已经采用 ` | ` 分隔符，也不代表 Cosmos DB 已接入。当前实际输出、配置和解析器以 [src/core/logging.py](../../src/core/logging.py)、[src/core/events.py](../../src/core/events.py)、[config.example.toml](../../config.example.toml) 及 [tests/test_logging.py](../../tests/test_logging.py) 为准。历史企业微信阶段 E 的 JSONL 验收记录保留在 [docs/wecom-integration/02_实施路线图.md](../wecom-integration/02_实施路线图.md)。
+> **状态：阶段 A/B 普通日志格式与本地解析已实现；阶段 C/D Cosmos DB 采集与查询尚未实施。** 本文描述已实现的普通日志契约与未来接入方案。当前实际输出、配置和解析器以 [src/core/logging.py](../../src/core/logging.py)、[src/core/events.py](../../src/core/events.py)、[config.example.toml](../../config.example.toml) 及 [tests/test_logging.py](../../tests/test_logging.py) 为准。历史企业微信阶段 E 的 JSONL 验收记录保留在 [docs/wecom-integration/02_实施路线图.md](../wecom-integration/02_实施路线图.md)。
 
 ## 1. 目标、范围与明确决定
 
-日志首先为开发、运行、故障定位和跨模块关联服务，其次才是未来 Cosmos DB 的数据来源。当前只设计并准备本地普通 `.log`；未来再新增独立采集器，不让数据库能力侵入 ADP/企业微信业务请求。
+日志首先为开发、运行、故障定位和跨模块关联服务，其次才是未来 Cosmos DB 的数据来源。当前实现本地普通 `.log` 与解析接口；未来再新增独立采集器，不让数据库能力侵入 ADP/企业微信业务请求。
 
 - **保留现有前缀**：`[北京时间 文件名 L行号] [级别]`，不额外增加 `[ADP]` / `[WECOM]` 组件标签。
 - **正文保留自然中文说明**：开发者根据真实代码路径自由编写，不强制固定中文模板；要准确说明动作、结果和失败边界。
@@ -47,13 +47,13 @@
 
 1. 前缀解析：北京时间毫秒、源码文件名、`L` 行号、级别；明确 `+08:00` 的时间解释，未来输出为带时区 ISO 8601。
 2. 分隔符：中文正文与字段区以独立的 ` | ` 分隔；如果中文说明本身包含相同序列，Formatter 必须按统一转义/引用规则消除歧义，或由日志调用接口分别传入正文和字段；**不能仅依赖 `split(" | ")`**。
-3. 字段：规范键名 `key=value`；键名受控、重复键拒绝或明确告警；值包含空格、`=`、引号、反斜杠、`|` 等特殊字符时采用统一可逆的引用/转义规则。该规则须在实施时固化为测试和正式解析器契约。
+3. 字段：规范键名 `key=value`；键名受控、重复键拒绝或明确告警；值包含空格、`=`、引号、反斜杠、`|` 等特殊字符时采用统一可逆的引用/转义规则。当前由 Formatter 与 `parse_log_line()` 统一编码/解析，回归测试约束。
 4. 类型：数字、布尔、字符串和缺失值按字段语义转换；缺失不等于空字符串或 `null`，不能凭字符串猜测所有字段类型。
 5. 单行：换行、回车、Unicode 行分隔符、异常栈需安全转义，保证一条记录对应一条物理行；不可把未脱敏原始异常、HTTP 查询密钥或用户正文混入字段。
-6. 兼容：现有主分支仍带 ` | record=...` 和 `gateway_event` JSON；新方案实施时应删除冗余输出，提供对旧文件的明确版本/迁移策略。**旧格式不可冒充新格式已可无损解析**；历史文件不自动删除。
+6. 兼容：旧版本曾使用 ` | record=...` 和 `gateway_event` JSON；本轮已删除冗余输出；旧文件需明确版本/迁移策略。**旧格式不可冒充新格式已可无损解析**；历史文件不自动删除。
 7. 解析失败：保留原始完整行及安全的错误诊断，不能静默丢弃；上传前仍需执行隐私校验。若基础前缀不可识别，应记录解析失败而非伪造时间、级别或请求标识。
 
-实施时优先让 Formatter 接收“说明 + 结构化字段”的内部记录，统一输出上述文本；不要求业务调用者自行拼接、引用和转义全部字段。对仍使用自由文本的旧调用点，逐项核对后兼容或迁移，不能为了形式化大规模删减调试信息。
+当前 Formatter 支持接收“说明 + 结构化字段”的内部记录，统一输出上述文本；不要求业务调用者自行拼接、引用和转义全部字段。对仍使用自由文本的旧调用点，逐项核对后兼容或迁移，不能为了形式化大规模删减调试信息。
 
 ## 3. 诊断信息完整性与安全边界
 
@@ -112,8 +112,8 @@ FastAPI / ADP Client / WeCom Gateway / Worker
 
 | 阶段 | 本期/未来 | 交付与验证 |
 | --- | --- | --- |
-| A. 普通日志规范化 | **下一次代码改造** | 保留原前缀、自由中文说明；采用 ` | `；删除行尾 `record` 与网关内嵌 JSON；保留完整有用诊断字段；不新增 JSONL |
-| B. 本地解析与回归 | **随 A 实施** | 新格式每行可解析成 JSON；中文/特殊字符/异常栈/空字段/不同字段集合/脱敏/轮转/并发/写失败；新旧信息守恒；更新配置、文档、示例与烟测 |
+| A. 普通日志规范化 | **已实现** | 保留原前缀、自由中文说明；采用 ` | `；删除行尾 `record` 与网关内嵌 JSON；保留完整有用诊断字段；不新增 JSONL |
+| B. 本地解析与回归 | **已实现（以测试证据为准）** | 新格式每行可解析成 JSON；中文/特殊字符/异常栈/空字段/不同字段集合/脱敏/轮转/并发/写失败；新旧信息守恒；更新配置、文档、示例与烟测 |
 | C. Cosmos DB 采集 | **未来单独授权** | 独立 Collector、稳定 ID、轮转保护、检查点、部分失败重试、幂等、积压告警、真实权限与网络验证 |
 | D. 查询与运维 | **按需** | 基于真实查询与费用选择分区键、索引、TTL、查询脚本及监控 |
 
@@ -121,10 +121,14 @@ FastAPI / ADP Client / WeCom Gateway / Worker
 
 ## 6. 当前代码位置与实施注意
 
-- [src/core/logging.py](../../src/core/logging.py)：当前文本 Formatter、`record` JSON 尾部、解析器、脱敏和轮转；**这是未来改造入口，不是当前方案 B 已实现的证明**。
-- [src/core/events.py](../../src/core/events.py)：当前网关事件白名单与 `gateway_event` JSON；未来改为同一中文文本格式，不丢事件语义。
+- [src/core/logging.py](../../src/core/logging.py)：当前文本 Formatter、` | ` 结构化字段、解析器、脱敏和轮转。
+- [src/core/events.py](../../src/core/events.py)：当前网关事件白名单与统一中文文本字段输出，保留事件语义。
 - [src/adp/client.py](../../src/adp/client.py)、[src/application/wecom_gateway.py](../../src/application/wecom_gateway.py)、[src/application/wecom_worker.py](../../src/application/wecom_worker.py)、[src/api/app.py](../../src/api/app.py)：核对实际日志调用点与字段含义，不进行无关业务重构。
 - [tests/test_logging.py](../../tests/test_logging.py)、[tests/test_gateway_events.py](../../tests/test_gateway_events.py)、[tests/wecom_dispatch_smoke.py](../../tests/wecom_dispatch_smoke.py)、[tests/wecom_docker_smoke.py](../../tests/wecom_docker_smoke.py)：调整受影响的解析/行为证据，保留消息状态、失败隔离和安全断言。
-- [docs/adp-chat/02_Docker部署与运维.md](../adp-chat/02_Docker部署与运维.md)：当前部署/排障命令仍描述**已实现**日志格式；方案 B 落地后再更新示例命令，不要在设计文档阶段伪称命令已可运行。
+- [docs/adp-chat/02_Docker部署与运维.md](../adp-chat/02_Docker部署与运维.md)：当前部署/排障命令仍描述**已实现**日志格式；本轮同步更新查看日志示例；真实部署仍需在目标环境验证。
 
-本文是日志目标设计的唯一解释 Owner；企业微信架构与路线图只保留网关所需的最小上下文及导航。下一次开发必须先读取目标仓库最新主分支和适用 Agent_Skills canonical Source，按实际代码修正实施细节与测试，不从本文推断代码已变更。
+本文是日志目标设计的唯一解释 Owner；企业微信架构与路线图只保留网关所需的最小上下文及导航。后续 Cosmos DB 接入仍需读取目标仓库最新主分支和适用 Agent_Skills canonical Source，核对当前代码与测试，不从设计文字推断数据库能力已存在。
+
+## 7. 本轮实现说明
+
+本地 Formatter 保持原前缀；有结构化字段时正文以 ` | ` 分隔，字段按 `key=value` 编码。网关业务事件写入中文说明和 `event`、`event_id`、`status`、关联标识及 `attr_` 前缀的白名单属性；`parse_log_line()` 返回基础字段与可选业务字段的字典，不包含数据库专用 ID。已有自由文本调用点逐项按兼容规则处理，未识别的正文不强制猜测字段。**历史旧版 `record`/JSONL 不自动转换或删除**。Cosmos DB 采集、幂等、检查点、保留策略和远程验证仍属未来阶段。

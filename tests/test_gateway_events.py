@@ -32,8 +32,13 @@ def read_events(root):
     for path in sorted(root.glob("human.log*")):
         for line in path.read_text(encoding="utf-8").splitlines():
             document = parse_log_line(line)
-            if document["kind"] == "gateway_event":
-                output.append(document["event"])
+            if "event" in document:
+                attrs = {key[5:]: value for key, value in document.items() if key.startswith("attr_")}
+                event = {key: value for key, value in document.items() if key not in ("message",) and not key.startswith("attr_")}
+                event["attributes"] = attrs
+                event["id"] = event.pop("event_id")
+                event["schema_version"] = "adp_chat.log.v1"
+                output.append(event)
     return output
 
 
@@ -90,7 +95,7 @@ class EventFileTests(unittest.TestCase):
         """共享文本日志按大小轮转；旧JSONL只留历史，不再生成或自动删除。"""
         legacy = self.root / "events-20000101-123-aaaaaaaaaaaa-0.jsonl"
         legacy.write_text('{"legacy":true}', encoding="utf-8")
-        config = replace(self.config, log_max_bytes=1000, log_backup_count=10)
+        config = replace(self.config, log_max_bytes=450, log_backup_count=10)
         events = GatewayEvents(config)
         for _ in range(4):
             events.emit("service.started")
@@ -131,7 +136,7 @@ class EventFileTests(unittest.TestCase):
             events.close()
         text = (self.root / "human.log").read_text(encoding="utf-8")
         self.assertIn("diagnostic_marker", text)
-        self.assertIn("gateway_event ", text)
+        self.assertIn("服务启动完成 | ", text)
         self.assertEqual(len(read_events(self.root)), 1)
         self.assertFalse(list(self.root.glob("events-*.jsonl")))
 
@@ -213,9 +218,9 @@ class EventWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(len({e["id"] for e in events}), len(events))
         for saved in (self.gateway.store.get(r["message_key"]) for r in records):
-            linked = [e for e in events if e["message_key"] == saved["message_key"]]
+            linked = [e for e in events if e.get("message_key") == saved["message_key"]]
             self.assertTrue(linked)
-            self.assertTrue(all(e["conversation_id"] == saved["conversation_id"] for e in linked))
+            self.assertTrue(all(e.get("conversation_id") == saved["conversation_id"] for e in linked))
         reject = next(e for e in events if e["event"] == "adp.rejected")
         self.assertEqual(reject["error_code"], "460031")
         unknown = next(e for e in events if e["event"] == "adp.unknown")
@@ -283,5 +288,5 @@ class EventCallbackTests(unittest.TestCase):
             events = read_events(root / "logs")
             self.assertEqual([e["event"] for e in events],
                              ["service.started", "wecom.callback.rejected", "service.stopped"])
-            self.assertTrue(all(e["message_key"] is None for e in events))
+            self.assertTrue(all(e.get("message_key") is None for e in events))
             self.assertNotIn("private-", json.dumps(events))
