@@ -337,10 +337,11 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/hold
 # 人工排障：查看完整诊断和事件记录（路径以实际测试配置为准）。
 Get-Content runtime/wecom-local/logs/adp_chat.log -Tail 100 -Encoding utf8
 
-# 提取结构化业务事件；只解析有固定标记的行，不正则解析自由文本。
+# 提取业务事件：所有新格式日志均可解析，按 kind 筛选网关事件。
 Get-Content runtime/wecom-local/logs/adp_chat.log -Encoding utf8 |
-  Where-Object { $_.Contains('gateway_event ') } |
-  ForEach-Object { ($_ -split ' \\| record=', 2)[1] | ConvertFrom-Json } |\n  Where-Object { $_.kind -eq 'gateway_event' } |\n  ForEach-Object { $_.event } |
+  ForEach-Object { ($_ -split ' \| record=', 2)[1] | ConvertFrom-Json } |
+  Where-Object { $_.kind -eq 'gateway_event' } |
+  ForEach-Object { $_.event } |
   Select-Object timestamp,event,message_key,conversation_id,request_id,status,error_code,outcome_uncertain
 ```
 
