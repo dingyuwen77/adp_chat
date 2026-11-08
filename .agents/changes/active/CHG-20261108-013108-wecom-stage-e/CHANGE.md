@@ -10,18 +10,18 @@ created: 2026-11-08
 updated: 2026-11-08
 completion_gate: required
 depends_on: []
-affected_areas: 
+affected_areas:
   - "gateway"
   - "logging"
-affected_paths: 
+affected_paths:
   - "src/core"
   - "src/application"
   - "src/api"
   - "tests"
   - "compose.yaml"
-contracts: 
+contracts:
   - "网关JSONL事件v1及本地启动运行"
-data_changes: 
+data_changes:
   - "日志仅诊断，消息v3不变"
 ---
 
@@ -89,7 +89,7 @@ A身份/跨进程；B认证/先去重/原子BUSY/可靠ACK；C无模型配额/�
 
 ## 最小充分方案
 
-先日志行为Red→白名单Formatter/轮转/故障可观察→原Gateway/Worker/API接线→真实HTTP故障/关联→PyCharm/Fake/真实ADP独立跨进程→Docker构建/Compose持久/重启/退出→回归/文档/Review/逐阶段交付。
+先日志行为Red→白名单Formatter/轮转/故障可观察→原Gateway/Worker/API接线→真实HTTP故障/关联→CLI/Fake/真实ADP独立跨进程→Docker构建/Compose持久/重启/退出→回归/文档/Review/逐阶段交付。
 
 ## 证据到决策
 
@@ -121,7 +121,7 @@ core日志与配置、gateway/worker/API调用点、既有本地/容器/真实�
 | 行为 / 单元 / 组件 | required | JSONL字段白名单、泄漏、轮转、写失败 |
 | 接口 / 契约 | required | 事件v1/旧入口/快照v3兼容 |
 | 集成 / 持久化 / 运行依赖 | required | 本机真实HTTP/SSE、文件、强杀/重启及Docker挂载 |
-| 用户 / 工作流验收 | required | PyCharm断点/PowerShell客户端/真实ADP密码两轮语义 |
+| 用户 / 工作流验收 | required | CLI真实启动/故障注入、PowerShell客户端/真实ADP密码两轮语义；PyCharm按后续用户要求仅提供配置说明 |
 | 跨组件关键路径 | required | 正式入站→状态→ADP→模拟发送→事件 |
 | 外部依赖 / 供应方探测 | required | 有界真实ADP与错误结构；最新一手文档 |
 | 构建 / 打包 / 运行 | required | wheel、Docker ARM64、本机Compose/退出 |
@@ -129,7 +129,7 @@ core日志与配置、gateway/worker/API调用点、既有本地/容器/真实�
 
 ## 验证计划
 
-日志先Red后Green、Fake协议/日志故障/强杀、现有与新增全回归；受控真实ADP跨进程两轮与SIYU隔离，人工实读语义；Docker正式镜像/Compose挂载/重启；PyCharm观察断点；Docs/Ready/独立Review/现有CI/guarded merge/main-fresh。
+日志先Red后Green、Fake协议/日志故障/强杀、现有与新增全回归；受控真实ADP跨进程两轮与SIYU隔离，人工实读语义；Docker正式镜像/Compose挂载/重启；PyCharm仅配置说明（后续用户范围）；Docs/Ready/独立Review/现有CI/guarded merge/main-fresh。
 
 # 风险、兼容性、迁移与回滚
 
@@ -186,7 +186,7 @@ E-DOCKER-RCA：首轮拓扑让网关持有共享网络namespace，强杀重启�
 
 E-LEGACY：`tests/docker_smoke.py --image adp_channel_api:v0.0.9` exit0：已安装包/数据排除、UID/GID10001、只读配置/可写根数据、两次重建session不变、真实HTTP→原ChatService→SSE夹具→HTTP200；全部测试容器/临时数据清理，无真实ADP请求。旧main/CLI/同步客户端回归亦在164项内，不以无鉴权API暴露公网。
 
-E-PACKAGE/DOCS：正式wheel构建exit0，CRC及5个变更正式模块逐字节通过；无依赖/lock版本变更。六份现有长期Owner同步，本地启动/签名客户端/两员工/BUSY/真Fake切换/50与100压力/JSON快照/JSONL/命令行与可选IDE/Docker/清理及F前置检查完整。136本地链接有效，候选Python函数中文说明AST通过、diff whitespace通过；NUL安全枚举候选文件实读无实际凭据泄漏，actual/example键一致且旧值保留。CI文件差异为空。
+E-PACKAGE/DOCS：正式wheel构建exit0，CRC及5个变更正式模块逐字节通过；无依赖/lock版本变更。六份现有长期Owner同步，本地启动/签名客户端/两员工/BUSY/真Fake切换/50与100压力/JSON快照/JSONL/命令行与可选IDE/Docker/清理及F前置检查完整。136本地链接有效，候选Python函数中文说明AST通过、未提交工作区增量diff whitespace通过；完整base→head检查见后续纠正证据；NUL安全枚举候选文件实读无实际凭据泄漏，actual/example键一致且旧值保留。CI文件差异为空。
 
 E-PRIMARY：2026-11-08联网读取Python3.14 logging.handlers官方完整原文、Docker services官方当前页（2026-11-03）、官方compose-spec/compose-spec默认分支13-merge.md blob1c8cac2448197648c16c7e1ce88e52617dec1543完整原文，确认共享namespace、按target合并卷、ports须!override完整替换且支持版本2.24.4。网页工具连接失败时用本机HTTPS/官方GitHub connector原文，未拿摘要冒充证据。前序已联网核验WeCom及ADP正式协议继续有效。无Azure SDK/Cosmos、正式企微或服务器部署。
 
@@ -195,6 +195,8 @@ E-PRESSURE-50：tests/wecom_dispatch_smoke.py --users 50 --simulate-notification
 E-PRESSURE-100：tests/wecom_dispatch_smoke.py --users 100 --simulate-notifications --report runtime/wecom-stage-e-http-100.json exit0；无限额峰值100、拒绝0，Fake30峰值30、实际拒绝70；ACK P50/P95/P99/max分别403.3/476.3/483.9/488.7ms与341.2/423.1/848.7/853.8ms。批次ACK吞吐182.4/108.8每秒，仅代表回调落盘ACK，不代表ADP模型吞吐。两类实际强杀恢复/未知释放/旧请求和旧通知各一次继续通过。四场景JSONL逐行解析/关联/脱敏通过，全部自有进程/监听/临时数据回收；原始报告/日志在runtime。
 
 Validation Asset Redundancy=clean：新增9日志边界、3配置副作用、4受控Probe边界、1Fake屏障各有独立责任；Docker网关恢复与既有单用户镜像烟测验证不同调用链；50/100复用同一Harness，无第二套业务状态或重复永久框架。
+
+E-GOVERNANCE-CORRECTION：独立Reviewer发现原head bbef4e8795b9a3954fee8c0905380d3138da87d5 的完整base→head diff --check实际exit2，Change frontmatter四个列表键后有行尾空格。此前根侧仅执行工作区增量检查，不能支撑完整diff通过表述；已纠正记录、移除四处空格，并同步验证矩阵中的早期PyCharm断点措辞到用户后续CLI范围。仅Change文档，无源码/测试/产物变化；修后工作区完整base→当前diff检查、Contract与Ready通过，新head仍需定向复核和现有CI。
 
 ## 备注
 
