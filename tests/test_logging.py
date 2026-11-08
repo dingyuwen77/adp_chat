@@ -43,6 +43,8 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual([record["kind"] for record in records],
                          ["diagnostic", "diagnostic", "gateway_event"])
         self.assertIn("request_id=abc", records[0]["message"])
+        self.assertEqual(records[0]["request_id"], "abc")
+        self.assertEqual(records[0]["elapsed_ms"], 12.0)
         self.assertIn("error=redacted", records[1]["message"])
         self.assertEqual(records[2]["event"]["event"], "service.started")
         self.assertEqual(records[2]["id"], records[2]["event"]["id"])
