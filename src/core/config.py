@@ -1,15 +1,18 @@
 import os
 import base64
 import binascii
+import re
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import TIMEOUT_MAX
+from urllib.parse import urlsplit
 
 from .models import ChatError
 
 
 ADP_CHAT_URL = "https://wss.lke.cloud.tencent.com/adp/v2/chat"
+DEFAULT_CALLBACK_PATH = "/wecom/callback"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +54,7 @@ class ChatConfig:
     gateway_environment: str = "test"
     wecom_app_secret: str = field(default="", repr=False)
     send_timeout_seconds: float = 15
+    callback_url: str = ""
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -96,7 +100,27 @@ class ChatConfig:
             if (not all(scope) or not valid_key or not self.callback_token.isascii()
                     or not self.callback_token.isalnum() or len(self.callback_token) > 32):
                 raise ChatError("config", "invalid_gateway_credentials", "启用网关需要完整身份作用域和有效的回调测试 Token/AES 密钥。")
-        from urllib.parse import urlsplit
+        if self.callback_url:
+            try:
+                callback = urlsplit(self.callback_url)
+                callback_port = callback.port
+                valid_callback = (
+                    self.callback_url.isascii() and not any(c.isspace() or ord(c) < 32 for c in self.callback_url)
+                    and callback.scheme in ("http", "https") and bool(callback.hostname)
+                    and re.fullmatch(r"[A-Za-z0-9.-]+|[0-9A-Fa-f:]+", callback.hostname or "") is not None
+                    and (callback_port is None or 1 <= callback_port <= 65535)
+                    and callback.username is None and callback.password is None
+                    and not callback.query and not callback.fragment and not callback.netloc.endswith(":")
+                    and re.fullmatch(r"/[A-Za-z0-9_./-]*", callback.path) is not None
+                    and "//" not in callback.path
+                    and not any(part in (".", "..") for part in callback.path.split("/"))
+                    and not any(callback.path == reserved or callback.path.startswith(reserved + "/")
+                                for reserved in ("/api", "/healthz", "/docs", "/redoc", "/openapi.json"))
+                )
+            except ValueError:
+                valid_callback = False
+            if not valid_callback:
+                raise ChatError("config", "invalid_callback_url", "回调地址须为无凭据、查询或片段的HTTP(S) URL，且使用独立的静态接收路径。")
         try:
             target = urlsplit(self.adp_url)
             port = target.port
@@ -115,6 +139,11 @@ class ChatConfig:
                 or not 0 < self.send_timeout_seconds <= TIMEOUT_MAX):
             raise ChatError("config", "invalid_notification", "通知模式、环境或超时配置无效。")
 
+    @property
+    def callback_path(self) -> str:
+        """从已校验的对外URL取得接收路径；主机/端口不接管部署监听或触发出站。"""
+        return urlsplit(self.callback_url).path if self.callback_url else DEFAULT_CALLBACK_PATH
+
 
 _SECTIONS = {
     "adp": {
@@ -128,7 +157,7 @@ _SECTIONS = {
     "session": {"session_file": str},
     "wecom": {
         "corp_id": str, "agent_id": int, "adp_application": str, "gateway_enabled": bool,
-        "callback_token": str, "encoding_aes_key": str, "messages_dir": str,
+        "callback_url": str, "callback_token": str, "encoding_aes_key": str, "messages_dir": str,
         "callback_max_bytes": int, "max_unfinished_messages": int,
         "adp_url": str, "adp_response_max_bytes": int,
         "notification_mode": str, "gateway_environment": str, "wecom_app_secret": str,

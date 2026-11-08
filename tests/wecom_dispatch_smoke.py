@@ -63,7 +63,7 @@ def callback(config, base, user, msg_id, text="本机确定性测试"):
     params = {"timestamp": timestamp, "nonce": nonce, "msg_signature": crypto.signature(encrypted, timestamp, nonce)}
     body = f"<xml><ToUserName>{config.corp_id}</ToUserName><AgentID>{config.agent_id}</AgentID><Encrypt>{encrypted}</Encrypt></xml>".encode()
     started = time.monotonic()
-    with urlopen(Request(base + "/wecom/callback?" + urlencode(params), data=body), timeout=5) as response:
+    with urlopen(Request(base + config.callback_path + "?" + urlencode(params), data=body), timeout=5) as response:
         assert response.status == 200 and response.read() == b""
     return (time.monotonic() - started) * 1000
 

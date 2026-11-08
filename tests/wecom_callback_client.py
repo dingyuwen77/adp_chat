@@ -132,7 +132,7 @@ def main(argv=None) -> int:
         else:
             data = (f"<xml><ToUserName>{escape(config.corp_id)}</ToUserName><AgentID>{config.agent_id}</AgentID>"
                     f"<Encrypt>{ciphertext}</Encrypt></xml>").encode()
-        request = Request(args.url.rstrip("/") + "/wecom/callback?" + urlencode(params), data=data,
+        request = Request(args.url.rstrip("/") + config.callback_path + "?" + urlencode(params), data=data,
                           headers={"Content-Type": "application/xml"})
         with urlopen(request, timeout=5) as response:
             body = response.read(1024)

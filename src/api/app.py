@@ -12,17 +12,33 @@ from application.wecom_gateway import WeComGateway
 from application.wecom_worker import GatewayWorker
 from adp.async_client import AsyncADPClient
 from wecom.sender import create_sender
-from core.config import load_config
+from core.config import DEFAULT_CALLBACK_PATH, load_config
 from core.logging import CallbackAccessFilter, diagnostic_logger
 from core.models import ChatError
 from .routes import router
-from .wecom_routes import router as wecom_router
+from .wecom_routes import create_router as create_wecom_router
+
+
+def _configure_callback_routes(app: FastAPI, path: str) -> None:
+    """只在接收请求前更换本Owner的路由，支持lifespan重启且不残留旧入口。"""
+    if getattr(app.state, "wecom_callback_path", None) == path:
+        return
+    previous = getattr(app.state, "wecom_callback_routes", ())
+    app.router.routes[:] = [route for route in app.router.routes
+                           if not any(route is owned for owned in previous)]
+    start = len(app.router.routes)
+    app.include_router(create_wecom_router(path))
+    app.state.wecom_callback_routes = tuple(app.router.routes[start:])
+    app.state.wecom_callback_path = path
+    # OpenAPI可能在lifespan之前已经生成；必须反映实际接收路径。
+    app.openapi_schema = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """在接收 HTTP 请求前加载配置并持久化会话 ID。"""
     config = load_config()
+    _configure_callback_routes(app, config.callback_path)
     service = ChatService(config)
     service.initialize()
     app.state.chat_service = service
@@ -64,7 +80,7 @@ def create_app() -> FastAPI:
     """构造 HTTP 服务，不在导入模块时读取密钥或创建会话。"""
     app = FastAPI(title="ADP 单用户对话服务", lifespan=lifespan)
     app.include_router(router)
-    app.include_router(wecom_router)
+    _configure_callback_routes(app, DEFAULT_CALLBACK_PATH)
 
     @app.exception_handler(ChatError)
     async def chat_error_handler(_request: Request, exc: ChatError) -> JSONResponse:

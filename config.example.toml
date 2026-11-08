@@ -1,4 +1,5 @@
-# 复制为 config.toml；真实 AppKey 仅保存在本机，不提交 Git。
+# 本文件与 config.toml 保持相同的配置项、顺序和注释，仅配置值允许不同。
+# 真实凭据和环境值填写在 config.toml；示例不放真实凭据，实际文件不提交 Git。
 # main.py、adp-chat 和 FastAPI 共用同一套单轮对话配置。
 
 [adp]
@@ -34,7 +35,7 @@ workflow_status = ""
 session_file = "runtime/session.json"
 
 [wecom]
-# 阶段 A 身份作用域；不用网关时保留空值/0，或省略整个分组。
+# 企业微信身份作用域；不用网关时可保留空值/0。
 # 配置时三项必须同时填写；仅为派生作用域，不代表真实企微身份已验证。
 corp_id = ""
 agent_id = 0
@@ -42,23 +43,32 @@ agent_id = 0
 adp_application = ""
 # 默认关闭；启用后异步调用ADP，通知由下方模式独立控制。
 gateway_enabled = false
-# 独立测试密钥在本机生成后填写，真实 F 凭据不得提交 Git。
+# 企业微信对外回调完整URL；复制同一值到后台，修改后重启应用并同步后台。
+# 启动按URL路径注册GET/POST；主机/端口仍由deployment及网络转发决定，不自动配置后台。
+# 留空兼容/wecom/callback；非空须为HTTP(S)静态路径，不含查询、片段或API保留路径。
+callback_url = ""
+# 企业微信后台“接收消息”的 Token；英文或数字，不超过32位，须与后台一致。
+# A～E使用独立测试值，F填写正式回调值；它不是应用Secret或access_token。
 callback_token = ""
+# 企业微信后台生成的43位 EncodingAESKey；须与后台一致，不提交Git。
 encoding_aes_key = ""
-# 相对路径基于本配置目录，与旧单用户 session_file 分开。
+# 相对路径基于本配置目录，与旧单用户 session_file 分开；生产使用新的独立目录。
 messages_dir = "runtime/messages"
 # 物理接收保护，不是 ADP 模型业务并发配额；触发时拒绝成功 ACK。
 callback_max_bytes = 65536
 max_unfinished_messages = 2000
-# 网关正式HTTPS；仅本机Fake可覆盖为 http://127.0.0.1:8765/adp/v2/chat。
+# Python调用ADP的出站地址，与企业微信入站回调选择HTTP/HTTPS无关。
+# 正式ADP固定使用HTTPS；仅本机Fake可覆盖为 http://127.0.0.1:8765/adp/v2/chat。
 adp_url = "https://wss.lke.cloud.tencent.com/adp/v2/chat"
 # 整条SSE的物理字节保护，超出则UNKNOWN，不自动重试。
 adp_response_max_bytes = 1048576
-# disabled不发送；A～E本地选simulated，成功只能记SEND_SIMULATED。
+# disabled不发送；simulated仅模拟；wecom调用真实企业微信应用消息接口。
+# A～E使用simulated且只能记SEND_SIMULATED；F真实发送另需production与应用Secret。
 notification_mode = "disabled"
-# test目录不能在production下复用；真实发送配置留阶段F。
+# test用于本地验证，production用于正式接入；禁止把已有测试状态目录直接切成production。
 gateway_environment = "test"
-# 真实应用Secret只在F本机安全配置；A～E保持空值，不提交Git。
+# 自建应用详情页的Secret，填在实际配置；A～E保持空值，不提交Git。
+# access_token由发送器用CorpID和本Secret自动获取、缓存，无须手工增加配置项。
 wecom_app_secret = ""
 # 一次通知的总超时（含Token与全部文字分片），不影响ADP用户占用。
 send_timeout_seconds = 15
@@ -84,7 +94,10 @@ log_answer_chars = 100
 
 [deployment]
 # 仅服务器 run.sh/upgrade.sh 读取；本地 CLI、直接 Uvicorn 和源码 Compose 忽略。
-# 服务器真实拥有的 IPv4 地址；容器内部仍固定监听 0.0.0.0:8000。
+# 更换服务器时在此配置宿主监听IPv4，不需要因IP不同修改源码或脚本。
+# 使用本机网卡IP或0.0.0.0；容器内部仍固定监听0.0.0.0:8000。
+# 它不是企业微信后台的回调URL，也不一定等于调用企业微信时的公网出口IP。
 bind_ip = "10.102.70.82"
 # 服务器对外发布的端口，必须为 1 至 65535 的整数。
+# 常规部署只改本节即可；若手工设置ADP_BIND_IP/ADP_HOST_PORT，会覆盖对应字段。
 host_port = 4560

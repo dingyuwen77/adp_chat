@@ -381,7 +381,96 @@ docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml down
 
 生成前确认目录/文件不存在；docker tag前确认目标开发标签属于本任务，避免覆盖他人镜像。手动down保留本机配置/日志/消息；不会清理全局Docker资源，不运行prune。命令在项目根执行。[compose.local.yaml](../../compose.local.yaml)作为[compose.yaml](../../compose.yaml)的本机覆盖，按 [Compose官方合并规则](https://github.com/compose-spec/compose-spec/blob/main/13-merge.md)依赖支持`!override`的Compose（≥2.24.4），显式只发布loopback的18000。Fake持有稳定网络命名空间，网关加入其loopback；网关重启不遗留在旧命名空间的Fake，启动先等Fake健康。Fake自身重建时须一起重建该测试项目；不把这种测试拓扑用到F。配置只读映射/app/config.toml，runtime/logs映射各自测试目录。默认ARM64本地仿真不替代目标Linux/ARM服务器、网络/权限和正式企微真实验收；本节不执行上传或部署。
 
-**阶段F前置检查**（未实施）：管理员确认现有回调Owner和回退方案；独立生产状态目录/访问权限/备份及未知正文处置期限；正式Secret、Token/AES与测试分开；应用Agent/可见员工/发送权限；当前官方回调可达性、证书和可信公网出口IP；目标Linux/ARM架构、目录权限/网络与退出恢复；两名真实员工的回调→ADP→真实API接受及客户端边界。SEND_ACCEPTED仅能由正式API明确接受产生，不追踪已读；F前不得将测试目录改为production复用。
+**阶段F检查**（YNND 已真实接入，完整验收未关闭）：具体配置、后台操作和当前限制见1.11；保留独立生产状态目录、正式凭据、应用权限、目标机网络/架构及两员工真实验收边界。SEND_ACCEPTED仅能由正式API明确接受产生，不追踪已读；不得将测试目录改为production复用。
+
+### 1.11 阶段F：公网IP与HTTP接入配置
+
+本节按用户选择使用**公网IP和HTTP回调**，不要求新增域名或入站HTTPS。用户已在 CentOS Stream 9/x86_64 自行部署 v0.0.10，后台 GET 保存、YNND 的真实加密 POST/ADP/应用回复和切出后返回查看已通过。多用户在隔离模拟身份下验证，F1～F5完整状态、实际压力数据及未验证项仍以[docs/wecom-integration/03_实施路线图.md](../wecom-integration/03_实施路线图.md)为验收Owner。入站协议选择不改变Python调用ADP及企业微信API的既有HTTPS出站地址。
+
+**先分清三个地址**：
+
+| 地址 | 在哪里配置 | 如何填写 |
+| --- | --- | --- |
+| 服务宿主监听IP、发布端口 | 实际`config.toml`的`[deployment].bind_ip/host_port` | 选择服务器本机IP及发布端口；公网IP若经云NAT映射，不一定出现在网卡上，可绑定本机网卡IP或`0.0.0.0` |
+| 企业微信入站回调URL | 实际`config.toml`的`wecom.callback_url`，再复制到后台“接收消息”的URL | 当前选择`http://115.190.218.12:3000/wecom/callback`；应用启动按其路径注册GET/POST，后台是否接受以保存校验为准 |
+| 应用API可信IP | 企业微信应用后台“企业可信IP” | 填调用企业微信API时的固定公网出口；直接出网时可与入口IP相同，经NAT/代理时需核实 |
+
+更换服务器只调整实际部署配置和必要的企业微信后台地址，不因IP不同修改源码。[scripts/run.sh](../../scripts/run.sh)与[scripts/upgrade.sh](../../scripts/upgrade.sh)读取服务器`release/config.toml`；常规部署不需要环境变量。若账户手工设置了`ADP_BIND_IP/ADP_HOST_PORT`，它们会覆盖对应字段，需先核对。源码Compose是另一个显式入口，仍按其环境变量发布端口，不读取TOML的`[deployment]`；本节服务器操作统一使用正式脚本。
+
+**第一步：确认服务器运行条件并打包。** 用户已确认当前是CentOS Stream 9、`x86_64`，对应`linux/amd64`。镜像按CPU架构选择，同一镜像也可用于x86_64的Ubuntu；不需要把现有镜像基础系统改为CentOS。目标机还需确认Docker可用：
+
+```bash
+cat /etc/os-release
+uname -m
+docker info --format '{{.OSType}}/{{.Architecture}}'
+```
+
+在Windows项目根目录启动Docker Desktop的Linux引擎，然后运行：
+
+```powershell
+.\scripts\build_image.ps1 -Version v0.0.10 -Platform linux/amd64
+```
+
+`v0.0.10`是本次示例的新版本号；若目录或镜像标签已存在，换未使用的版本号，不覆盖旧包。脚本默认的`linux/arm64`保持原样，当前x86_64服务器必须显式传`-Platform linux/amd64`。生成`dist/v0.0.10/adp_channel_api-v0.0.10-linux-amd64.tar`、`manifest.json`、`SHA256SUMS`。按2.1把版本目录与源码`scripts/run.sh/stop.sh/upgrade.sh`上传到服务器`release`布局，私下准备`release/config.toml`，然后在该目录执行`bash ./run.sh v0.0.10`。此版本的 linux/amd64 镜像已由用户构建并自行部署；源代码与镜像 ID 的验收绑定见 Roadmap。后续重新打包必须使用未占用的新版本号。
+
+宿主不必另装应用Python，容器内已有Python3.14。启动沿第二节的正式流程，按UID/GID10001准备持久化权限；CentOS还须依据实际SELinux状态检查挂载访问，不能只因操作系统名称相同就声称通过。系统时间需同步，回调验签有时间窗口。
+
+宿主端口监听、安全组、系统防火墙和任何转发须形成完整入站路径。先从外部网络检查HTTP入口，再以后台GET保存校验为准；“服务器可以访问互联网”本身不证明指定端口已允许入站。公网入口只应开放`wecom.callback_url`的已验签路径（当前`/wecom/callback`）：原`/api/v1/chat`没有身份认证，不能把整套FastAPI路由无差别公开。可在现有HTTP反向代理或其他具备路径控制能力的入口收口，入站仍可保持HTTP；代理须保留查询参数和XML请求体，回调不记录完整查询串。不要仅靠启动进程或本机`/healthz`判定真实接入成功。
+
+**第二步：在企业微信后台找到应用身份和权限。** 由有权限的管理员登录[企业微信管理后台](https://work.weixin.qq.com/)，选择相应企业：
+
+1. “我的企业 → 企业信息”查看企业ID，对应`wecom.corp_id`。
+2. “应用管理 → 自建 → 目标应用”查看AgentId和Secret，对应`wecom.agent_id`与`wecom.wecom_app_secret`。确认是现有目标应用，不是通讯录同步Secret或其他应用凭据。查看Secret时按后台提示完成管理员验证，私下填写实际配置，不发聊天或提交Git。
+3. 在同一应用详情页确认应用启用，并在“可见范围”中加入`YNND`和`SIYU`；在“通讯录 → 成员详情”核对两人的实际UserID及必要接口权限。后台菜单名称以当前页面为准，不创建重复应用。
+4. 在应用的“企业可信IP”设置中填写确认过的公网出口IP。这是服务器主动调用发送接口的限制，与回调接收地址分开。参考[官方身份/权限说明](https://developer.work.weixin.qq.com/document/path/90665)及[开发须知与可信IP](https://developer.work.weixin.qq.com/document/path/90664)。
+
+**第三步：准备后台回调密钥并填写实际配置。** 在同一应用的“接收消息 → 设置API接收”（名称以当前后台为准）找到URL、Token和EncodingAESKey。当前目标应用的回调已保存成功。以后修改前仍须确认页面的配置归属，保留当前可用的值，不覆盖其他系统。
+
+- 在`config.toml`填写`callback_url = "http://115.190.218.12:3000/wecom/callback"`，再把完全相同的值复制到后台URL，末尾不要带中文逗号。此配置实际决定应用启动注册的接收路径；留空或省略兼容`/wecom/callback`。更改后重启服务并同步后台，代码不会代替管理员修改后台，也不会自动修改宿主监听或网络转发。
+- Token是自行生成并与服务器约定的英文/数字字符串，不超过32位；不是应用Secret，也不是access_token。
+- EncodingAESKey使用后台“随机生成”的43位值，将完全相同的值写到服务器；它与本地A～E测试密钥分开。
+- 先记下这些值并填好服务器、启动服务，再回后台保存，因为保存会立即发送GET验证。凭据仅保存在受限的实际配置中。[官方回调配置与验签流程](https://developer.work.weixin.qq.com/document/path/90930)是协议依据。
+
+以[config.example.toml](../../config.example.toml)的现有字段为准，两份配置的分组、字段顺序和注释保持一致，只替换实际配置值；不要把以下字段重复追加成第二个`[wecom]`分组：
+
+| 现有字段 | F正式接入时的值或处理 |
+| --- | --- |
+| `corp_id`、`agent_id` | 填同一目标企业和自建应用的实际标识 |
+| `adp_application` | 上线前确定固定的生产逻辑应用名，以后部署、迁移或轮换AppKey时保持稳定；不沿用一次性测试作用域 |
+| `gateway_enabled` | `true` |
+| `callback_url` | 当前`"http://115.190.218.12:3000/wecom/callback"`，与后台URL一致；不允许凭据、查询、片段或现有API保留路径 |
+| `callback_token`、`encoding_aes_key` | 与后台完全一致的正式回调值 |
+| `gateway_environment` | `"production"` |
+| `notification_mode` | `"wecom"` |
+| `wecom_app_secret` | 目标自建应用的实际Secret |
+| `messages_dir` | 新的独立生产目录；本机可用`runtime/wecom-production/messages`，服务器按2.1的`session_file="../runtime/session.json"`布局应使用`../runtime/wecom-production/messages`，确保落在正式runtime持久化挂载内 |
+
+ADP继续使用已有`adp.app_key`和正式`wecom.adp_url`；先核查真实测试中出现的460702模型余额错误是否已处理。旧`adp.user_id/visitor_id`服务于原单用户入口，网关会从通过验签的员工消息派生各自身份，不需要给两名员工维护两份配置。发送器自动获取和缓存access_token，无须手动填新字段。正式日志建议`log_level="INFO"`、`log_question=false`、`log_answer_chars=0`。
+
+**第四步：保存回调并完成真实验收。**
+
+1. 按正式部署入口启动单实例、单worker；本机健康检查和目录读写正常后，从外部网络检查入口端口。
+2. 回企业微信后台保存URL、Token、EncodingAESKey。成功说明GET验签和解密往返通过；失败先查入口转发、签名参数、密钥一致性和系统时间，不绕过验签。
+3. `YNND`在企业微信目标应用中发送“我想改密码”，等待正式回复；下一轮发送“windows”，实读语义验证续接。`SIYU`同时走另一会话，核对不串消息。
+4. 继续验收同用户BUSY、重复回调去重、ADP明确拒绝/UNKNOWN与用户释放。真实发送须同时核对`send_result.source="wecom_api"`和目标用户接受结果；`SEND_SIMULATED`不能当作企微成功。错误与无效接收人按[官方应用消息接口](https://developer.work.weixin.qq.com/document/path/90236)核查，不为补发而重新调用ADP。
+5. 记录真实F1～F5结果及未验证项，再确定正式可用状态。测试问题不触发生产会议写入，不做未经本次批准的真实压力调用。
+
+**当前上线检查与低负载复验。** 生产入口为宿主 `0.0.0.0:3000→8000`，企业可信 IP 已按实际公网出口配置为 `115.190.218.12`。真实发送错误 `60020` 表示不安全的访问 IP；修正后台可信 IP 后等待生效，再由员工发新消息核对正式接受，不能把旧失败快照改回待发送或重新调用 ADP。API 接受与客户端已读是两个不同事实。
+
+本轮发现公网仍能无凭据访问旧 `POST /api/v1/chat`（无效请求返回 422，没有调用 ADP），与架构的公网边界冲突。**在入口仅允许回调路径与必要健康检查，或为公网旧 API 建立明确鉴权前，F 不能关闭。** 单纯改端口、安全组或绑定 `0.0.0.0` 不能按 HTTP 路径隔离这两个接口；也不能把 `/api/v1/chat` 的固定身份当成员身份。
+
+服务器保持现有单实例，不为了复验重启或制造发送网络故障。多用户模拟应使用独立测试 Token/AESKey、`gateway_environment="test"`、`notification_mode="simulated"` 和全新状态目录/固定测试应用范围；不得往生产回调伪造员工身份，或让模拟账号触发真实企微发送。服务器本轮只运行两个模拟员工的低并发真实 ADP；测试容器无宿主公开端口、上限 0.5 CPU/256 MiB，测试结束后删除。50/100 用户压力及故障注入放在本机，既有日常入口仍为：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_dispatch_smoke.py --users 100 --simulate-notifications --report runtime/wecom-f-offline.json
+```
+
+第二条仅使用 Fake ADP，不访问真实腾讯 ADP 或企业微信；本轮在与服务器相同的既有镜像内实际执行了该脚本的 100 用户模式。Docker 完整测试方式沿用1.10，不为 F 新建第二套配置来源。真实 QPS 错误 `460031` 已被现有离线 Fixture 覆盖，普通回归无需真实 API。公网错误验证没有发送合法单用户聊天输入。
+
+本机 Docker Desktop 的 Windows bind 目录在并发替换时出现过读取异常：100 用户 Probe 的观察器曾退出 1，原批次 100 条请求/模拟通知随后经静态快照与 JSONL 核对闭合；没有重发。单独文件系统实验仅在 bind 目录复现读取错误，Linux `/tmp` 对照正常，具体 errno 与原 FileNotFoundError 不同，不能断言完全相同根因。读取观察失败应保留原请求标识并核查原状态，不能为了让测试通过而重投 ADP、改快照或放宽业务断言；该结果也不代表目标服务器文件系统已被大并发压测。
+
+**后续迁移Ubuntu。** 停止旧实例并取得一致的配置/runtime快照后，迁移实际配置、完整生产消息状态和必要日志；保持企业/应用标识、固定`adp_application`及目录映射语义。核对Ubuntu的CPU架构、Docker、目录权限和网络，再启动唯一新实例。入口或出口改变时分别更新回调URL和可信IP并重新验收；旧新实例不能同时处理同一应用。回退同样先停新实例，保留UNKNOWN与发送状态，不能盲目重投已武装请求。
 
 ## 二、Linux 服务器部署
 
@@ -593,7 +682,7 @@ python examples/http_client.py "继续刚才的话题" --url http://10.102.70.82
 | 启动报 Permission denied | UID/GID、`config.toml`、`runtime/`、`log/`（源码 Compose 为 `logs/`） | 不用 777 权限掩盖问题 |
 | 容器重建后丢上下文 | 是否保留了挂载的 `runtime/session.json` | 不能把临时容器内文件当持久数据 |
 
-[config.example.toml](../../config.example.toml) 是可提交的配置模板，AppKey留空；本机config.toml保存真实配置并被Git/Docker忽略。本机这两份配置除AppKey外保持一致；服务器release配置还需保留该环境的../runtime、../log等路径，不能用本机根配置整份覆盖。
+[config.example.toml](../../config.example.toml) 是可提交的配置模板，AppKey留空；本机config.toml保存真实配置并被Git/Docker忽略。两份配置的分组、配置项、顺序及注释保持一致，凭据、身份、回调URL、部署地址等实际值按环境填写；服务器release配置还需保留该环境的../runtime、../log等路径，不能用本机根配置整份覆盖。
 
 配置模板显式设置 `[logging].log_question=true`，启用后记录后续用户问题；`log_answer_chars` 独立限制回答正文长度。若不记录正文，设置 `log_question=false`、`log_answer_chars=0`。代码在省略这两项时仍默认关闭正文记录；DEBUG级别本身不会开启问题记录。已有日志不回填。AppKey及已知凭据URL保持脱敏，其他业务系统可能还有独立日志。
 

@@ -110,6 +110,35 @@ class CallbackTests(unittest.TestCase):
         response = self.client.get("/wecom/callback", params={**self.signed(ciphertext), "echostr": ciphertext})
         self.assertEqual((response.status_code, response.content), (200, b"url-test-echo"))
 
+    def test_configured_callback_path_reuses_protocol_and_replaces_routes_on_restart(self):
+        """同一应用重新启动后只保留新路径，GET/POST仍真实验签并可靠接收。"""
+        app = create_app()
+        app.openapi()  # 预先缓存默认Schema，重配路径后必须失效。
+        previous = "/wecom/callback"
+        for index, path in enumerate(("/qy/receive", "/enterprise/callback")):
+            config = replace(self.config, callback_url="http://115.190.218.12:4560" + path,
+                             messages_dir=str(self.root / f"custom-{index}"))
+            with patch("api.app.load_config", return_value=config), TestClient(app) as client:
+                ciphertext = self.encrypted(b"configured-url-echo")
+                params = {**self.signed(ciphertext), "echostr": ciphertext}
+                self.assertEqual(client.get(path, params=params).content, b"configured-url-echo")
+                self.assertEqual(client.get(previous, params=params).status_code, 404)
+                wrong = {**params, "msg_signature": "0" * 40}
+                self.assertEqual(client.get(path, params=wrong).status_code, 403)
+                encrypted = self.encrypted(self.xml(msg_id=str(80 + index)))
+                body = (f"<xml><ToUserName>{config.corp_id}</ToUserName><AgentID>{config.agent_id}</AgentID>"
+                        f"<Encrypt>{encrypted}</Encrypt></xml>").encode()
+                response = client.post(path, params=self.signed(encrypted), content=body)
+                self.assertEqual((response.status_code, response.content), (200, b""))
+                key = message_key(config.corp_id, config.agent_id, str(80 + index))
+                self.assertEqual(app.state.wecom_gateway.store.get(key)["adp_state"], "RECEIVED")
+                self.assertEqual(client.get("/healthz").status_code, 200)
+                paths = client.get("/openapi.json").json()["paths"]
+                self.assertIn(path, paths)
+                self.assertNotIn(previous, paths)
+                self.assertEqual(set(paths[path]), {"get", "post"})
+            previous = path
+
     def test_reserved_and_invalid_member_ids_are_rejected_before_storage(self):
         """合法签名不能把@all等非成员目标变成可群发的可信员工。"""
         for user in ("@all", "@ALL", "_member", ".member", "YNND|SIYU"):

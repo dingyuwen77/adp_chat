@@ -9,9 +9,6 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from wecom.crypto import invalid_callback
 
 
-router = APIRouter()
-
-
 def _gateway(request: Request):
     """默认关闭新网关，不因增加路由改变旧配置的启动行为。"""
     gateway = getattr(request.app.state, "wecom_gateway", None)
@@ -36,7 +33,6 @@ def _parameters(request: Request) -> tuple[str, str, str]:
     return timestamp, nonce, signature
 
 
-@router.get("/wecom/callback")
 async def verify_url(request: Request) -> Response:
     """返回验签解密后的原始 echo，不加 JSON 包装或换行。"""
     gateway = _gateway(request)
@@ -48,7 +44,6 @@ async def verify_url(request: Request) -> Response:
     return Response(plaintext, media_type="text/plain")
 
 
-@router.post("/wecom/callback")
 async def receive_message(request: Request) -> Response:
     """有界读取、完整认证、原子可靠接收，最后返回空 ACK。"""
     gateway = _gateway(request)
@@ -62,3 +57,11 @@ async def receive_message(request: Request) -> Response:
     if message is not None:
         await asyncio.to_thread(gateway.receive, message)
     return Response(b"", media_type="text/plain")
+
+
+def create_router(path: str) -> APIRouter:
+    """由启动配置注册同一组GET/POST处理器，不派生第二套认证或业务逻辑。"""
+    router = APIRouter()
+    router.add_api_route(path, verify_url, methods=["GET"])
+    router.add_api_route(path, receive_message, methods=["POST"])
+    return router
