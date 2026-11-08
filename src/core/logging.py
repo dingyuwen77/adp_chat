@@ -3,7 +3,6 @@
 import logging
 import json
 import re
-from uuid import uuid4
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -112,86 +111,160 @@ def conversation_text(config: ChatConfig, text: str, *, limit: int | None = None
     return encoded
 
 
+# 固定前缀保持不变。仅正文使用一个「 | 」分隔说明与键值字段。
+_PREFIX = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) ([^\s\]]+) L(\d+)\] \[([A-Z]+)\] (.*)$")
+_PAIR = re.compile(r'([a-z][a-z0-9_]*)=("(?:\\.|[^"\\])*"|[^\s]+)')
+_FIELD_NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
+_NUMERIC_FIELDS = {"elapsed_ms", "duration_ms", "http_status", "attempt", "reply_chars",
+                   "reply_method", "queue_depth", "removed", "accepted_parts", "total_parts"}
+_BOOL_FIELDS = {"outcome_uncertain", "duplicate", "stream", "answer_truncated", "local_session_released"}
+# 中文可自由随代码变化；这里仅给既有英文诊断事件提供有意义的默认说明。
+_DESCRIPTIONS = {
+    "request_started": "开始调用ADP服务",
+    "request_completed": "ADP请求完成",
+    "request_failed": "ADP请求失败",
+    "request_interrupted": "ADP请求被中断",
+    "user_question": "记录用户问题",
+    "adp_answer": "记录ADP回复预览",
+    "sse_completed": "ADP SSE响应完成",
+    "wecom_callback_received": "收到企业微信回调并完成接收处理",
+    "adp_recovered_unknown": "恢复时发现ADP执行结果不确定",
+    "gateway_dispatch_failed": "网关调度失败",
+    "adp_result_saved": "ADP处理结果已持久化",
+    "wecom_send_result": "企业微信通知处理结果已保存",
+    "wecom_send_armed": "企业微信通知已进入发送准备状态",
+    "notification_state_failed": "企业微信通知状态持久化失败",
+    "adp_send_armed": "ADP请求已进入发送准备状态",
+    "gateway_state_failed": "网关状态持久化失败",
+}
+# 仅解析具有明确语法的 key=value 字段，不从自由中文正文推断字段。
+def _split_legacy_message(message: str) -> tuple[str, dict]:
+    head, sep, rest = message.partition(" ")
+    if not sep or not re.fullmatch(r"[a-z][a-z0-9_]*", head):
+        return message, {}
+    fields = {}
+    offset = 0
+    for match in _PAIR.finditer(rest):
+        if rest[offset:match.start()].strip():
+            # 不猜测混杂的自由文本，保留全部正文。
+            return message, {}
+        key, raw = match.groups()
+        if key in fields:
+            return message, {}
+        if raw.startswith('"'):
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                return message, {}
+        else:
+            value = raw
+        fields[key] = value
+        offset = match.end()
+    if not fields or rest[offset:].strip():
+        return message, {}
+    return _DESCRIPTIONS.get(head, head), fields
+
+
+def _encode_field(value) -> str:
+    if type(value) is bool:
+        return "true" if value else "false"
+    if type(value) in (int, float):
+        return str(value)
+    if not isinstance(value, str):
+        value = str(value)
+    if not value or any(c.isspace() or c in '"\\|=' for c in value):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _decode_field(key: str, raw: str):
+    if raw.startswith('"'):
+        value = json.loads(raw)
+        if not isinstance(value, str):
+            raise ValueError("日志字段字符串格式无效")
+        return value
+    if key in _BOOL_FIELDS and raw in ("true", "false", "True", "False"):
+        return raw.lower() == "true"
+    if key in _NUMERIC_FIELDS:
+        try:
+            return float(raw) if "." in raw else int(raw)
+        except ValueError:
+            return raw
+    return raw
+
+
 class _Formatter(logging.Formatter):
-    """使用北京时间及统一源码前缀，在最终写入边界脱敏已知凭据。"""
+    """保留原有前缀；仅正文为「自由中文说明 | key=value ...」。"""
 
     def __init__(self, secrets: tuple[str, ...]) -> None:
-        """只保存本次配置的脱敏值，不把它们写进记录字段。"""
-        super().__init__("[%(asctime)s %(filename)s L%(lineno)d] [%(levelname)s] %(message)s")
+        super().__init__()
         self._secrets = tuple(value for value in secrets if value)
 
     def formatTime(self, record: logging.LogRecord, datefmt=None) -> str:
-        """从记录的真实时间转换到 UTC+8，固定显示三位毫秒。"""
         moment = datetime.fromtimestamp(record.created, _BEIJING)
         return moment.strftime("%Y-%m-%d %H:%M:%S.") + f"{moment.microsecond // 1000:03d}"
 
     def format(self, record: logging.LogRecord) -> str:
-        """所有普通日志行使用同一文本前缀与版本化机器字段，供未来逐行采集。"""
-        # 保留已有人工可读正文；原始异常/换行不能制造额外的日志行。
         message = record.getMessage()
-        # user_question/adp_answer 的正文已由 conversation_text 脱敏并编码为 JSON 字符串；
-        # 再对整行执行 URL 替换会破坏其引号/转义边界。
-        if message.startswith(("user_question ", "adp_answer ")):
-            message = _mask_secrets(message, self._secrets)
+        explicit = getattr(record, "log_fields", None)
+        if isinstance(explicit, dict):
+            description, fields = message, explicit
         else:
-            message = _mask_secrets(_URL.sub(_mask_private_url, message), self._secrets)
-        message = message.replace("\r", "\\r").replace("\n", "\\n")
-        message = message.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-        timestamp = datetime.fromtimestamp(record.created, _BEIJING).isoformat(timespec="milliseconds")
-        fields = {
-            "schema_version": "adp_chat.textlog.v1",
-            "id": str(uuid4()),
-            "timestamp": timestamp,
-            "level": record.levelname,
-            "service": "adp_chat",
-            "source_file": record.filename,
-            "source_line": record.lineno,
-            "message": message,
-            "kind": "diagnostic",
-        }
-        # 已有诊断调用使用 key=value；在生成时提取安全、稳定的查询字段，
-        # 后续采集器不需要解析自由正文。用户问题/回答预览一律不参与提取。
-        metadata_prefix = message.split(" question=", 1)[0].split(" answer_preview=", 1)[0]
-        for key in ("request_id", "conversation_id", "message_key", "error_code",
-                    "provider_code", "provider_request_id", "provider_trace_id",
-                    "http_status", "stage", "code", "adp_state", "send_state"):
-            match = re.search(r"(?<!\S)" + key + r"=([A-Za-z0-9_.:-]{1,128})(?=\s|$)", metadata_prefix)
-            if match and match.group(1) not in ("None", "null"):
-                fields[key] = match.group(1)
-        for key in ("elapsed_ms", "duration_ms"):
-            match = re.search(r"(?<!\S)" + key + r"=(\d+(?:\.\d+)?)(?=\s|$)", metadata_prefix)
-            if match:
-                fields[key] = float(match.group(1))
-        if message.startswith("gateway_event "):
-            try:
-                event = json.loads(message[len("gateway_event "):])
-            except (ValueError, TypeError):
-                event = None
-            if isinstance(event, dict) and event.get("schema_version") == "adp_chat.log.v1":
-                fields["kind"] = "gateway_event"
-                fields["event"] = event
-                # 网关事件的持久 ID 在原事件生成时确定，采集时不能再造。
-                fields["id"] = event["id"]
-        visible = f"[{self.formatTime(record)} {record.filename} L{record.lineno}] [{record.levelname}] {message}"
-        # 只有这一份普通文本文件；末尾 record= 是可直接 JSON 解码的机器字段，
-        # 不要求解析前面的人类诊断文字。
-        return visible + " | record=" + json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+            description, fields = _split_legacy_message(message)
+        # 已经由 conversation_text 脱敏的问答字段不再二次修改 JSON 字符串。
+        description = _mask_secrets(_URL.sub(_mask_private_url, description), self._secrets)
+        description = description.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+        description = description.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        description = description.replace(" | ", " \\u007c ")
+        safe_fields = {}
+        for key, value in fields.items():
+            if not _FIELD_NAME.fullmatch(key) or value is None:
+                continue
+            if isinstance(value, str):
+                value = _mask_secrets(value, self._secrets)
+                # 旧问答字段已由 conversation_text 清洗，避免重复 URL 脱敏。
+                if key not in ("question", "answer_preview"):
+                    value = _URL.sub(_mask_private_url, value)
+            safe_fields[key] = value
+        suffix = (" | " + " ".join(f"{key}={_encode_field(value)}"
+                                    for key, value in safe_fields.items())) if safe_fields else ""
+        return f"[{self.formatTime(record)} {record.filename} L{record.lineno}] [{record.levelname}] {description}{suffix}"
 
 
 def parse_log_line(line: str) -> dict:
-    """将新版普通日志的每一行转换为一个可入库文档；不猜测旧版自由文本。"""
-    prefix, separator, payload = line.rstrip("\r\n").rpartition(" | record=")
-    if not separator or not prefix.startswith("["):
-        raise ValueError("不是可解析的 adp_chat.textlog.v1 日志行")
-    try:
-        document = json.loads(payload)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("日志机器字段损坏") from exc
-    if not isinstance(document, dict) or document.get("schema_version") != "adp_chat.textlog.v1":
-        raise ValueError("日志 Schema 不受支持")
-    if not isinstance(document.get("id"), str) or not isinstance(document.get("message"), str):
-        raise ValueError("日志标识或正文无效")
-    return document
+    """将新格式的单行可读日志转为字典；拒绝旧版 record/gateway_event JSON。"""
+    match = _PREFIX.fullmatch(line.rstrip("\r\n"))
+    if match is None:
+        raise ValueError("日志前缀无效")
+    timestamp, filename, lineno, level, body = match.groups()
+    if " | record=" in body or body.startswith("gateway_event "):
+        raise ValueError("旧版日志不属于方案 B")
+    if " | " in body:
+        description, fields_text = body.split(" | ", 1)
+    else:
+        description, fields_text = body, ""
+    fields = {}
+    offset = 0
+    for field in _PAIR.finditer(fields_text):
+        if fields_text[offset:field.start()].strip():
+            raise ValueError("日志字段语法无效")
+        key, raw = field.groups()
+        if key in fields:
+            raise ValueError("日志字段重复")
+        fields[key] = _decode_field(key, raw)
+        offset = field.end()
+    if fields_text[offset:].strip() or (fields_text and not fields):
+        raise ValueError("日志字段格式无效")
+    # 中文说明中的分隔符以 \u007c 表示，不会被误判为字段区。
+    description = description.replace("\\u007c", "|").replace("\\n", "\n").replace("\\r", "\r")
+    return {
+        "timestamp": datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=_BEIJING).isoformat(timespec="milliseconds"),
+        "source_file": filename,
+        "source_line": int(lineno),
+        "level": level,
+        "message": description,
+        **fields,
+    }
 
 
 class _FileHandler(RotatingFileHandler):
