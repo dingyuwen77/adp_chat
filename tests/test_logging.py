@@ -105,7 +105,7 @@ class LoggingTests(unittest.TestCase):
             chat(question, config=self.config)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
         line = next(line for line in content.splitlines() if "user_question " in line)
-        logged = json.loads(parse_log_line(line)["message"].split(" question=", 1)[1])
+        logged, _remaining = json.JSONDecoder().raw_decode(parse_log_line(line)["message"].split(" question=", 1)[1])
         self.assertIn("完整问题末尾", logged)
         self.assertIn("[REDACTED]", logged)
         self.assertNotIn("private-signature", content)
