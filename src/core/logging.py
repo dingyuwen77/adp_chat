@@ -129,7 +129,12 @@ class _Formatter(logging.Formatter):
         """所有普通日志行使用同一文本前缀与版本化机器字段，供未来逐行采集。"""
         # 保留已有人工可读正文；原始异常/换行不能制造额外的日志行。
         message = record.getMessage()
-        message = _mask_secrets(_URL.sub(_mask_private_url, message), self._secrets)
+        # user_question/adp_answer 的正文已由 conversation_text 脱敏并编码为 JSON 字符串；
+        # 再对整行执行 URL 替换会破坏其引号/转义边界。
+        if message.startswith(("user_question ", "adp_answer ")):
+            message = _mask_secrets(message, self._secrets)
+        else:
+            message = _mask_secrets(_URL.sub(_mask_private_url, message), self._secrets)
         message = message.replace("\r", "\\r").replace("\n", "\\n")
         message = message.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
         timestamp = datetime.fromtimestamp(record.created, _BEIJING).isoformat(timespec="milliseconds")
