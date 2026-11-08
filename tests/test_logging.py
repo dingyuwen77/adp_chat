@@ -103,7 +103,7 @@ class LoggingTests(unittest.TestCase):
         content = Path(self.config.log_file).read_text(encoding="utf-8")
         for value in (self.config.app_key, "private-signature", "private-token", "fixtu"):
             self.assertNotIn(value, content)
-        self.assertIn("\\\\n[ERROR] forged\\\\r\\\\n", content)
+        self.assertIn("\\n[ERROR] forged\\r\\n", content)
         self.assertIn("\\u2028", content)
         self.assertTrue(all(line.startswith("[") for line in content.splitlines()))
 
