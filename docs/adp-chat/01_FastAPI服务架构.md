@@ -59,4 +59,4 @@
 
 ## 统一诊断与业务事件日志
 
-企业微信网关复用单一普通 `.log` 的诊断 Handler；业务事件通过 `gateway_event ` 标记写入同一文件。日志仅供排障，不参与消息 ACK、去重或崩溃恢复。事件字段、日志轮转和未来 Cosmos DB 的限制见 [docs/wecom-integration/02_统一日志与采集预留.md](../wecom-integration/02_统一日志与采集预留.md)。
+企业微信网关复用单一普通 `.log` 的诊断 Handler；业务事件通过 `gateway_event ` 标记写入同一文件。日志仅供排障，不参与消息 ACK、去重或崩溃恢复。目标方案 B 与未来 Cosmos DB 的设计（尚未实施）见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](../logging/01_统一日志与Cosmos_DB接入设计.md)。
