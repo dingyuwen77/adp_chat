@@ -194,7 +194,7 @@ def run(image):
                       for document in [parse_log_line(line.decode("utf-8"))]
                       if "event" in document]
             injected = snapshots()["2003"]["message_key"]
-            assert not any(e["message_key"] == injected and e["event"] in {"adp.started", "wecom.send.started", "wecom.send.simulated"}
+            assert not any(e.get("message_key") == injected and e["event"] in {"adp.started", "wecom.send.started", "wecom.send.simulated"}
                            for e in events)
             latest_start = max(e["timestamp"] for e in events if e["event"] == "service.started")
             assert any(e["event"] == "service.stopped" and e["timestamp"] >= latest_start for e in events)
