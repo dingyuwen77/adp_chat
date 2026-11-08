@@ -165,15 +165,15 @@ def _split_legacy_message(message: str) -> tuple[str, dict]:
     return _DESCRIPTIONS.get(head, head), fields
 
 
-def _encode_field(value) -> str:
+def _encode_field(value, key: str = "") -> str:
     if type(value) is bool:
         return "true" if value else "false"
     if type(value) in (int, float):
         return str(value)
     if not isinstance(value, str):
         value = str(value)
-    if not value or any(c.isspace() or c in '"\\|=' for c in value):
-        return json.dumps(value, ensure_ascii=False)
+    if key in ("question", "answer_preview") or not value or any(c.isspace() or c in '"\\|=' for c in value):
+        return json.dumps(value, ensure_ascii=False).replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     return value
 
 
@@ -185,7 +185,7 @@ def _decode_field(key: str, raw: str):
         return value
     if key in _BOOL_FIELDS and raw in ("true", "false", "True", "False"):
         return raw.lower() == "true"
-    if key in _NUMERIC_FIELDS:
+    if key in _NUMERIC_FIELDS or (key.startswith("attr_") and key[5:] in {"reply_chars", "reply_method", "queue_depth", "removed", "accepted_parts", "total_parts"}):
         try:
             return float(raw) if "." in raw else int(raw)
         except ValueError:
@@ -225,8 +225,9 @@ class _Formatter(logging.Formatter):
                 # 旧问答字段已由 conversation_text 清洗，避免重复 URL 脱敏。
                 if key not in ("question", "answer_preview"):
                     value = _URL.sub(_mask_private_url, value)
-            safe_fields[key] = value
-        suffix = (" | " + " ".join(f"{key}={_encode_field(value)}"
+            if value not in ("None", "null") or key in ("question", "answer_preview"):
+                safe_fields[key] = value
+        suffix = (" | " + " ".join(f"{key}={_encode_field(value, key)}"
                                     for key, value in safe_fields.items())) if safe_fields else ""
         return f"[{self.formatTime(record)} {record.filename} L{record.lineno}] [{record.levelname}] {description}{suffix}"
 

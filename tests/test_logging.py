@@ -72,7 +72,7 @@ class LoggingTests(unittest.TestCase):
         self.assertIn(result.request_id, content)
         self.assertIn(result.conversation_id, content)
         self.assertIn("stream=False", content)
-        self.assertIn("sse_completed", content)
+        self.assertIn("ADP SSE响应完成", content)
         self.assertRegex(content, r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} client\.py L\d+\] \[INFO\]")
         self.assertIn('question="private-question-sentinel"', content)
         self.assertIn('answer_preview="请提供完整报错。"', content)
@@ -113,7 +113,7 @@ class LoggingTests(unittest.TestCase):
         with patch("adp.sse.open_request", return_value=response("正常回答", 18)):
             chat(question, config=self.config)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
-        line = next(line for line in content.splitlines() if "user_question " in line)
+        line = next(line for line in content.splitlines() if "记录用户问题 | " in line)
         logged = parse_log_line(line)["question"]
         self.assertIn("完整问题末尾", logged)
         self.assertIn("[REDACTED]", logged)
@@ -288,7 +288,7 @@ class LoggingTests(unittest.TestCase):
         self.assertIs(caught.exception, error)
         self.assertTrue(stream.closed)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
-        self.assertIn("request_interrupted", content)
+        self.assertIn("ADP请求被中断", content)
         self.assertNotIn("private-interruption-body", content)
 
     def test_default_diagnostics_hide_message_bodies(self):
@@ -299,7 +299,7 @@ class LoggingTests(unittest.TestCase):
         content = Path(config.log_file).read_text(encoding="utf-8")
         self.assertNotIn("保密答案", content)
         self.assertNotIn("保密问题", content)
-        self.assertIn("request_completed", content)
+        self.assertIn("ADP请求完成", content)
 
     def test_config_relative_logging_path_and_type_validation(self):
         """相对日志路径基于配置文件，不因运行目录改变；类型错误仍走配置异常。"""

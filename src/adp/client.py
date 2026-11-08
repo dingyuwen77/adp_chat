@@ -1,4 +1,5 @@
 import re
+import json
 from collections import Counter
 from contextlib import closing
 from copy import deepcopy
@@ -139,7 +140,7 @@ def _completed_record(payload: dict, config: ChatConfig, logger) -> dict:
                 _check_conversation(record, payload["ConversationId"])
                 if record.get("Status") != "success":
                     raise ChatError("chat", "response_failed", "ADP 对话未成功完成。")
-                logger.debug("sse_completed conversation_id=%s request_id=%s events=%s", payload["ConversationId"], payload["RequestId"], dict(counts))
+                logger.debug("sse_completed conversation_id=%s request_id=%s events=%s", payload["ConversationId"], payload["RequestId"], json.dumps(dict(counts), ensure_ascii=False, separators=(",", ":")))
                 return record
     raise ChatError("chat", "incomplete", "对话流已结束，未收到成功完成事件。")
 
