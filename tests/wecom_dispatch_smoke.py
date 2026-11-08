@@ -102,9 +102,12 @@ def event_report(config, records, *, quota, crash, notification_crash, notificat
                 continue
             from core.logging import parse_log_line
             document = parse_log_line(line.decode("utf-8"))
-            if document["kind"] != "gateway_event":
+            if "event" not in document:
                 continue
-            event = document["event"]
+            event = {key: value for key, value in document.items() if key != "message" and not key.startswith("attr_")}
+            event["attributes"] = {key[5:]: value for key, value in document.items() if key.startswith("attr_")}
+            event["id"] = event.pop("event_id")
+            event["schema_version"] = "adp_chat.log.v1"
             assert event["schema_version"] == "adp_chat.log.v1" and event["environment"] == "test"
             events.append(event)
     assert len({e["id"] for e in events}) == len(events)

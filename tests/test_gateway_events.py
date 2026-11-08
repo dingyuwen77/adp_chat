@@ -32,8 +32,13 @@ def read_events(root):
     for path in sorted(root.glob("human.log*")):
         for line in path.read_text(encoding="utf-8").splitlines():
             document = parse_log_line(line)
-            if document["kind"] == "gateway_event":
-                output.append(document["event"])
+            if "event" in document:
+                attrs = {key[5:]: value for key, value in document.items() if key.startswith("attr_")}
+                event = {key: value for key, value in document.items() if key not in ("message",) and not key.startswith("attr_")}
+                event["attributes"] = attrs
+                event["id"] = event.pop("event_id")
+                event["schema_version"] = "adp_chat.log.v1"
+                output.append(event)
     return output
 
 
@@ -131,7 +136,7 @@ class EventFileTests(unittest.TestCase):
             events.close()
         text = (self.root / "human.log").read_text(encoding="utf-8")
         self.assertIn("diagnostic_marker", text)
-        self.assertIn("gateway_event ", text)
+        self.assertIn("服务启动完成 | ", text)
         self.assertEqual(len(read_events(self.root)), 1)
         self.assertFalse(list(self.root.glob("events-*.jsonl")))
 
