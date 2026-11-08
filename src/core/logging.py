@@ -162,7 +162,7 @@ class _Formatter(logging.Formatter):
 
 def parse_log_line(line: str) -> dict:
     """将新版普通日志的每一行转换为一个可入库文档；不猜测旧版自由文本。"""
-    prefix, separator, payload = line.rstrip("\\r\\n").rpartition(" | record=")
+    prefix, separator, payload = line.rstrip("\r\n").rpartition(" | record=")
     if not separator or not prefix.startswith("["):
         raise ValueError("不是可解析的 adp_chat.textlog.v1 日志行")
     try:
