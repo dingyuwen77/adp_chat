@@ -20,7 +20,7 @@ from application.wecom_gateway import WeComGateway
 from application.wecom_worker import GatewayWorker
 from core.config import ChatConfig
 from core.events import GatewayEvents
-from core.logging import diagnostic_logger
+from core.logging import diagnostic_logger, parse_log_line
 from wecom.models import InboundMessage
 from wecom.sender import SimulatedSender
 from test_wecom_dispatch import answer, frame
@@ -31,9 +31,9 @@ def read_events(root):
     output = []
     for path in sorted(root.glob("human.log*")):
         for line in path.read_text(encoding="utf-8").splitlines():
-            marker = "gateway_event "
-            if marker in line:
-                output.append(json.loads(line.split(marker, 1)[1]))
+            document = parse_log_line(line)
+            if document["kind"] == "gateway_event":
+                output.append(document["event"])
     return output
 
 

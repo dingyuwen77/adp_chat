@@ -100,10 +100,11 @@ def event_report(config, records, *, quota, crash, notification_crash, notificat
             if not line.endswith(b"\\n"):
                 incomplete += 1
                 continue
-            marker = b"gateway_event "
-            if marker not in line:
+            from core.logging import parse_log_line
+            document = parse_log_line(line.decode("utf-8"))
+            if document["kind"] != "gateway_event":
                 continue
-            event = json.loads(line.split(marker, 1)[1])
+            event = document["event"]
             assert event["schema_version"] == "adp_chat.log.v1" and event["environment"] == "test"
             events.append(event)
     assert len({e["id"] for e in events}) == len(events)
