@@ -263,7 +263,7 @@ Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共
 
 v1/v2先校验后兼容升级到v3，保存环境和发送证据源。测试目录不能切成production直接复用；旧记录若已有无法证明的发送终态，拒绝启动而非补造真实接受。已模拟完成的数据用独立测试目录按7/30天策略清理，不能计作真实SEND_ACCEPTED；UNKNOWN保留核查证据且不锁用户。回退必须停网关并备份全部状态，恢复兼容配置，禁止旧代码继续处理新格式。
 
-真实模式`wecom`要求`gateway_environment="production"`及未提交的本机应用Secret，属于未实施的F。本次不填写真实Secret、不启用该模式、不配置企业微信后台或可信出口IP。F前仍需管理员确认回调归属、可达地址/证书、应用可见范围/权限、出口IP、新生产状态目录及真实两员工端到端验收；本机Fake成功不替代这些检查。
+真实模式 `wecom` 要求 `gateway_environment="production"` 及未提交仓库的应用 Secret。该模式已在阶段 F 的单员工真实联调中使用，**不等于阶段 F 全部验收完成**。新环境接入仍须确认回调归属、可达地址、应用可见范围/权限、可信出口 IP、独立生产状态目录及至少两名真实员工的端到端验收；本机 Fake 成功不能替代这些检查。
 
 ### 1.10 A～E完整本地链路、JSONL与Docker
 
@@ -381,7 +381,7 @@ docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml down
 
 生成前确认目录/文件不存在；docker tag前确认目标开发标签属于本任务，避免覆盖他人镜像。手动down保留本机配置/日志/消息；不会清理全局Docker资源，不运行prune。命令在项目根执行。[compose.local.yaml](../../compose.local.yaml)作为[compose.yaml](../../compose.yaml)的本机覆盖，按 [Compose官方合并规则](https://github.com/compose-spec/compose-spec/blob/main/13-merge.md)依赖支持`!override`的Compose（≥2.24.4），显式只发布loopback的18000。Fake持有稳定网络命名空间，网关加入其loopback；网关重启不遗留在旧命名空间的Fake，启动先等Fake健康。Fake自身重建时须一起重建该测试项目；不把这种测试拓扑用到F。配置只读映射/app/config.toml，runtime/logs映射各自测试目录。默认ARM64本地仿真不替代目标Linux/ARM服务器、网络/权限和正式企微真实验收；本节不执行上传或部署。
 
-**阶段F检查**（YNND 已真实接入，完整验收未关闭）：具体配置、后台操作和当前限制见1.11；保留独立生产状态目录、正式凭据、应用权限、目标机网络/架构及两员工真实验收边界。SEND_ACCEPTED仅能由正式API明确接受产生，不追踪已读；不得将测试目录改为production复用。
+**阶段 F 检查**（单员工已真实接入，完整验收未关闭）：具体配置、后台操作和当前限制见1.11；保留独立生产状态目录、正式凭据、应用权限、目标机网络/架构及两员工真实验收边界。SEND_ACCEPTED仅能由正式API明确接受产生，不追踪已读；不得将测试目录改为production复用。
 
 ### 1.11 阶段F：公网IP与HTTP接入配置
 
@@ -455,7 +455,7 @@ ADP继续使用已有`adp.app_key`和正式`wecom.adp_url`；先核查真实测�
 4. 继续验收同用户BUSY、重复回调去重、ADP明确拒绝/UNKNOWN与用户释放。真实发送须同时核对`send_result.source="wecom_api"`和目标用户接受结果；`SEND_SIMULATED`不能当作企微成功。错误与无效接收人按[官方应用消息接口](https://developer.work.weixin.qq.com/document/path/90236)核查，不为补发而重新调用ADP。
 5. 记录真实F1～F5结果及未验证项，再确定正式可用状态。测试问题不触发生产会议写入，不做未经本次批准的真实压力调用。
 
-**当前上线检查与低负载复验。** 生产入口为宿主 `0.0.0.0:3000→8000`，企业可信 IP 已按实际公网出口配置为 `115.190.218.12`。真实发送错误 `60020` 表示不安全的访问 IP；修正后台可信 IP 后等待生效，再由员工发新消息核对正式接受，不能把旧失败快照改回待发送或重新调用 ADP。API 接受与客户端已读是两个不同事实。
+**阶段 F 已有的上线检查与低负载复验证据。** 生产入口为宿主 `0.0.0.0:3000→8000`，企业可信 IP 已按实际公网出口配置为 `115.190.218.12`。真实发送错误 `60020` 表示不安全的访问 IP；修正后台可信 IP 后等待生效，再由员工发新消息核对正式接受，不能把旧失败快照改回待发送或重新调用 ADP。API 接受与客户端已读是两个不同事实。
 
 本轮发现公网仍能无凭据访问旧 `POST /api/v1/chat`（无效请求返回 422，没有调用 ADP），与架构的公网边界冲突。**在入口仅允许回调路径与必要健康检查，或为公网旧 API 建立明确鉴权前，F 不能关闭。** 单纯改端口、安全组或绑定 `0.0.0.0` 不能按 HTTP 路径隔离这两个接口；也不能把 `/api/v1/chat` 的固定身份当成员身份。
 
@@ -484,7 +484,7 @@ ADP继续使用已有`adp.app_key`和正式`wecom.adp_url`；先核查真实测�
 .\scripts\build_image.ps1 -Version v0.0.5
 ```
 
-默认平台是 `linux/arm64`，对应目标服务器Ubuntu24.04/aarch64。日常只需指定版本号，无需再传Platform。跨架构构建取决于本机builder的目标平台支持；确有其他架构用途时仍可显式覆盖 `-Platform linux/amd64`。脚本兼容 Windows PowerShell 5.1/PowerShell 7；生成 `dist/v0.0.5/adp_channel_api-v0.0.5-linux-arm64.tar`、`manifest.json`、`SHA256SUMS`。清单记录镜像、ID/配置摘要、平台、归档 SHA256、北京时间、源码 revision 和工作区是否有未提交修改。脚本拒绝覆盖同版本目录或已有镜像标签；失败只清理本次临时产物。打包不需要真实配置，构建上下文排除了正式配置、日志、会话和 dist。
+构建脚本默认平台是 `linux/arm64`，适用于 ARM64 服务器；**不能据此认定当前生产服务器也是 ARM64**。阶段 F 已记录的 CentOS Stream 9/x86_64 服务器需要显式使用 `-Platform linux/amd64`。跨架构构建取决于本机builder的目标平台支持；确有其他架构用途时仍可显式覆盖 `-Platform linux/amd64`。脚本兼容 Windows PowerShell 5.1/PowerShell 7；生成 `dist/v0.0.5/adp_channel_api-v0.0.5-linux-arm64.tar`、`manifest.json`、`SHA256SUMS`。清单记录镜像、ID/配置摘要、平台、归档 SHA256、北京时间、源码 revision 和工作区是否有未提交修改。脚本拒绝覆盖同版本目录或已有镜像标签；失败只清理本次临时产物。打包不需要真实配置，构建上下文排除了正式配置、日志、会话和 dist。
 
 用户手动上传整个版本目录和三个 sh 脚本；正式配置由用户在服务器本地维护。无需上传源码、Compose、`.env` 或第四个帮助脚本。三个 sh 以 LF 保存，可直接 `sh ./run.sh`，内部自动使用 Bash。
 
