@@ -84,8 +84,8 @@ log_file = "logs/adp_chat.log"
 log_max_bytes = 5242880
 # 轮转备份份数，至少 1；默认保留 3 份旧日志。
 log_backup_count = 3
-# 网关JSONL复用log_enabled/log_level、log_file所在目录和log_max_bytes。
-# 按北京时间日期/大小分段，早于此天数的本地事件自动清理；无外传/采集器。
+# 历史兼容字段：独立JSONL已停用，本字段暂保留以兼容既有配置，不再控制.log轮转。
+# 统一日志使用log_max_bytes/log_backup_count；后续接入Cosmos DB前需设计采集检查点与保留策略。
 events_retention_days = 14
 # true 记录脱敏后的用户问题；false 不记录问题正文。
 log_question = true

@@ -129,3 +129,7 @@ python tests/docker_smoke.py --image adp-chat:local
 版本化部署的完整 Linux 验收入口为 [tests/deploy_smoke.py](tests/deploy_smoke.py)，使用两个已打包的版本和 Linux Docker CLI，覆盖真实启动、会话复用、升级前保护、失败恢复及自定义路径。运行方法见运维文档。
 
 机器事实见 [config.example.toml](config.example.toml)、[requirements.txt](requirements.txt)、[requirements-dev.txt](requirements-dev.txt)、[compose.yaml](compose.yaml)、[Dockerfile](Dockerfile)。其他专题见 [docs/README.md](docs/README.md)。
+
+## 统一日志（当前版本）
+
+网关的业务事件与诊断信息共用普通文本日志 `log_file`，不再创建独立 `events-*.jsonl`；历史 JSONL 不自动删除。事件行以 `gateway_event ` 标记，后接单行 JSON 机器字段，便于人工检索和未来增量采集。当前**未接入 Cosmos DB**。配置、隐私和轮转约束见 [docs/wecom-integration/02_统一日志与采集预留.md](docs/wecom-integration/02_统一日志与采集预留.md)。

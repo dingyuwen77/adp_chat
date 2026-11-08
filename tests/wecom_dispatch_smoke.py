@@ -93,16 +93,17 @@ def stop(process, *, force=False):
 
 
 def event_report(config, records, *, quota, crash, notification_crash, notifications):
-    """解析实际JSONL并核对同一快照的关联，允许隔离强杀留下的单个末尾半行。"""
+    """解析统一文本日志中的 gateway_event，核对消息快照关联。"""
     events, incomplete = [], 0
-    for path in Path(config.log_file).parent.glob("events-*.jsonl"):
-        lines = path.read_bytes().splitlines(keepends=True)
-        for index, line in enumerate(lines):
-            if not line.endswith(b"\n"):
-                assert index == len(lines) - 1 and (crash or notification_crash)
+    for path in sorted(Path(config.log_file).parent.glob(Path(config.log_file).name + "*")):
+        for line in path.read_bytes().splitlines(keepends=True):
+            if not line.endswith(b"\\n"):
                 incomplete += 1
                 continue
-            event = json.loads(line)
+            marker = b"gateway_event "
+            if marker not in line:
+                continue
+            event = json.loads(line.split(marker, 1)[1])
             assert event["schema_version"] == "adp_chat.log.v1" and event["environment"] == "test"
             events.append(event)
     assert len({e["id"] for e in events}) == len(events)

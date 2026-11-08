@@ -185,7 +185,7 @@ def run(image):
             # Uvicorn0.48在完整lifespan关闭后重新抛出SIGTERM，init返回128+15=143。
             # 不把SIGKILL/137、OOM或缺少本次service.stopped当作正常退出。
             assert stopped["ExitCode"] == 143 and stopped["OOMKilled"] is False and not stopped["Error"]
-            result["jsonl"] = event_report(config, snapshots(), quota=30, crash=True,
+            result["log_events"] = event_report(config, snapshots(), quota=30, crash=True,
                                            notification_crash=False, notifications=False)
             events = [json.loads(line) for path in (root / "logs").glob("events-*.jsonl")
                       for line in path.read_bytes().splitlines(keepends=True) if line.endswith(b"\n")]
