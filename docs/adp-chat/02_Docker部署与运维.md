@@ -345,7 +345,7 @@ Get-Content runtime/wecom-local/logs/adp_chat.log -Encoding utf8 |
   Select-Object timestamp,event,message_key,conversation_id,request_id,status,error_code,outcome_uncertain
 ```
 
-轮转文件也可能包含历史事件，查询完整时间范围需同时读取 `adp_chat.log.1` 等备份。统一日志仍由 `log_max_bytes` 和 `log_backup_count` 控制；原 `events_retention_days` 暂保留为兼容配置，但不再控制文本日志轮转或清理。普通日志每行均追加 ` | record=` 机器字段；未来采集器使用 `core.logging.parse_log_line()` 解析**全部新格式日志**，包括普通诊断与网关事件。未来 Cosmos DB 采集器必须处理轮转、未完成尾行、断点、幂等和积压保留；当前没有采集器。日志写失败仅作安全告警/计数，不改变业务 ACK 或重试判断，消息快照写入失败则仍必须阻止成功 ACK。完整契约见 [docs/wecom-integration/02_统一日志与采集预留.md](../wecom-integration/02_统一日志与采集预留.md)。
+轮转文件也可能包含历史事件，查询完整时间范围需同时读取 `adp_chat.log.1` 等备份。统一日志仍由 `log_max_bytes` 和 `log_backup_count` 控制；原 `events_retention_days` 暂保留为兼容配置，但不再控制文本日志轮转或清理。普通日志每行均追加 ` | record=` 机器字段；未来采集器使用 `core.logging.parse_log_line()` 解析**全部新格式日志**，包括普通诊断与网关事件。未来 Cosmos DB 采集器必须处理轮转、未完成尾行、断点、幂等和积压保留；当前没有采集器。日志写失败仅作安全告警/计数，不改变业务 ACK 或重试判断，消息快照写入失败则仍必须阻止成功 ACK。方案 B 的待实施设计见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](../logging/01_统一日志与Cosmos_DB接入设计.md)。
 
 **命令行与PyCharm**：命令行使用上述同一模块/解释器即可启动和排障。本轮未操作PyCharm GUI，不把配置说明当作GUI实测证据。需要用户自行调试时，新建Python运行配置：解释器`.venv/Scripts/python.exe`，模块`uvicorn`，参数`api.app:app --host 127.0.0.1 --port 8000 --workers 1`，工作目录为仓库根，环境变量`ADP_CONFIG_FILE`填上述测试TOML的绝对路径。先在另一终端启动Fake。可在[src/api/wecom_routes.py](../../src/api/wecom_routes.py)、[src/application/wecom_worker.py](../../src/application/wecom_worker.py)和[src/wecom/sender.py](../../src/wecom/sender.py)设置断点。暂停事件循环可能超过回调ACK窗口，使用独立MsgId并读快照核查；断点恢复后不盲重发未知请求。不启多worker或同时用Docker读写该目录。
 
@@ -404,7 +404,7 @@ docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml down
 
 ### 1.11 阶段F：公网IP与HTTP接入配置
 
-本节按用户选择使用**公网IP和HTTP回调**，不要求新增域名或入站HTTPS。用户已在 CentOS Stream 9/x86_64 自行部署 v0.0.10，后台 GET 保存、YNND 的真实加密 POST/ADP/应用回复和切出后返回查看已通过。多用户在隔离模拟身份下验证，F1～F5完整状态、实际压力数据及未验证项仍以[docs/wecom-integration/03_实施路线图.md](../wecom-integration/03_实施路线图.md)为验收Owner。入站协议选择不改变Python调用ADP及企业微信API的既有HTTPS出站地址。
+本节按用户选择使用**公网IP和HTTP回调**，不要求新增域名或入站HTTPS。用户已在 CentOS Stream 9/x86_64 自行部署 v0.0.10，后台 GET 保存、YNND 的真实加密 POST/ADP/应用回复和切出后返回查看已通过。多用户在隔离模拟身份下验证，F1～F5完整状态、实际压力数据及未验证项仍以[docs/wecom-integration/02_实施路线图.md](../wecom-integration/02_实施路线图.md)为验收Owner。入站协议选择不改变Python调用ADP及企业微信API的既有HTTPS出站地址。
 
 **先分清三个地址**：
 
