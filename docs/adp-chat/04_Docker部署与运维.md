@@ -305,6 +305,18 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/hold
 
 脚本启动正式独立HTTP网关和TCP/SSE Fake，分别验证无限额与30名额、同员工BUSY、先去重、ADP实际强杀恢复及模拟发送进入武装边界后的强杀恢复。报告给出实际峰值/拒绝集合、ACK P50/P95/P99/最大值、回调批次耗时/吞吐和JSONL关联/脱敏统计；ACK吞吐不是ADP模型吞吐。屏障保持期间50/100对30名额通常出现20/70入口拒绝，以本次真实集合为准。所有请求仅发一次，脚本只回收自身进程/监听/临时数据。Fake压力证据不等于真实平台容量；真实50/100并发须另有明确授权，不直接把Fake命令改成真实端点。
 
+**日常离线回归**：本次真实ADP响应已经脱敏保存到[tests/fixtures/adp_http_sse_recorded.json](../../tests/fixtures/adp_http_sse_recorded.json)，由[tests/adp_recorded_fixtures.py](../../tests/adp_recorded_fixtures.py)经Mock HTTP传输回放给正式异步客户端。[tests/test_wecom_dispatch.py](../../tests/test_wecom_dispatch.py)验证正常ReplyMethod18、入口QPS拒绝460031、成功ACK及处理事件之后的余额错误460702，并检查持久化、通知、释放、去重与不自动重试。双用户并发及重新打开状态目录后的下一轮，检查身份、稳定ConversationId、独立RequestId与通知关联。运行以下命令即可，不读取真实配置、不请求ADP或企业微信：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -p test_wecom_dispatch.py -v
+```
+
+回放保留真实事件顺序、状态、Code、ReplyMethod和可选字段形状；正文及标识已替换。测试中的独立回答标签只证明网关投递关联，不能重新证明云端的上下文理解。普通代码回归使用这组样本、上述Fake50/100及全套单元测试即可；平台协议、应用配置或模型发生变化时，再按变化范围决定是否重新进行受控联调。
+
+2026-11-08经用户明确授权，通过模拟加密回调、正式FastAPI/原生HTTPS客户端和模拟发送器，实际调用54次：4次双用户对话控制、50次不同用户同时请求；每个RequestId只发送一次。50用户结果为18次成功、30次460031入口拒绝、2次处理开始后的460702，后者可靠保存为ADP_UNKNOWN并释放本地会话。SDK在途请求峰值50，不能据此断言平台模型并发容量；回调ACK P50/P95为135.418/183.038ms。所有54次HTTP状态均为200，仍须按SSE事件判定结果。错误码含义核对[腾讯ADP官方HTTP协议](https://cloud.tencent.com/document/product/1759/129202)。
+
+本次两轮之间退出并重新启动网关进程：YNND从“我想改密码”到“windows”，实际回答从追问系统转为Windows密码修改指引；同时SIYU的“windows”被独立理解为一般Windows问题，后续BitLocker问题亦得到对应回复。已逐条阅读实际回答并核对两用户身份及会话标识，未以关键词匹配代替语义验证。完整回复、请求标识、状态和报告仅保留在本机忽略的`runtime/real-adp-validation-20261108-105520-95364d/`，共享样本只保留协议投影和请求标识哈希。出现专属模型余额错误460702后停止100用户批次，因此100用户真实容量未验证；需先由应用管理员核查模型余额和配置，不能靠重试解决。未修改平台提示词或模型配置，通知全部SEND_SIMULATED，未向真实员工发送消息。
+
 **查看JSON和JSONL**：消息事实源为配置目录下`runtime/messages/*.json`，使用`--inspect-state`共享读取；不要持有普通读取句柄轮询活动快照。日志在该配置的`logs/`，由[src/core/events.py](../../src/core/events.py)按[docs/wecom-integration/02_结构化日志事件.md](../wecom-integration/02_结构化日志事件.md)输出。可在消息完成后查看：
 
 ```powershell
@@ -334,7 +346,7 @@ $env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-real/config.toml).Path
 
 Probe默认仍离线；有真实flag和未存在输出文件后才提交，ACK丢失只观察原消息、不重发。成功需要正式ADP终态和模拟通知终态。核对两轮UserId/VisitorId/ConversationId相同、RequestId与进程独立，SIYU会话不同；实读response_text，第二轮必须承接密码上下文，不能以关键词判定。E实测首轮追问系统，第二轮给出Windows密码修改流程；SIYU独立询问Windows问题类型，直接语义核验通过。完整回复可能含内部知识/链接，只留本机；共享证据只记脱敏摘要和标识。测试不评价ADP业务建议是否正确、不修改平台提示词、不请求会议写入。
 
-真实错误结构检查须单独的无有效密钥配置：新建隔离Fake配置，只将其`wecom.adp_url`指向官方端点，保留故意无效的Fake专属AppKey，沿同gateway Probe发一次允许文字。预期exit1并保留实际Provider Code/状态，而不是把负向测试当成功问答；E真实返回4505004，ADP_REJECTED，模拟提示完成。不要为了触发限额而压测有效应用，也不盲目重复未知结果。
+真实错误结构检查须单独的无有效密钥配置：新建隔离Fake配置，只将其`wecom.adp_url`指向官方端点，保留故意无效的Fake专属AppKey，沿同gateway Probe发一次允许文字。预期exit1并保留实际Provider Code/状态，而不是把负向测试当成功问答；E真实返回4505004，ADP_REJECTED，模拟提示完成。日常回归使用离线样本；新增真实压力请求必须单独明确范围、费用及停止条件，也不盲目重复未知结果。
 
 **Docker Desktop本地Compose**（Linux引擎，本机ARM64仿真）：
 

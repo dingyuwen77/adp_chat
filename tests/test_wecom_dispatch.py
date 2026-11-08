@@ -25,6 +25,8 @@ from core.config import ChatConfig
 from core.models import ChatError
 from storage.messages import MessageStore
 from wecom.models import InboundMessage
+from wecom.sender import SimulatedSender
+from adp_recorded_fixtures import RecordedStream, recorded_cases, recorded_sse
 
 
 def frame(kind, **fields):
@@ -253,6 +255,156 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(outcome.state, state)
                 self.assertEqual(outcome.error["provider_code"], code)
                 self.assertIn("手动" if state == "ADP_REJECTED" else "未知", outcome.notification)
+
+    async def test_recorded_real_adp_frames_preserve_code_phase_and_no_retry(self):
+        """真实录制的正常/QPS入口拒绝/执行后余额错误离线回放，按阶段分类。"""
+        original = self.receive()
+        record = {**original, "request_id": str(uuid4())}
+        cases = recorded_cases()
+        self.assertEqual(set(cases), {"completed_reply_method_18", "entrance_qps_460031",
+                                     "accepted_then_model_balance_460702"})
+        for case in cases.values():
+            with self.subTest(case=case["id"]):
+                calls = []
+
+                def handle(request):
+                    """唯一Mock出站承载录制响应；断言真实生产payload后回放。"""
+                    payload = json.loads(request.content)
+                    calls.append(payload)
+                    self.assertEqual(request.method, "POST")
+                    self.assertEqual(str(request.url), self.config.adp_url)
+                    self.assertEqual(payload["AppKey"], self.config.app_key)
+                    self.assertEqual(payload["UserId"], "YNND")
+                    self.assertEqual(payload["VisitorId"], "YNND")
+                    self.assertEqual(payload["ConversationId"], record["conversation_id"])
+                    self.assertEqual(payload["RequestId"], record["request_id"])
+                    return httpx.Response(case["http_status"], headers={"Content-Type": case["content_type"]},
+                        stream=RecordedStream(recorded_sse(case, payload)))
+
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+                    outcome = await AsyncADPClient(self.config, http_client=http).request(record)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(outcome.state, case["expected_state"])
+                if outcome.state == "ADP_SUCCEEDED":
+                    self.assertIsNone(outcome.error)
+                    self.assertEqual(outcome.result.reply_method, 18)
+                    self.assertEqual(outcome.result.text, "[回答正文已脱敏]")
+                else:
+                    self.assertEqual(outcome.error["provider_code"], case["expected_provider_code"])
+                    self.assertIn(case["expected_provider_code"], outcome.notification)
+                if case["id"] == "entrance_qps_460031":
+                    self.assertIsNone(outcome.error["provider_request_id"])
+                    self.assertIn("本轮未获准执行", outcome.notification)
+                    self.assertIn("手动重试", outcome.notification)
+                elif case["id"] == "accepted_then_model_balance_460702":
+                    self.assertEqual(outcome.error["provider_request_id"], record["request_id"])
+                    self.assertIn("专属模型余额不足", outcome.notification)
+                    self.assertIn("结果未知", outcome.notification)
+                    self.assertIn("旧请求可能仍在云端执行", outcome.notification)
+                    self.assertNotIn("本轮未获准执行", outcome.notification)
+
+    async def test_recorded_replies_keep_async_users_and_rounds_isolated_after_reopen(self):
+        """离线验证异步身份/投递和磁盘续接；不把回放当平台记忆语义证明。"""
+        case = recorded_cases()["completed_reply_method_18"]
+        self.gateway.close()
+        self.config = replace(self.config, notification_mode="simulated")
+        self.gateway = WeComGateway(self.config, logging.getLogger("recorded-adp-test"))
+        self.addCleanup(self.gateway.close)
+        calls, arrived, barrier = [], [], asyncio.Event()
+        labels = {}
+
+        async def handle(request):
+            """首轮两用户必须同时到达，后续按本轮payload返回独立投递标签。"""
+            payload = json.loads(request.content)
+            calls.append(payload)
+            if len(calls) <= 2:
+                arrived.append(payload["UserId"])
+                if len(arrived) == 2:
+                    barrier.set()
+                await barrier.wait()
+            label = f"离线回放:{payload['UserId']}:{payload['RequestId']}"
+            labels[payload["RequestId"]] = label
+            return httpx.Response(case["http_status"], headers={"Content-Type": case["content_type"]},
+                stream=RecordedStream(recorded_sse(case, payload, reply_label=label)))
+
+        async def rounds(http, entries):
+            """沿同一Gateway/Store/Worker/Simulator闭合，状态仍来自真实临时文件。"""
+            worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http),
+                                   sender=SimulatedSender(self.config))
+            await worker.start()
+            try:
+                records = [self.gateway.receive(InboundMessage(self.config.corp_id, self.config.agent_id,
+                    user, msg, question, 1)) for user, msg, question in entries]
+                await self.wait_for(lambda: all(self.gateway.store.get(r["message_key"])["send_state"] == "SEND_SIMULATED"
+                                               for r in records))
+                return [self.gateway.store.get(r["message_key"]) for r in records]
+            finally:
+                await worker.stop()
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            first = await rounds(http, [("YNND", "41", "我想改密码"), ("SIYU", "42", "windows")])
+            self.assertCountEqual(arrived, ["YNND", "SIYU"])
+            self.gateway.close()
+            self.gateway = WeComGateway(self.config, logging.getLogger("recorded-adp-test"))
+            self.addCleanup(self.gateway.close)
+            second = await rounds(http, [("YNND", "43", "windows"), ("SIYU", "44", "BitLocker恢复密钥")])
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(all(p["UserId"] == p["VisitorId"] for p in calls))
+        self.assertEqual(first[0]["conversation_id"], second[0]["conversation_id"])
+        self.assertEqual(first[1]["conversation_id"], second[1]["conversation_id"])
+        self.assertNotEqual(first[0]["conversation_id"], first[1]["conversation_id"])
+        self.assertEqual(len({p["RequestId"] for p in calls}), 4)
+        self.assertEqual({p["UserId"]: p["Contents"][0]["Text"] for p in calls[:2]},
+                         {"YNND": "我想改密码", "SIYU": "windows"})
+        for record in first + second:
+            self.assertEqual(record["adp_state"], "ADP_SUCCEEDED")
+            self.assertEqual(record["notification"], labels[record["request_id"]])
+            self.assertEqual(record["adp_result"]["conversation_id"], record["conversation_id"])
+            self.assertEqual(record["send_result"]["source"], "simulated")
+
+    async def test_recorded_errors_persist_notify_and_release_without_resubmission(self):
+        """真实QPS/执行后余额错误回放到完整状态链，释放后新消息可首次执行。"""
+        self.gateway.close()
+        self.config = replace(self.config, notification_mode="simulated")
+        self.gateway = WeComGateway(self.config, logging.getLogger("recorded-errors-test"))
+        self.addCleanup(self.gateway.close)
+        cases, calls = recorded_cases(), []
+
+        def handle(request):
+            """每条获准消息只对应一份录制响应；后续正常答复是新消息。"""
+            payload = json.loads(request.content)
+            calls.append(payload)
+            index = {"YNND": "entrance_qps_460031", "SIYU": "accepted_then_model_balance_460702"}.get(payload["UserId"])
+            if payload["Contents"][0]["Text"] == "新的独立消息":
+                index = "completed_reply_method_18"
+            case = cases[index]
+            return httpx.Response(case["http_status"], headers={"Content-Type": case["content_type"]},
+                stream=RecordedStream(recorded_sse(case, payload)))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http), sender=SimulatedSender(self.config))
+            await worker.start()
+            try:
+                original = [self.receive("YNND", "51"), self.receive("SIYU", "52")]
+                await self.wait_for(lambda: all(self.gateway.store.get(r["message_key"])["send_state"] == "SEND_SIMULATED"
+                                               for r in original))
+                before = [self.gateway.store.get(r["message_key"]) for r in original]
+                self.assertEqual([r["adp_state"] for r in before], ["ADP_REJECTED", "ADP_UNKNOWN"])
+                self.assertEqual([r["adp_error"]["provider_code"] for r in before], ["460031", "460702"])
+                self.receive("YNND", "51")
+                self.receive("SIYU", "52")
+                self.assertEqual(len(calls), 2)
+                next_round = [self.gateway.receive(InboundMessage(self.config.corp_id, self.config.agent_id, user,
+                    msg, "新的独立消息", 1)) for user, msg in (("YNND", "53"), ("SIYU", "54"))]
+                self.assertTrue(all(r["adp_state"] == "RECEIVED" for r in next_round))
+                await self.wait_for(lambda: all(self.gateway.store.get(r["message_key"])["send_state"] == "SEND_SIMULATED"
+                                               for r in next_round))
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(len({r["RequestId"] for r in calls}), 4)
+                self.assertEqual([self.gateway.store.get(r["message_key"])["adp_state"] for r in original],
+                                 ["ADP_REJECTED", "ADP_UNKNOWN"])
+            finally:
+                await worker.stop()
 
     async def test_version_conflict_invalid_transition_and_pending_purge_preserve_state(self):
         """CAS阻止过时写入；未知/待处理/待通知不能按年龄直接删除。"""
