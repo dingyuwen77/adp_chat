@@ -132,8 +132,8 @@ python tests/docker_smoke.py --image adp-chat:local
 
 ## 统一日志（当前版本）
 
-网关的业务事件与诊断信息共用普通文本日志 `log_file`，不再创建独立 `events-*.jsonl`；历史 JSONL 不自动删除。事件行以 `gateway_event ` 标记，后接单行 JSON 机器字段，便于人工检索和未来增量采集。当前**未接入 Cosmos DB**。配置、隐私和轮转约束见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](docs/logging/01_统一日志与Cosmos_DB接入设计.md)。
+网关业务事件与诊断信息共用普通文本日志 `log_file`，不再创建独立 `events-*.jsonl`；历史 JSONL 不自动删除。现有前缀不变，正文采用自由中文说明 + ` | ` + `key=value` 字段，取消冗余 JSON。当前**未接入 Cosmos DB**。格式与后续采集方案见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](docs/logging/01_统一日志与Cosmos_DB接入设计.md)。
 
-普通日志的**每一行**现均追加版本化 `record=` 机器字段，未来可使用 `core.logging.parse_log_line()` 将所有新格式行转换为 JSON 文档（包括诊断行，而不只网关事件）。日志仍是可读文本；当前没有 Cosmos DB 采集器。
+普通日志不再追加 `record` JSON；可使用 `core.logging.parse_log_line()` 将每条新格式行解析为字典（包括普通诊断和网关事件），未来再实现 Cosmos DB 采集器。
 
-> **日志格式下一步设计（尚未实现）**：已选择保留现有前缀与自由中文说明，以单个 ` | ` 分隔结构化 `key=value` 字段，并移除行尾冗余 JSON。实施方案见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](docs/logging/01_统一日志与Cosmos_DB接入设计.md)；当前日志仍以源码为准。
+ > **日志格式已实现，Cosmos DB 尚未接入**：保留现有前缀与自由中文说明，以单个 ` | ` 分隔结构化 `key=value` 字段。实现与后续接入方案见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](docs/logging/01_统一日志与Cosmos_DB接入设计.md)；当前日志行为以源码和测试为准。
