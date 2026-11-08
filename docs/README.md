@@ -14,8 +14,6 @@
 
 1. [docs/adp-chat/02_Docker部署与运维.md](adp-chat/02_Docker部署与运维.md)：本地 Python/PyCharm、模拟联调、服务器部署、跨机调用、升级、回滚及排障。篇幅较长，按文内章节跳转，不必从头顺读。
 2. [examples/http_client.py](../examples/http_client.py) 与 [examples/http_client.ps1](../examples/http_client.ps1)：HTTP 调用示例。
-3. [docs/logging/01_统一日志与Cosmos_DB接入设计.md](logging/01_统一日志与Cosmos_DB接入设计.md)：**已确认、待实施的方案 B**：保留原前缀、中文说明、单个 ` | ` 分隔符、未来 Cosmos DB 采集；当前实现仍见源码。
-
 ### 日志架构与未来 Cosmos DB 接入
 
 1. [docs/logging/01_统一日志与Cosmos_DB接入设计.md](logging/01_统一日志与Cosmos_DB接入设计.md)：统一日志的目标设计、现状差异、分阶段实施和验收（尚未实现）。
