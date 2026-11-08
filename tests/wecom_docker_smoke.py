@@ -187,8 +187,12 @@ def run(image):
             assert stopped["ExitCode"] == 143 and stopped["OOMKilled"] is False and not stopped["Error"]
             result["log_events"] = event_report(config, snapshots(), quota=30, crash=True,
                                            notification_crash=False, notifications=False)
-            events = [json.loads(line) for path in (root / "logs").glob("events-*.jsonl")
-                      for line in path.read_bytes().splitlines(keepends=True) if line.endswith(b"\n")]
+            from core.logging import parse_log_line
+            events = [document["event"]
+                      for path in (root / "logs").glob(Path(config.log_file).name + "*")
+                      for line in path.read_bytes().splitlines(keepends=True) if line.endswith(b"\\n")
+                      for document in [parse_log_line(line.decode("utf-8"))]
+                      if document["kind"] == "gateway_event"]
             injected = snapshots()["2003"]["message_key"]
             assert not any(e["message_key"] == injected and e["event"] in {"adp.started", "wecom.send.started", "wecom.send.simulated"}
                            for e in events)

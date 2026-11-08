@@ -3,6 +3,7 @@
 import logging
 import json
 import re
+from uuid import uuid4
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -125,9 +126,72 @@ class _Formatter(logging.Formatter):
         return moment.strftime("%Y-%m-%d %H:%M:%S.") + f"{moment.microsecond // 1000:03d}"
 
     def format(self, record: logging.LogRecord) -> str:
-        """格式化后脱敏，覆盖参数插值后才出现的凭据。"""
-        content = super().format(record)
-        return _mask_secrets(content, self._secrets)
+        """所有普通日志行使用同一文本前缀与版本化机器字段，供未来逐行采集。"""
+        # 保留已有人工可读正文；原始异常/换行不能制造额外的日志行。
+        message = record.getMessage()
+        # user_question/adp_answer 的正文已由 conversation_text 脱敏并编码为 JSON 字符串；
+        # 再对整行执行 URL 替换会破坏其引号/转义边界。
+        if message.startswith(("user_question ", "adp_answer ")):
+            message = _mask_secrets(message, self._secrets)
+        else:
+            message = _mask_secrets(_URL.sub(_mask_private_url, message), self._secrets)
+        message = message.replace("\r", "\\r").replace("\n", "\\n")
+        message = message.replace("\u0085", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        timestamp = datetime.fromtimestamp(record.created, _BEIJING).isoformat(timespec="milliseconds")
+        fields = {
+            "schema_version": "adp_chat.textlog.v1",
+            "id": str(uuid4()),
+            "timestamp": timestamp,
+            "level": record.levelname,
+            "service": "adp_chat",
+            "source_file": record.filename,
+            "source_line": record.lineno,
+            "message": message,
+            "kind": "diagnostic",
+        }
+        # 已有诊断调用使用 key=value；在生成时提取安全、稳定的查询字段，
+        # 后续采集器不需要解析自由正文。用户问题/回答预览一律不参与提取。
+        metadata_prefix = message.split(" question=", 1)[0].split(" answer_preview=", 1)[0]
+        for key in ("request_id", "conversation_id", "message_key", "error_code",
+                    "provider_code", "provider_request_id", "provider_trace_id",
+                    "http_status", "stage", "code", "adp_state", "send_state"):
+            match = re.search(r"(?<!\S)" + key + r"=([A-Za-z0-9_.:-]{1,128})(?=\s|$)", metadata_prefix)
+            if match and match.group(1) not in ("None", "null"):
+                fields[key] = match.group(1)
+        for key in ("elapsed_ms", "duration_ms"):
+            match = re.search(r"(?<!\S)" + key + r"=(\d+(?:\.\d+)?)(?=\s|$)", metadata_prefix)
+            if match:
+                fields[key] = float(match.group(1))
+        if message.startswith("gateway_event "):
+            try:
+                event = json.loads(message[len("gateway_event "):])
+            except (ValueError, TypeError):
+                event = None
+            if isinstance(event, dict) and event.get("schema_version") == "adp_chat.log.v1":
+                fields["kind"] = "gateway_event"
+                fields["event"] = event
+                # 网关事件的持久 ID 在原事件生成时确定，采集时不能再造。
+                fields["id"] = event["id"]
+        visible = f"[{self.formatTime(record)} {record.filename} L{record.lineno}] [{record.levelname}] {message}"
+        # 只有这一份普通文本文件；末尾 record= 是可直接 JSON 解码的机器字段，
+        # 不要求解析前面的人类诊断文字。
+        return visible + " | record=" + json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+
+
+def parse_log_line(line: str) -> dict:
+    """将新版普通日志的每一行转换为一个可入库文档；不猜测旧版自由文本。"""
+    prefix, separator, payload = line.rstrip("\r\n").rpartition(" | record=")
+    if not separator or not prefix.startswith("["):
+        raise ValueError("不是可解析的 adp_chat.textlog.v1 日志行")
+    try:
+        document = json.loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("日志机器字段损坏") from exc
+    if not isinstance(document, dict) or document.get("schema_version") != "adp_chat.textlog.v1":
+        raise ValueError("日志 Schema 不受支持")
+    if not isinstance(document.get("id"), str) or not isinstance(document.get("message"), str):
+        raise ValueError("日志标识或正文无效")
+    return document
 
 
 class _FileHandler(RotatingFileHandler):

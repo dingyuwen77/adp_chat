@@ -11,7 +11,7 @@ from unittest.mock import patch
 from adp.client import chat
 from core.config import ChatConfig, load_config
 from core.models import ChatError
-from core.logging import diagnostic_logger
+from core.logging import diagnostic_logger, parse_log_line
 from test_chat import FakeStream, event, response
 
 
@@ -26,6 +26,29 @@ class LoggingTests(unittest.TestCase):
             log_file=str(self.root / "logs" / "log"), log_level="DEBUG",
             log_question=True, log_answer_chars=100,
         )
+
+    def test_every_text_log_line_can_be_converted_to_one_document(self):
+        """普通诊断与网关事件均为人类可读单行，且每行可无损提取机器字段。"""
+        from core.events import GatewayEvents
+        with diagnostic_logger(self.config) as logger:
+            logger.info("request_started request_id=abc elapsed_ms=12")
+            logger.warning("multi-line\\nerror=redacted")
+            events = GatewayEvents(self.config, logger)
+            events.emit("service.started")
+        lines = Path(self.config.log_file).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(all(line.startswith("[") and " | record=" in line for line in lines))
+        records = [parse_log_line(line) for line in lines]
+        self.assertEqual(len({record["id"] for record in records}), 3)
+        self.assertEqual([record["kind"] for record in records],
+                         ["diagnostic", "diagnostic", "gateway_event"])
+        self.assertIn("request_id=abc", records[0]["message"])
+        self.assertEqual(records[0]["request_id"], "abc")
+        self.assertEqual(records[0]["elapsed_ms"], 12.0)
+        self.assertIn("error=redacted", records[1]["message"])
+        self.assertEqual(records[2]["event"]["event"], "service.started")
+        self.assertEqual(records[2]["id"], records[2]["event"]["id"])
+        self.assertRaises(ValueError, parse_log_line, "[old format] [INFO] arbitrary")
 
     def test_chat_logs_question_and_answer_only_to_file_and_preserves_host_logging(self):
         """按用户新要求记录问答，保持关联标识、密钥脱敏和控制台隔离。"""
@@ -82,7 +105,7 @@ class LoggingTests(unittest.TestCase):
             chat(question, config=self.config)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
         line = next(line for line in content.splitlines() if "user_question " in line)
-        logged = json.loads(line.split(" question=", 1)[1])
+        logged = json.loads(parse_log_line(line)["message"].split(" question=", 1)[1])
         self.assertIn("完整问题末尾", logged)
         self.assertIn("[REDACTED]", logged)
         self.assertNotIn("private-signature", content)

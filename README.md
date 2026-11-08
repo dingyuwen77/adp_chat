@@ -133,3 +133,5 @@ python tests/docker_smoke.py --image adp-chat:local
 ## 统一日志（当前版本）
 
 网关的业务事件与诊断信息共用普通文本日志 `log_file`，不再创建独立 `events-*.jsonl`；历史 JSONL 不自动删除。事件行以 `gateway_event ` 标记，后接单行 JSON 机器字段，便于人工检索和未来增量采集。当前**未接入 Cosmos DB**。配置、隐私和轮转约束见 [docs/wecom-integration/02_统一日志与采集预留.md](docs/wecom-integration/02_统一日志与采集预留.md)。
+
+普通日志的**每一行**现均追加版本化 `record=` 机器字段，未来可使用 `core.logging.parse_log_line()` 将所有新格式行转换为 JSON 文档（包括诊断行，而不只网关事件）。日志仍是可读文本；当前没有 Cosmos DB 采集器。
