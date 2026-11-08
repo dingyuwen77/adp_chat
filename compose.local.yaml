@@ -1,0 +1,40 @@
+# 本机阶段E开发覆盖；始终与compose.yaml一起使用，真实接入不使用本文件。
+services:
+  adp-chat:
+    image: adp-chat:wecom-local
+    platform: linux/arm64
+    restart: "no"
+    network_mode: service:fake-adp
+    ports: !override []
+    depends_on:
+      fake-adp:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ./runtime/wecom-docker/config.toml
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./runtime/wecom-docker/runtime:/app/runtime
+      - ./runtime/wecom-docker/logs:/app/logs
+  fake-adp:
+    image: adp-chat:wecom-local
+    platform: linux/arm64
+    init: true
+    restart: "no"
+    # 稳定Fake持有网络命名空间；网关重启不让尚存Fake落在旧loopback中。
+    # 只发布网关8000，Fake的8765仍仅共享命名空间内可达。
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - ./tests:/fixtures:ro
+      - ./runtime/wecom-docker/runtime:/app/runtime
+    command: ["python", "/fixtures/wecom_fake_adp.py", "--port", "8765", "--quota", "30", "--hold", "--calls-file", "/app/runtime/fake-calls.jsonl"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/_test/status', timeout=2).close()"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+    stop_grace_period: 10s

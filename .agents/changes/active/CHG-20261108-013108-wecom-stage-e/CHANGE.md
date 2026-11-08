@@ -3,7 +3,7 @@ schema: coding-change/v1
 id: "CHG-20261108-013108-wecom-stage-e"
 title: "企业微信阶段 E 本地完整集成与容器验收"
 level: L3
-status: in_progress
+status: ready_for_review
 owner: "codex"
 branch: "feature/wecom-stage-e"
 created: 2026-11-08
@@ -103,12 +103,12 @@ E1支持同一Store/Worker；E2支持metadata白名单与诊断/状态解耦；E
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | E1 JSONL可解析/关联/脱敏、BUSY/拒绝/UNKNOWN/释放/发送 | docs/wecom-integration/03_实施路线图.md#AC25 | not_satisfied | 尚未实现验证 |
-| R2 | E2 真实HTTP可靠ACK/100员工/Fake30/同用户拒绝 | docs/wecom-integration/03_实施路线图.md#AC26 | not_satisfied | 尚未执行E集成 |
-| R3 | E3 PyCharm/Docker恢复、armed不重放/UNKNOWN释放 | docs/wecom-integration/03_实施路线图.md#AC27 | not_satisfied | 尚未执行E运行验证 |
-| R4 | E4 原main/CLI/API/配置/会话兼容 | docs/wecom-integration/03_实施路线图.md#AC28 | not_satisfied | 尚未执行E回归 |
-| R5 | E5 受控真实ADP跨进程两轮/错误结构及隔离 | docs/wecom-integration/03_实施路线图.md#AC29 | not_satisfied | 尚未执行E真实探测 |
-| R6 | E6 仅A～E本地验收，F边界/可复现文档 | docs/wecom-integration/03_实施路线图.md#AC30 | not_satisfied | 文档待同步 |
+| R1 | E1 JSONL可解析/关联/脱敏、BUSY/拒绝/UNKNOWN/释放/发送 | docs/wecom-integration/03_实施路线图.md#AC25 | satisfied | 统一事件v1/9项日志专项、真实HTTP日志关联、磁盘/短写故障、脱敏/轮转/旧尾隔离，164项全回归；详见E-EVENTS/E-FINAL下方证据 |
+| R2 | E2 真实HTTP可靠ACK/100员工/Fake30/同用户拒绝 | docs/wecom-integration/03_实施路线图.md#AC26 | satisfied | 正式独立进程50/100员工、无限额/Fake30、实际拒绝集合、BUSY/先去重及强杀，JSONL关联；详见E-HTTP/E-PRESSURE |
+| R3 | E3 PyCharm/Docker恢复、armed不重放/UNKNOWN释放 | docs/wecom-integration/03_实施路线图.md#AC27 | satisfied | 用户后续要求无需操作PyCharm，采用同一Python命令行运行/故障注入；Docker ARM64真实SIGKILL、RECEIVED恢复、注入SEND_ARMED/PENDING恢复及UNKNOWN新消息，详见E-DOCKER/E-SCOPE |
+| R4 | E4 原main/CLI/API/配置/会话兼容 | docs/wecom-integration/03_实施路线图.md#AC28 | satisfied | 164项回归含旧main/CLI/API/配置；旧镜像独立HTTP→原ChatService/会话→SSE夹具→HTTP200和重建恢复，详见E-LEGACY |
+| R5 | E5 受控真实ADP跨进程两轮/错误结构及隔离 | docs/wecom-integration/03_实施路线图.md#AC29 | satisfied | 正式加密回调→真实已发布ADP，两轮YNND网关/客户端跨进程、SIYU隔离；实读语义通过，真实无效AppKey4505004且模拟提示完成，详见E-REAL |
+| R6 | E6 仅A～E本地验收，F边界/可复现文档 | docs/wecom-integration/03_实施路线图.md#AC30 | satisfied | 六份当前Owner同步、136本地链接、配置同源、明确CLI/可选IDE/模拟与真实切换/Docker/清理/F检查清单；阶段F未实施 |
 
 # 计划改动
 
@@ -141,10 +141,10 @@ L3诊断安全与运行验收；JSONL永不包含正文/密钥且失败不驱动
 
 # 完成审计
 
-- [ ] upstream_re_read：E1～E6及用户明确要求从正式Owner重读。
-- [ ] change_coverage：全部上游完成定义有直接映射。
-- [ ] reverse_audit：配置/入站/出站/日志/恢复/运行/旧入口双向核对。
-- [ ] unresolved_cleared：全部required实现与验证闭合。
+- [x] upstream_re_read：E1～E6及用户明确要求从正式Owner重读。
+- [x] change_coverage：全部上游完成定义有直接映射。
+- [x] reverse_audit：配置/入站/出站/日志/恢复/运行/旧入口双向核对。
+- [x] unresolved_cleared：全部required实现与验证闭合。
 
 # 完成证据与状态
 
@@ -162,11 +162,39 @@ Source固定5f406b3ec94faa006b7d5f99bf17fc845c5a97f3；阶段E起点为远程最
 
 ## 未验证内容与剩余风险
 
-E尚未实现/验证。F明确不实施；本机模拟签名与发送不证明真实企微云端认证/员工接收。
+E实现/本地验证完成，独立Review/当前head既有CI/合并/main-fresh/归档清理尚未完成。按后续用户范围调整未操作PyCharm GUI，文档保留配置方法；本机ARM64仿真不替代目标环境。UNKNOWN正文/证据保留须按企业策略人工核查，当前不会自动清除未核查未知状态。真实50/100压力未获明确选择，仅Fake已授权并完成，不宣称真实容量。F明确不实施；本机模拟签名与发送不证明真实企微云端认证/员工接收。
 
 ## 交付状态
 
-implementation=incomplete；delivery=incomplete；validation=incomplete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
+implementation=complete；delivery=incomplete；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=not_applicable（正式Roadmap）；cleanup=incomplete；end_to_end=incomplete。
+
+E-SCOPE：用户后续指出“你用pycharm干啥，你用不到这个软件啊”；已停止GUI工作，只进行应用清单读取，窗口读取审批超时，没有发送任何IDE输入或改IDE配置；之后不再操作PyCharm。按用户最新范围以命令行真实启动/测试/故障注入验证相同Python3.14入口，IDE仅给配置说明，不宣称GUI实测。用户再次允许真实ADP，并要求50/100用户压力；Fake压力均已执行，针对可能扩大的真实50/100范围已异步澄清，明确授权到达前不执行真实压力，不影响本任务原有Fake验收。
+
+E-FINAL：Windows/Python3.14.7，`.venv/Scripts/python.exe -B -X utf8 -m unittest discover -s tests -v` exit0，164tests/0fail/0skip/27.077s，原始runtime/wecom-stage-e-regression.log。17项新增：9事件/3配置生成/4网关Probe/1Fake重设屏障。配置生成首次Red为缺失模块，Fake hold首次Red为404，均再Green；Probe扩展属于受控验收资产，未宣称其新增前已建立Red，4项边界测试与真实全链路直接验证。无有效测试删减、依赖升级或CI改动。
+
+E-REAL：本机正式加密回调→FastAPI→v3快照→正式AsyncADPClient/官方HTTPS/SSE→结果保存→正式Simulator→JSONL。独立测试scope wecom-local-e-real-20261108-935579d2，同一个已发布测试应用AppKey仅在忽略TOML本机读取，根配置/平台提示词未改。2026-11-08T09:54+08，YNND首轮客户端pid28264、网关pid31272，RequestId030a73fe-1412-4b88-acdc-f264973ea1cd；首轮完整完成并网关退出后，新网关pid31844/客户端pid32108续轮RequestIdb1663507-c0b6-419a-8e63-99ba09ce9fdf。两轮UserId=VisitorId=YNND、ConversationId8d21a55ae85c478622a0424586ae85a9d42f2d9b397624616afa5427718630e0稳定，独立RequestId。首轮实读为询问哪类系统密码；续轮把windows作为密码类型补充，给出Windows密码修改流程和相关知识来源；主Agent实读完整回复确认语义，不靠固定文本/关键词判定，不评价业务建议正确性或判断业务任务完成。
+
+SIYU客户端pid17492、RequestId95bf11af-bcd4-4c9c-8518-02be530f6ccf，ConversationIda1b106482d7825cffbf4f2481dc2ebb8021d82e512e7c3eb98e5dc6fcdbaa6aa隔离；实读为询问Windows问题的具体方面，未继承YNND密码上下文。三轮正式response.completed/ReplyMethod18，通知均SEND_SIMULATED/source=simulated。另新网关pid20192用无效Fake专属AppKey向官方端点发一次windows，客户端pid8288、RequestId21463f8d-7a99-48fd-b497-fd81c63a73c7，真实SSE Code4505004、TraceId3799685582ab236fba3d34f87146f1d8，ADP_REJECTED及模拟提示完成；负向Probe预期exit1，没有真实限额压力/会议写入。实际共4请求、零自动重试，全部网关正常退出/端口释放。原始回复和配置仅runtime/wecom-stage-e-real，脱敏报告runtime/wecom-stage-e-real-report.json状态passed、semantic_verdict=parent_review_passed；原始内容不提交Git。复现用tests/wecom_local_setup.py和adp_conversation_probe.py --gateway-url，详细命令已入既有运维Owner。
+
+E-DOCKER：`scripts/build_image.ps1 -Version 0.0.9` exit0，linux/arm64，镜像sha256:a504925ad0871014484a2c6da3ff6c06bcb1f95f605d6c498803cc7ad26ff877；本地产物dist/v0.0.9，tar/manifest/SHA256SUMS实体与归档hash82e61b80b00effe106b64042a5d2c1a86f0fd9911f956888909ac127488c6463实读一致。构建revision4d0a14d/dirty=true，之后正式src无变化；5个变更源码在已安装镜像与当前源逐字节hash全部一致。Windows Docker Desktop29.6.2/Compose5.3.1、Linux/amd64引擎本机ARM64仿真，非目标服务器。
+
+`tests/wecom_docker_smoke.py --image adp_channel_api:v0.0.9 --report runtime/wecom-stage-e-docker.json`最终exit0。复用compose.yaml+本机override，同一正式镜像/入口/Worker/Store，UID/GID10001，TOML只读、bind runtime/logs可写；100员工、Fake30峰30/实际70拒绝、BUSY/先去重，最大ACK2768.6ms。正常重启闭合record_version不变；实际ADP SIGKILL/137后旧RequestId仅一次，RECEIVED首次恢复、UNKNOWN释放/新YNND可进入、SIYU隔离。停止后以正式Store注入SEND_ARMED/PENDING通知，重启分别SEND_UNKNOWN/首次SEND_SIMULATED；该注入不冒充通知已进入出口强杀（真实出口强杀由Windows独立HTTP实验覆盖）。876条JSONL解析、106消息关联、正文/凭据无、无真实accepted；最后正常SIGTERM/lifespan完整、无OOM/Error，当前SDK返回143。自有唯一Compose容器/网络及临时目录已全部清理，原始报告/日志保留。
+
+E-DOCKER-RCA：首轮拓扑让网关持有共享网络namespace，强杀重启后存活Fake落在旧loopback，恢复的SIYU请求得到network_error/UNKNOWN，正确未重试。最小真实Docker实验确认初始owner/peer同net:[4026532385]且连接成功；owner重启改net:[4026532453]而peer仍旧namespace、连接111；peer重启重新加入后同namespace/连接0，资源已清理。改为稳定Fake持有namespace，网关加入且启动依赖Fake健康，用Fake专用hold控制未来屏障而不重启Owner。完整第三轮已消除恢复网络症状；Fake本身重建须整体重建测试项目，运维已说明。未放宽ADP或ACK超时/未重投请求。
+
+第二轮已通过并发/恢复，但原测试要求正常退出0与Uvicorn0.48的capture_signals机制不符；官方已安装源码显示正常lifespan后重抛SIGTERM。独立最小ARM64真实容器实验确认Application shutdown complete、exit143/无OOM/Error；测试改为严格143且要求本次最后service.started之后有service.stopped，拒绝SIGKILL137。第三轮完整通过，未修改应用退出语义。原始RCA在runtime/wecom-stage-e-network-namespace.json、wecom-stage-e-sigterm-exit.json及三轮日志。
+
+E-LEGACY：`tests/docker_smoke.py --image adp_channel_api:v0.0.9` exit0：已安装包/数据排除、UID/GID10001、只读配置/可写根数据、两次重建session不变、真实HTTP→原ChatService→SSE夹具→HTTP200；全部测试容器/临时数据清理，无真实ADP请求。旧main/CLI/同步客户端回归亦在164项内，不以无鉴权API暴露公网。
+
+E-PACKAGE/DOCS：正式wheel构建exit0，CRC及5个变更正式模块逐字节通过；无依赖/lock版本变更。六份现有长期Owner同步，本地启动/签名客户端/两员工/BUSY/真Fake切换/50与100压力/JSON快照/JSONL/命令行与可选IDE/Docker/清理及F前置检查完整。136本地链接有效，候选Python函数中文说明AST通过、diff whitespace通过；NUL安全枚举候选文件实读无实际凭据泄漏，actual/example键一致且旧值保留。CI文件差异为空。
+
+E-PRIMARY：2026-11-08联网读取Python3.14 logging.handlers官方完整原文、Docker services官方当前页（2026-11-03）、官方compose-spec/compose-spec默认分支13-merge.md blob1c8cac2448197648c16c7e1ce88e52617dec1543完整原文，确认共享namespace、按target合并卷、ports须!override完整替换且支持版本2.24.4。网页工具连接失败时用本机HTTPS/官方GitHub connector原文，未拿摘要冒充证据。前序已联网核验WeCom及ADP正式协议继续有效。无Azure SDK/Cosmos、正式企微或服务器部署。
+
+E-PRESSURE-50：tests/wecom_dispatch_smoke.py --users 50 --simulate-notifications --report runtime/wecom-stage-e-http-50.json exit0；无限额峰值50、拒绝0，Fake30峰值30、实际拒绝20；ACK P50/P95/P99/max分别96.8/320.7/325.7/325.7ms与86.9/245.4/249.7/249.7ms。批次ACK吞吐138.9/177.0每秒，仅代表回调落盘ACK，不代表ADP模型吞吐。两类实际强杀恢复/未知释放/旧请求和旧通知各一次继续通过。四场景JSONL逐行解析/关联/脱敏通过，全部自有进程/监听/临时数据回收；原始报告/日志在runtime。
+
+E-PRESSURE-100：tests/wecom_dispatch_smoke.py --users 100 --simulate-notifications --report runtime/wecom-stage-e-http-100.json exit0；无限额峰值100、拒绝0，Fake30峰值30、实际拒绝70；ACK P50/P95/P99/max分别403.3/476.3/483.9/488.7ms与341.2/423.1/848.7/853.8ms。批次ACK吞吐182.4/108.8每秒，仅代表回调落盘ACK，不代表ADP模型吞吐。两类实际强杀恢复/未知释放/旧请求和旧通知各一次继续通过。四场景JSONL逐行解析/关联/脱敏通过，全部自有进程/监听/临时数据回收；原始报告/日志在runtime。
+
+Validation Asset Redundancy=clean：新增9日志边界、3配置副作用、4受控Probe边界、1Fake屏障各有独立责任；Docker网关恢复与既有单用户镜像烟测验证不同调用链；50/100复用同一Harness，无第二套业务状态或重复永久框架。
 
 ## 备注
 

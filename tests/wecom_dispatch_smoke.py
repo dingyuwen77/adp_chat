@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import secrets
+import statistics
 import socket
 import subprocess
 import sys
@@ -95,9 +96,9 @@ def event_report(config, records, *, quota, crash, notification_crash, notificat
     """解析实际JSONL并核对同一快照的关联，允许隔离强杀留下的单个末尾半行。"""
     events, incomplete = [], 0
     for path in Path(config.log_file).parent.glob("events-*.jsonl"):
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        lines = path.read_bytes().splitlines(keepends=True)
         for index, line in enumerate(lines):
-            if not line.endswith("\n"):
+            if not line.endswith(b"\n"):
                 assert index == len(lines) - 1 and (crash or notification_crash)
                 incomplete += 1
                 continue
@@ -162,7 +163,7 @@ def serve(args):
         server.run()
 
 
-def run_case(root, *, quota=0, crash=False, notifications=False, notification_crash=False):
+def run_case(root, *, quota=0, crash=False, notifications=False, notification_crash=False, users=100):
     """真实TCP/SSE与正式worker验证一套入站状态；测试数据用后清理。"""
     root.mkdir()
     fake_port, gateway_port = free_port(), free_port()
@@ -206,17 +207,19 @@ def run_case(root, *, quota=0, crash=False, notifications=False, notification_cr
                 store.put_if_absent(InboundMessage(config.corp_id, config.agent_id, "YNND", "1", "本机测试", 1))
         gateway = launch("gateway", gateway_port, hold_notifications=notification_crash)
         if not crash and not notification_crash:
-            with ThreadPoolExecutor(max_workers=100) as pool:
-                durations = list(pool.map(lambda i: callback(config, base, f"EMP{i}", str(i + 1)), range(100)))
-            observed = wait_for(lambda: (s if len((s := json_http(fake + "/_test/status"))["calls"]) == 100 else None))
-            assert observed["peak"] == (quota or 100)
+            started = time.monotonic()
+            with ThreadPoolExecutor(max_workers=users) as pool:
+                durations = list(pool.map(lambda i: callback(config, base, f"EMP{i}", str(i + 1)), range(users)))
+            callback_elapsed = time.monotonic() - started
+            observed = wait_for(lambda: (s if len((s := json_http(fake + "/_test/status"))["calls"]) == users else None))
+            assert observed["peak"] == min(quota or users, users)
             # 被入口拒绝的快照短暂也可能仍ARMED；只能从平台实际获准集合选择BUSY对象。
             held = next(r for r in snapshots().values() if r["adp_state"] == "ADP_SEND_ARMED"
                         and r["request_id"] not in observed["rejected"])
             callback(config, base, held["user_id"], "1001")
             callback(config, base, "EMP0", "1")
             assert snapshots()["1001"]["adp_state"] == "REJECTED_USER_BUSY"
-            assert len(json_http(fake + "/_test/status")["calls"]) == 100
+            assert len(json_http(fake + "/_test/status")["calls"]) == users
             json_http(fake + "/_test/release", b"")
             saved = wait_for(lambda: (s if (s := snapshots()) and all(r["adp_state"] not in {"RECEIVED", "ADP_SEND_ARMED"} for r in s.values()) else None))
             if notifications:
@@ -229,8 +232,13 @@ def run_case(root, *, quota=0, crash=False, notifications=False, notification_cr
                 assert r["send_state"] == ("SEND_SIMULATED" if notifications else "PENDING")
                 if notifications:
                     assert r["send_result"]["source"] == "simulated"
-            result = {"case": f"quota-{quota}", "calls": 100, "peak": observed["peak"], "actual_rejections": len(denied),
-                      "max_ack_ms": round(max(durations), 1)}
+            ordered = sorted(durations)
+            result = {"case": f"quota-{quota}", "calls": users, "peak": observed["peak"], "actual_rejections": len(denied),
+                      "max_ack_ms": round(max(durations), 1), "ack_p50_ms": round(statistics.median(ordered), 1),
+                      "ack_p95_ms": round(ordered[(len(ordered) * 95 + 99) // 100 - 1], 1),
+                      "ack_p99_ms": round(ordered[(len(ordered) * 99 + 99) // 100 - 1], 1),
+                      "callback_batch_seconds": round(callback_elapsed, 3),
+                      "callback_ack_per_second": round(users / callback_elapsed, 1)}
         else:
             wait_for(lambda: len(json_http(fake + "/_test/status")["calls"]) == 1)
             first_id = snapshots()["1"]["request_id"]
@@ -304,6 +312,7 @@ def main(argv=None):
     parser.add_argument("--simulation-calls-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--hold-notifications", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--simulate-notifications", action="store_true", help="使用D正式Simulator，并验证发送武装后强杀恢复")
+    parser.add_argument("--users", type=int, choices=(50, 100), default=100, help="不同模拟用户数；不访问真实ADP")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     if args.serve:
@@ -311,8 +320,8 @@ def main(argv=None):
         return 0
     with tempfile.TemporaryDirectory(prefix="wecom-dispatch-") as directory:
         root = Path(directory)
-        cases = [run_case(root / "unlimited", notifications=args.simulate_notifications),
-                 run_case(root / "quota", quota=30, notifications=args.simulate_notifications),
+        cases = [run_case(root / "unlimited", notifications=args.simulate_notifications, users=args.users),
+                 run_case(root / "quota", quota=30, notifications=args.simulate_notifications, users=args.users),
                  run_case(root / "crash", crash=True, notifications=args.simulate_notifications)]
         if args.simulate_notifications:
             cases.append(run_case(root / "notification-crash", notifications=True, notification_crash=True))
