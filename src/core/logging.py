@@ -257,7 +257,10 @@ def parse_log_line(line: str) -> dict:
     if fields_text[offset:].strip() or (fields_text and not fields):
         raise ValueError("日志字段格式无效")
     # 中文说明中的分隔符以 \u007c 表示，不会被误判为字段区。
-    description = description.replace("\\u007c", "|").replace("\\n", "\n").replace("\\r", "\r")
+    escapes = {"\\": "\\", "n": "\n", "r": "\r", "u007c": "|",
+               "u0085": "\u0085", "u2028": "\u2028", "u2029": "\u2029"}
+    description = re.sub(r"\\(u007c|u0085|u2028|u2029|n|r|\\)",
+                         lambda match: escapes[match.group(1)], description)
     return {
         "timestamp": datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=_BEIJING).isoformat(timespec="milliseconds"),
         "source_file": filename,
