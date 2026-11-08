@@ -3,6 +3,7 @@
 import re
 
 from core.config import ChatConfig
+from core.events import GatewayEvents
 from storage.messages import MessageStore
 from wecom.crypto import WeComCrypto, invalid_callback, parse_xml, xml_field
 from wecom.models import InboundMessage, is_employee_id
@@ -17,6 +18,7 @@ class WeComGateway:
         self.logger = logger
         self.crypto = WeComCrypto(config.callback_token, config.encoding_aes_key, config.corp_id)
         self.store = MessageStore(config)
+        self.events = GatewayEvents(config)
         self.worker = None
 
     def decode(self, body: bytes, timestamp: str, nonce: str, signature: str) -> InboundMessage | None:
@@ -49,6 +51,15 @@ class WeComGateway:
             from core.models import ChatError
             raise ChatError("gateway_storage", "dispatcher_unavailable", "后台状态处理不可用。")
         record, created = self.store.put_if_absent(message)
+        source = "test_fixture" if self.config.gateway_environment == "test" else "wecom_callback"
+        if created:
+            self.events.emit("wecom.message.received", record, attributes={"source": source})
+            self.events.emit("wecom.message.persisted", record,
+                             attributes={"source": source, "admission_decision": record["admission_decision"]})
+            if record["adp_state"] == "REJECTED_USER_BUSY":
+                self.events.emit("wecom.message.busy_rejected", record, attributes={"source": source})
+        else:
+            self.events.emit("wecom.message.duplicate", record, attributes={"source": source})
         self.logger.info("wecom_callback_received message_key=%s decision=%s duplicate=%s",
                          record["message_key"], record["adp_state"], not created)
         if created and self.worker is not None:
@@ -58,3 +69,4 @@ class WeComGateway:
     def close(self) -> None:
         """等待磁盘提交后释放目录，不把关闭变成任务已处理的证据。"""
         self.store.close()
+        self.events.close()

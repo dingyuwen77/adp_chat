@@ -74,6 +74,9 @@ log_file = "logs/adp_chat.log"
 log_max_bytes = 5242880
 # 轮转备份份数，至少 1；默认保留 3 份旧日志。
 log_backup_count = 3
+# 网关JSONL复用log_enabled/log_level、log_file所在目录和log_max_bytes。
+# 按北京时间日期/大小分段，早于此天数的本地事件自动清理；无外传/采集器。
+events_retention_days = 14
 # true 记录脱敏后的用户问题；false 不记录问题正文。
 log_question = true
 # 回答脱敏后最多记录的 Unicode 字符数；0 不记录回答正文，与问题开关独立。

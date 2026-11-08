@@ -34,6 +34,7 @@ class ChatConfig:
     log_backup_count: int = 3
     log_answer_chars: int = 0
     log_question: bool = False
+    events_retention_days: int = 14
     session_file: str = "runtime/session.json"
     corp_id: str = ""
     agent_id: int = 0
@@ -74,6 +75,8 @@ class ChatConfig:
             raise ChatError("config", "invalid_option", "日志级别必须是 DEBUG、INFO、WARNING、ERROR 或 CRITICAL。")
         if not self.log_file.strip() or self.log_max_bytes <= 0 or self.log_backup_count < 1 or self.log_answer_chars < 0:
             raise ChatError("config", "invalid_logging", "日志路径、轮转参数和回答预览长度必须有效。")
+        if not 1 <= self.events_retention_days <= 3650:
+            raise ChatError("config", "invalid_logging", "网关事件保留天数必须在1至3650之间。")
         if not self.session_file.strip() or "\0" in self.session_file:
             raise ChatError("config", "invalid_session_path", "会话文件路径不能为空或含有空字符。")
         scope = (self.corp_id, self.agent_id, self.adp_application)
@@ -135,6 +138,7 @@ _SECTIONS = {
         "log_enabled": bool, "log_level": str, "log_file": str,
         "log_max_bytes": int, "log_backup_count": int,
         "log_answer_chars": int, "log_question": bool,
+        "events_retention_days": int,
     },
 }
 

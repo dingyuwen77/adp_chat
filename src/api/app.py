@@ -46,7 +46,9 @@ async def lifespan(app: FastAPI):
                 worker = GatewayWorker(gateway, adp, sender=sender)
                 outgoing.push_async_callback(worker.stop)
                 await worker.start()
+                gateway.events.emit("service.started")
                 yield
+            gateway.events.emit("service.stopped")
         else:
             yield
 
@@ -72,6 +74,10 @@ def create_app() -> FastAPI:
         if exc.stage == "input":
             return _error(422, "INVALID_REQUEST", "input", "请求内容不合法。")
         if exc.stage == "wecom":
+            gateway = getattr(_request.app.state, "wecom_gateway", None)
+            if gateway is not None:
+                gateway.events.emit("wecom.callback.rejected", error_stage="authentication", error_code=exc.code,
+                    attributes={"source": "test_fixture" if gateway.config.gateway_environment == "test" else "wecom_callback"})
             return _error(403, "WECOM_INVALID_CALLBACK", "wecom", "回调认证或消息格式无效。")
         if exc.stage in ("config", "session", "logging", "gateway_storage"):
             return _error(503, "SERVICE_UNAVAILABLE", exc.stage, "服务配置或持久化不可用。")

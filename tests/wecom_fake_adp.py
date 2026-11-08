@@ -34,6 +34,12 @@ def create_fake_app(*, quota=0, hold=False, calls_file=None, mode="success", cod
         release.set()
         return {"released": True}
 
+    @app.post("/_test/hold")
+    async def hold_future():
+        """只给后续测试重新设屏障，不重启网络Owner或重放历史调用。"""
+        release.clear()
+        return {"holding_future_requests": True}
+
     @app.post("/adp/v2/chat")
     async def chat(request: Request):
         """只接明显测试凭据，避免本机配置切换时误向Fake提交真实密钥。"""

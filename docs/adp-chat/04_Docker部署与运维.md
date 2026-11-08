@@ -194,7 +194,7 @@ $env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-fake/config.toml).Path
 
 JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文件只负责目录独占，不是第二套员工状态。两个进程不能同时使用同一 `messages_dir`；PyCharm 与 Docker 的目录也应隔离。损坏或未知版本的快照会阻止启动，保留现场排查，不自动删除或当新消息处理。写入失败后不返回成功 ACK，并关闭后续接收直到重启核验快照；现有去重记录正常时，重复回调无需新写盘。
 
-默认入站上限 65536 字节、最多2000条快照（既有字段max_unfinished_messages，包含待通知、未知和去重保留记录）；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。JSONL 到 E 再实现。
+默认入站上限 65536 字节、最多2000条快照（既有字段max_unfinished_messages，包含待通知、未知和去重保留记录）；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。当前网关另有JSONL，查看方法见1.10。
 
 稳定回归与不占用现有目录的真实 HTTP 验收：
 
@@ -244,7 +244,7 @@ Fake还支持`--mode reject --code 460031`、`disconnect`、`timeout`、`model-e
 
 Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共享删除读取；避免用持有普通文件句柄的编辑器/Get-Content持续轮询活动文件，Windows会阻止替换。更新使用保留ACL的ReplaceFileW，初次发布/Posix使用os.replace，均先flush/fsync；不是绕过写入失败。目录独占/版本/CAS检查，v1先全部校验再兼容升级；未知版本/损坏/原快照缺失但留暂存证据均保留现场并拒绝启动。此类发布故障需核查恢复，不能删除目录后盲重投。正常退出读回取消期间磁盘提交；已保存成功不会改写UNKNOWN，armed不确定结果不重投。
 
-启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。默认disabled时PENDING不会因时间清除；D模拟发送可闭合，E继续完成日志。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v3的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
+启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。默认disabled时PENDING不会因时间清除；D模拟发送可闭合，E已接JSONL；待通知/UNKNOWN正文仍需按企业策略核查处置，不宣称已自动脱敏。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v3的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
 
 ### 1.9 统一通知与正式发送协议隔离测试（阶段 D）
 
@@ -264,6 +264,112 @@ Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共
 v1/v2先校验后兼容升级到v3，保存环境和发送证据源。测试目录不能切成production直接复用；旧记录若已有无法证明的发送终态，拒绝启动而非补造真实接受。已模拟完成的数据用独立测试目录按7/30天策略清理，不能计作真实SEND_ACCEPTED；UNKNOWN保留核查证据且不锁用户。回退必须停网关并备份全部状态，恢复兼容配置，禁止旧代码继续处理新格式。
 
 真实模式`wecom`要求`gateway_environment="production"`及未提交的本机应用Secret，属于未实施的F。本次不填写真实Secret、不启用该模式、不配置企业微信后台或可信出口IP。F前仍需管理员确认回调归属、可达地址/证书、应用可见范围/权限、出口IP、新生产状态目录及真实两员工端到端验收；本机Fake成功不替代这些检查。
+
+### 1.10 A～E完整本地链路、JSONL与Docker
+
+本节复用前述正式应用、配置和状态，不连接真实企业微信。快速自动验收使用临时独立目录；手动调试、容器和真实ADP分别使用不同目录。旧单用户会话与员工消息快照亦分开。
+
+**本机手动启动**（项目根目录、Python3.14及依赖按1.1）：
+
+```powershell
+# 仅当目标不存在时生成同一TOML格式的独立Fake配置；已有文件绝不覆盖。
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_local_setup.py --output runtime/wecom-local/config.toml --scope wecom-local-dev-001
+# 终端1：Fake只接受fake-local-adp-only，不接受真实AppKey。
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_fake_adp.py --port 8765 --quota 30 --hold
+# 终端2：本进程明确选择该TOML，其他入口/根实际配置不改。
+$env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-local/config.toml).Path
+.\.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+[tests/wecom_local_setup.py](../../tests/wecom_local_setup.py)生成新的测试Token/AESKey，启用网关及simulated通知，关闭问答正文日志。输出仅限本项目忽略的runtime子目录，scope必须以wecom-local-开头；后续两轮和重启保持同一scope。它不发请求、不复制真实企微Secret，不给运行代码增加另一种配置来源。已有配置应直接复用；需要新测试作用域时明确选新目录和名称，不删除未知请求证据后重跑。
+
+终端3运行1.7的签名客户端，将`--config`改为`runtime/wecom-local/config.toml`：先GET校验，再依次发送YNND/10001、重复10001、YNND/10002、SIYU/10003。Fake保持屏障时，第一条YNND与SIYU均进入ADP，YNND新10002立即BUSY，重复10001没有第二次执行或通知。查看`--inspect-state`后释放：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/_test/status
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/release
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-local/config.toml --inspect-state
+# 需要下一次保持屏障时，只影响未来请求，不重放历史：
+Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/hold
+```
+
+通知终态应为`SEND_SIMULATED/source=simulated`；它不证明企业微信API接受。根配置或其他终端不会因为当前环境变量改变；服务退出后在该终端执行`Remove-Item Env:ADP_CONFIG_FILE`，避免后续误选配置。Ctrl+C正常关闭两个自有服务，保留手动调试状态；只在确认不再需要核查后清理自己的测试目录，不删除未知或生产状态。
+
+**50/100用户和故障注入**：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_dispatch_smoke.py --users 50 --simulate-notifications --report runtime/wecom-pressure-50.json
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_dispatch_smoke.py --users 100 --simulate-notifications --report runtime/wecom-pressure-100.json
+.\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -v
+```
+
+脚本启动正式独立HTTP网关和TCP/SSE Fake，分别验证无限额与30名额、同员工BUSY、先去重、ADP实际强杀恢复及模拟发送进入武装边界后的强杀恢复。报告给出实际峰值/拒绝集合、ACK P50/P95/P99/最大值、回调批次耗时/吞吐和JSONL关联/脱敏统计；ACK吞吐不是ADP模型吞吐。屏障保持期间50/100对30名额通常出现20/70入口拒绝，以本次真实集合为准。所有请求仅发一次，脚本只回收自身进程/监听/临时数据。Fake压力证据不等于真实平台容量；真实50/100并发须另有明确授权，不直接把Fake命令改成真实端点。
+
+**查看JSON和JSONL**：消息事实源为配置目录下`runtime/messages/*.json`，使用`--inspect-state`共享读取；不要持有普通读取句柄轮询活动快照。日志在该配置的`logs/`，由[src/core/events.py](../../src/core/events.py)按[docs/wecom-integration/02_结构化日志事件.md](../wecom-integration/02_结构化日志事件.md)输出。可在消息完成后查看：
+
+```powershell
+Get-ChildItem runtime/wecom-local/logs/events-*.jsonl |
+  ForEach-Object { Get-Content -LiteralPath $_.FullName -Encoding utf8 } |
+  ForEach-Object { try { $_ | ConvertFrom-Json } catch { Write-Warning '遇到不完整或损坏日志行，保留原文件核查' } } |
+  Select-Object timestamp,event,message_key,conversation_id,request_id,status,error_code,outcome_uncertain
+```
+
+按同一message_key关联入站、ADP、保存/释放和独立发送。默认无员工原文/问答/密钥，`environment=test`，发送/恢复source单独标识。JSONL复用log_enabled/log_level、log_file父目录及log_max_bytes；events_retention_days默认14。新进程、日期/大小变化和短写后新开段，不拼接旧末尾半行；机器采集须按字节隔离未换行末行，完整JSON行解析失败报警。日志失败安全ERROR告警并累计进程内failed_writes，不能驱动业务重试；JSON状态保存失败则阻止成功ACK。
+
+**命令行与PyCharm**：命令行使用上述同一模块/解释器即可启动和排障。本轮未操作PyCharm GUI，不把配置说明当作GUI实测证据。需要用户自行调试时，新建Python运行配置：解释器`.venv/Scripts/python.exe`，模块`uvicorn`，参数`api.app:app --host 127.0.0.1 --port 8000 --workers 1`，工作目录为仓库根，环境变量`ADP_CONFIG_FILE`填上述测试TOML的绝对路径。先在另一终端启动Fake。可在[src/api/wecom_routes.py](../../src/api/wecom_routes.py)、[src/application/wecom_worker.py](../../src/application/wecom_worker.py)和[src/wecom/sender.py](../../src/wecom/sender.py)设置断点。暂停事件循环可能超过回调ACK窗口，使用独立MsgId并读快照核查；断点恢复后不盲重发未知请求。不启多worker或同时用Docker读写该目录。
+
+**真实ADP跨进程两轮**：先停止Fake网关，生成另一份独立测试TOML，只有这个明确操作复制根实际ADP凭据及chat选项；真实企微Secret始终留空、发送仍simulated，文件只在忽略目录本机保存：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_local_setup.py --output runtime/wecom-real/config.toml --scope wecom-local-real-001 --real-adp-source config.toml
+# 终端1：启动正式网关；无需启动Fake。
+$env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-real/config.toml).Path
+.\.venv\Scripts\python.exe -m uvicorn api.app:app --host 127.0.0.1 --port 8000 --workers 1
+# 终端2：新输出文件，每次只提交一次加密回调。
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --config runtime/wecom-real/config.toml --gateway-url http://127.0.0.1:8000 --user-id YNND --message "我想改密码" --execute-real-adp --output runtime/real-ynnd-1.json
+# 等首轮完成并退出Probe；Ctrl+C停止终端1网关，再用同配置重新启动网关。
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --config runtime/wecom-real/config.toml --gateway-url http://127.0.0.1:8000 --user-id YNND --message "windows" --execute-real-adp --output runtime/real-ynnd-2.json
+.\.venv\Scripts\python.exe -B -X utf8 tests/adp_conversation_probe.py --config runtime/wecom-real/config.toml --gateway-url http://127.0.0.1:8000 --user-id SIYU --message "windows" --execute-real-adp --output runtime/real-siyu-1.json
+```
+
+Probe默认仍离线；有真实flag和未存在输出文件后才提交，ACK丢失只观察原消息、不重发。成功需要正式ADP终态和模拟通知终态。核对两轮UserId/VisitorId/ConversationId相同、RequestId与进程独立，SIYU会话不同；实读response_text，第二轮必须承接密码上下文，不能以关键词判定。E实测首轮追问系统，第二轮给出Windows密码修改流程；SIYU独立询问Windows问题类型，直接语义核验通过。完整回复可能含内部知识/链接，只留本机；共享证据只记脱敏摘要和标识。测试不评价ADP业务建议是否正确、不修改平台提示词、不请求会议写入。
+
+真实错误结构检查须单独的无有效密钥配置：新建隔离Fake配置，只将其`wecom.adp_url`指向官方端点，保留故意无效的Fake专属AppKey，沿同gateway Probe发一次允许文字。预期exit1并保留实际Provider Code/状态，而不是把负向测试当成功问答；E真实返回4505004，ADP_REJECTED，模拟提示完成。不要为了触发限额而压测有效应用，也不盲目重复未知结果。
+
+**Docker Desktop本地Compose**（Linux引擎，本机ARM64仿真）：
+
+```powershell
+# 选尚未存在的新版本；例v0.0.9，不覆盖既有目录/标签。
+.\scripts\build_image.ps1 -Version v0.0.9
+# 自动隔离验收：临时覆盖已有Compose的路径/端口，结束回收自身容器/网络/临时数据。
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_docker_smoke.py --image adp_channel_api:v0.0.9 --report runtime/wecom-docker-result.json
+# 旧单用户镜像链路也可单独核验，不请求真实ADP：
+.\.venv\Scripts\python.exe -B -X utf8 tests/docker_smoke.py --image adp_channel_api:v0.0.9
+```
+
+[tests/wecom_docker_smoke.py](../../tests/wecom_docker_smoke.py)检查实际linux/arm64、UID/GID10001、安装源码、只读TOML和可写bind目录；100员工/Fake30、BUSY/去重、正常重启保留闭合记录；实际SIGKILL后的旧ADP仅一次、RECEIVED首次恢复、UNKNOWN后新消息可进入。另在容器停止后以正式Store注入PENDING/SEND_ARMED边界，验证首次模拟通知/只记SEND_UNKNOWN；通知实际进入出口后强杀的证据由本机HTTP脚本提供，二者不冒充同一实验。JSONL按同一快照检查，退出需lifespan完成/无OOM/无错误；当前Uvicorn0.48会在正常关闭后重抛SIGTERM，容器exit143属此信号退出，不能用日志一句话把SIGKILL/137当正常。
+
+需要保留容器手动测试时：
+
+```powershell
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_local_setup.py --output runtime/wecom-docker/config.toml --scope wecom-local-docker-001
+New-Item -ItemType Directory -Force runtime/wecom-docker/runtime,runtime/wecom-docker/logs | Out-Null
+docker tag adp_channel_api:v0.0.9 adp-chat:wecom-local
+docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml config
+docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml up -d --no-build
+Invoke-RestMethod http://127.0.0.1:18000/healthz
+.\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-docker/config.toml --url http://127.0.0.1:18000 --user-id YNND --msg-id 20001 --message "容器本地测试"
+# Fake控制面不发布端口，仅在命名空间内访问：
+docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml exec -T fake-adp python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8765/_test/status').read().decode())"
+docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml exec -T fake-adp python -c "import urllib.request;urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8765/_test/release',data=b'')).close()"
+docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml restart adp-chat
+docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml logs --tail 30
+docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml down
+```
+
+生成前确认目录/文件不存在；docker tag前确认目标开发标签属于本任务，避免覆盖他人镜像。手动down保留本机配置/日志/消息；不会清理全局Docker资源，不运行prune。命令在项目根执行。[compose.local.yaml](../../compose.local.yaml)作为[compose.yaml](../../compose.yaml)的本机覆盖，按 [Compose官方合并规则](https://github.com/compose-spec/compose-spec/blob/main/13-merge.md)依赖支持`!override`的Compose（≥2.24.4），显式只发布loopback的18000。Fake持有稳定网络命名空间，网关加入其loopback；网关重启不遗留在旧命名空间的Fake，启动先等Fake健康。Fake自身重建时须一起重建该测试项目；不把这种测试拓扑用到F。配置只读映射/app/config.toml，runtime/logs映射各自测试目录。默认ARM64本地仿真不替代目标Linux/ARM服务器、网络/权限和正式企微真实验收；本节不执行上传或部署。
+
+**阶段F前置检查**（未实施）：管理员确认现有回调Owner和回退方案；独立生产状态目录/访问权限/备份及未知正文处置期限；正式Secret、Token/AES与测试分开；应用Agent/可见员工/发送权限；当前官方回调可达性、证书和可信公网出口IP；目标Linux/ARM架构、目录权限/网络与退出恢复；两名真实员工的回调→ADP→真实API接受及客户端边界。SEND_ACCEPTED仅能由正式API明确接受产生，不追踪已读；F前不得将测试目录改为production复用。
 
 ## 二、Linux 服务器部署
 
