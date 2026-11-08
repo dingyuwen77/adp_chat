@@ -1,5 +1,8 @@
 # 单用户 FastAPI 服务架构
 
+> 本文描述当前仓库已实现的行为；历史验收数字只代表对应提交与环境，不代替当前生产环境验证。具体字段、配置与执行入口以链接的源码和测试为准。
+
+
 ## 目标和边界
 
 使用现有 ADP HTTP SSE V2 一轮对话能力，提供给可信内网其他服务的同步 HTTP 接口。固定 UserId、VisitorId 和持久 ConversationId，使用一个进程内互斥锁实现**一次仅一轮**。第一版不提供用户管理、会话管理 HTTP 接口、认证、HTTPS 代理、文件上传、WebSocket 或对外 SSE。单次脚本和交互 CLI 使用相同应用服务层。
@@ -10,7 +13,7 @@
 
 配置 `[chat].stream=false`（默认）时向 ADP 发送 `Stream: "disable"`，完整生成回复文本后输出；设为 `true` 则发送 `Stream: "enable"`，接收逐段文本。两种模式均通过 SSE（`text/event-stream`）承载状态和消息事件，内部必须继续解析，确认 `response.completed` 成功后才能返回正式回复。FastAPI 均一次性返回完整 JSON。开关定义见[腾讯 ADP HTTP SSE 文档](https://cloud.tencent.com/document/product/1759/129202)。
 
-`streaming_throttle` 只在流式模式发送，控制每次回包积攒的字符数。文本事件格式由客户端统一请求增量格式，最终回复只取成功完成事件，不依赖中间文本拼接。配置迁移见 [docs/adp-chat/04_Docker部署与运维.md](04_Docker部署与运维.md)。
+`streaming_throttle` 只在流式模式发送，控制每次回包积攒的字符数。文本事件格式由客户端统一请求增量格式，最终回复只取成功完成事件，不依赖中间文本拼接。配置迁移见 [docs/adp-chat/02_Docker部署与运维.md](02_Docker部署与运维.md)。
 
 当前实现只做单轮文字转发，原样保留 JSON 文本、问卷和卡片等正式内容，不解析自定义业务完成状态，也不自动索取补答。旧的自动追问、业务状态、预览回调编排和对应配置已经移除；三个入口均共用当前单轮实现。
 
