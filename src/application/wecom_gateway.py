@@ -18,7 +18,7 @@ class WeComGateway:
         self.logger = logger
         self.crypto = WeComCrypto(config.callback_token, config.encoding_aes_key, config.corp_id)
         self.store = MessageStore(config)
-        self.events = GatewayEvents(config)
+        self.events = GatewayEvents(config, logger)
         self.worker = None
 
     def decode(self, body: bytes, timestamp: str, nonce: str, signature: str) -> InboundMessage | None:

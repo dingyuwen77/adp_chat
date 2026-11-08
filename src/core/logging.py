@@ -133,6 +133,8 @@ class _Formatter(logging.Formatter):
 class _FileHandler(RotatingFileHandler):
     """进程内串行轮转，每条记录后关闭文件，兼容 Windows 并发请求。"""
 
+    failed_writes = 0
+
     def emit(self, record: logging.LogRecord) -> None:
         """写入与轮转共用锁，避免其他请求占用待重命名的日志文件。"""
         with _FILE_LOCK:
@@ -148,7 +150,12 @@ class _FileHandler(RotatingFileHandler):
 
     def handleError(self, record: logging.LogRecord) -> None:
         """运行中日志写入失败不转写控制台，也不打断已发出的业务请求。"""
-        # 启动时提前验证可写；后续磁盘/权限变化采用 best effort，避免引发业务重试。
+        # 业务调用不因日志写失败而重试；仅增加计数并发出安全告警。
+        self.failed_writes += 1
+        try:
+            logging.getLogger("adp_chat.event_alert").error("diagnostic_log_write_failed count=%d", self.failed_writes)
+        except Exception:
+            pass
         return None
 
 
