@@ -1,4 +1,4 @@
-"""阶段E：结构化日志独立于消息事实源，真实文件与正式Worker联动。"""
+"""统一普通日志：业务事件与诊断共享文本文件，仍不作为消息事实源。"""
 
 import asyncio
 import base64
@@ -20,15 +20,21 @@ from application.wecom_gateway import WeComGateway
 from application.wecom_worker import GatewayWorker
 from core.config import ChatConfig
 from core.events import GatewayEvents
+from core.logging import diagnostic_logger
 from wecom.models import InboundMessage
 from wecom.sender import SimulatedSender
 from test_wecom_dispatch import answer, frame
 
 
 def read_events(root):
-    """完整JSONL逐行解析；不把损坏行或业务快照当事件证据。"""
-    return [json.loads(line) for path in sorted(root.glob("events-*.jsonl"))
-            for line in path.read_text(encoding="utf-8").splitlines()]
+    """从普通 .log 中提取有版本的 gateway_event；忽略普通诊断正文。"""
+    output = []
+    for path in sorted(root.glob("human.log*")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            marker = "gateway_event "
+            if marker in line:
+                output.append(json.loads(line.split(marker, 1)[1]))
+    return output
 
 
 class EventFileTests(unittest.TestCase):
@@ -80,46 +86,30 @@ class EventFileTests(unittest.TestCase):
         self.assertEqual([event["event"] for event in output], ["wecom.send.simulated"])
         self.assertEqual(output[0]["attributes"], {"source": "simulated"})
 
-    def test_size_date_retention_and_partial_old_tail(self):
-        """新进程/日期/大小分段不拼接旧崩溃尾行，清理只触及本Owner过期文件。"""
-        old = self.root / "events-20000101-123-aaaaaaaaaaaa-0.jsonl"
-        old.write_text('{"partial":', encoding="utf-8")
-        unrelated = self.root / "events-personal.jsonl"
-        unrelated.write_text("保留", encoding="utf-8")
-        config = replace(self.config, log_max_bytes=1000, events_retention_days=14)
+    def test_rotation_preserves_events_and_does_not_touch_legacy_jsonl(self):
+        """共享文本日志按大小轮转；旧JSONL只留历史，不再生成或自动删除。"""
+        legacy = self.root / "events-20000101-123-aaaaaaaaaaaa-0.jsonl"
+        legacy.write_text('{"legacy":true}', encoding="utf-8")
+        config = replace(self.config, log_max_bytes=1000, log_backup_count=10)
         events = GatewayEvents(config)
         for _ in range(4):
             events.emit("service.started")
-        paths = list(self.root.glob("events-*.jsonl"))
-        self.assertFalse(old.exists())
-        self.assertEqual(unrelated.read_text(encoding="utf-8"), "保留")
-        self.assertGreaterEqual(len(paths), 3)
-        count = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in paths if path != unrelated)
-        self.assertEqual(count, 4)
         events.close()
-        current = next(path for path in paths if path != unrelated)
-        with current.open("a", encoding="utf-8") as output:
-            output.write('{"incomplete":')
-        later = GatewayEvents(config)
-        self.addCleanup(later.close)
-        later.emit("service.started")
-        self.assertEqual(current.read_text(encoding="utf-8").splitlines()[-1], '{"incomplete":')
-        self.assertTrue(any(path != current and path.read_text(encoding="utf-8").endswith("\n")
-                            for path in self.root.glob("events-*.jsonl") if path != unrelated))
-        tomorrow = datetime.now(timezone(timedelta(hours=8))) + timedelta(days=1)
-        with patch("logging.time.time_ns", return_value=int(tomorrow.timestamp() * 1_000_000_000)):
-            later.emit("service.stopped")
-        self.assertTrue(any(tomorrow.strftime("%Y%m%d") in path.name for path in self.root.glob("events-*.jsonl")))
+        self.assertEqual(len(read_events(self.root)), 4)
+        self.assertTrue((self.root / "human.log").exists())
+        self.assertTrue(any(self.root.glob("human.log.*")))
+        self.assertEqual(legacy.read_text(encoding="utf-8"), '{"legacy":true}')
+        self.assertEqual(len(list(self.root.glob("events-*.jsonl"))), 1)
 
     def test_write_failure_is_observable_but_never_raises_into_business(self):
-        """磁盘故障只告警/计数，不把成功业务改判为失败或驱动重试。"""
+        """统一日志写失败只告警计数，不改变业务结果。"""
         events = GatewayEvents(self.config)
         self.addCleanup(events.close)
-        with patch("core.events._EventHandler._write", side_effect=OSError("private-secret-path")):
+        with patch("logging.FileHandler._open", side_effect=OSError("private-secret-path")):
             with self.assertLogs("adp_chat.event_alert", level="ERROR") as alert:
                 events.emit("service.started")
         self.assertEqual(events.failed_writes, 1)
-        self.assertIn("gateway_jsonl_write_failed", alert.output[0])
+        self.assertIn("diagnostic_log_write_failed", alert.output[0])
         self.assertNotIn("private-secret-path", alert.output[0])
         events.emit("service.stopped")
         self.assertEqual([e["event"] for e in read_events(self.root)], ["service.stopped"])
@@ -132,29 +122,23 @@ class EventFileTests(unittest.TestCase):
         events.close()
         self.assertFalse(target.parent.exists())
 
-    def test_partial_write_failure_opens_new_segment_without_concatenating_tail(self):
-        """同进程短写后也隔离末尾半行；恢复日志不得拼坏下一条完整事件。"""
-        events = GatewayEvents(self.config)
-        self.addCleanup(events.close)
-        events.emit("service.started")
-        damaged = events.handler.path
-
-        def partial(_record, content):
-            """用真实追加模拟短写后磁盘错误，不模拟业务存储或消息结果。"""
-            with damaged.open("ab") as output:
-                output.write(content[:20])
-            raise OSError("short-write")
-
-        with patch.object(events.handler, "_write", side_effect=partial), self.assertLogs("adp_chat.event_alert", level="ERROR"):
+    def test_ordinary_log_and_event_share_one_file(self):
+        """同一文件既可读诊断文字，又可抽取结构化事件。"""
+        with diagnostic_logger(self.config) as logger:
+            events = GatewayEvents(self.config, logger)
+            logger.info("diagnostic_marker request_id=trace-safe")
             events.emit("service.started")
-        events.emit("service.stopped")
-        self.assertNotEqual(events.handler.path, damaged)
-        self.assertFalse(damaged.read_bytes().endswith(b"\n"))
-        self.assertEqual(json.loads(events.handler.path.read_text(encoding="utf-8"))["event"], "service.stopped")
+            events.close()
+        text = (self.root / "human.log").read_text(encoding="utf-8")
+        self.assertIn("diagnostic_marker", text)
+        self.assertIn("gateway_event ", text)
+        self.assertEqual(len(read_events(self.root)), 1)
+        self.assertFalse(list(self.root.glob("events-*.jsonl")))
+
 
 
 class EventWorkflowTests(unittest.IsolatedAsyncioTestCase):
-    """正式接收/持久化/异步ADP/模拟发送的实际事件，不解析人类日志。"""
+    """正式接收/持久化/异步ADP/模拟发送的事件从普通日志提取。"""
 
     def setUp(self):
         """独立测试作用域与真实临时磁盘；无企微或ADP云端调用。"""
@@ -166,7 +150,10 @@ class EventWorkflowTests(unittest.IsolatedAsyncioTestCase):
             encoding_aes_key=base64.b64encode(os.urandom(32)).decode()[:-1], notification_mode="simulated",
             messages_dir=str(self.root / "messages"), session_file=str(self.root / "legacy.json"),
             log_file=str(self.root / "logs" / "human.log"))
-        self.gateway = WeComGateway(self.config, logging.getLogger("e-human"))
+        self.log_context = diagnostic_logger(self.config)
+        self.logger = self.log_context.__enter__()
+        self.addCleanup(self.log_context.__exit__, None, None, None)
+        self.gateway = WeComGateway(self.config, self.logger)
         self.addCleanup(self.gateway.close)
 
     async def test_lifecycle_busy_duplicate_rejected_unknown_release_and_sender(self):
@@ -250,7 +237,7 @@ class EventWorkflowTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
             worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http),
                                    sender=SimulatedSender(self.config))
-            with patch("core.events._EventHandler._write", side_effect=PermissionError("private")):
+            with patch("logging.FileHandler._open", side_effect=PermissionError("private")):
                 with self.assertLogs("adp_chat.event_alert", level="ERROR"):
                     await worker.start()
                     try:
