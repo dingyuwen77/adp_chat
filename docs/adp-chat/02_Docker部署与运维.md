@@ -208,7 +208,7 @@ $env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-fake/config.toml).Path
 
 JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文件只负责目录独占，不是第二套员工状态。两个进程不能同时使用同一 `messages_dir`；PyCharm 与 Docker 的目录也应隔离。损坏或未知版本的快照会阻止启动，保留现场排查，不自动删除或当新消息处理。写入失败后不返回成功 ACK，并关闭后续接收直到重启核验快照；现有去重记录正常时，重复回调无需新写盘。
 
-默认入站上限 65536 字节、最多2000条快照（既有字段max_unfinished_messages，包含待通知、未知和去重保留记录）；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。当前网关另有JSONL，查看方法见1.10。
+默认入站上限 65536 字节、最多2000条快照（既有字段max_unfinished_messages，包含待通知、未知和去重保留记录）；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。当前网关事件与诊断共用普通 `.log`，查看方法见 1.10。
 
 稳定回归与不占用现有目录的真实 HTTP 验收：
 
@@ -258,7 +258,7 @@ Fake还支持`--mode reject --code 460031`、`disconnect`、`timeout`、`model-e
 
 Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共享删除读取；避免用持有普通文件句柄的编辑器/Get-Content持续轮询活动文件，Windows会阻止替换。更新使用保留ACL的ReplaceFileW，初次发布/Posix使用os.replace，均先flush/fsync；不是绕过写入失败。目录独占/版本/CAS检查，v1先全部校验再兼容升级；未知版本/损坏/原快照缺失但留暂存证据均保留现场并拒绝启动。此类发布故障需核查恢复，不能删除目录后盲重投。正常退出读回取消期间磁盘提交；已保存成功不会改写UNKNOWN，armed不确定结果不重投。
 
-启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。默认disabled时PENDING不会因时间清除；D模拟发送可闭合，E已接JSONL；待通知/UNKNOWN正文仍需按企业策略核查处置，不宣称已自动脱敏。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v3的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
+启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。默认disabled时PENDING不会因时间清除；D模拟发送可闭合，E 阶段历史版本曾使用 JSONL，当前版本已统一普通日志；待通知/UNKNOWN正文仍需按企业策略核查处置，不宣称已自动脱敏。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v3的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
 
 ### 1.9 统一通知与正式发送协议隔离测试（阶段 D）
 
@@ -279,7 +279,7 @@ v1/v2先校验后兼容升级到v3，保存环境和发送证据源。测试目�
 
 真实模式 `wecom` 要求 `gateway_environment="production"` 及未提交仓库的应用 Secret。该模式已在阶段 F 的单员工真实联调中使用，**不等于阶段 F 全部验收完成**。新环境接入仍须确认回调归属、可达地址、应用可见范围/权限、可信出口 IP、独立生产状态目录及至少两名真实员工的端到端验收；本机 Fake 成功不能替代这些检查。
 
-### 1.10 A～E完整本地链路、JSONL与Docker
+### 1.10 A～E完整本地链路、统一日志与Docker
 
 本节复用前述正式应用、配置和状态，不连接真实企业微信。快速自动验收使用临时独立目录；手动调试、容器和真实ADP分别使用不同目录。旧单用户会话与员工消息快照亦分开。
 
@@ -317,7 +317,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/hold
 .\.venv\Scripts\python.exe -B -X utf8 -m unittest discover -s tests -v
 ```
 
-脚本启动正式独立HTTP网关和TCP/SSE Fake，分别验证无限额与30名额、同员工BUSY、先去重、ADP实际强杀恢复及模拟发送进入武装边界后的强杀恢复。报告给出实际峰值/拒绝集合、ACK P50/P95/P99/最大值、回调批次耗时/吞吐和JSONL关联/脱敏统计；ACK吞吐不是ADP模型吞吐。屏障保持期间50/100对30名额通常出现20/70入口拒绝，以本次真实集合为准。所有请求仅发一次，脚本只回收自身进程/监听/临时数据。Fake压力证据不等于真实平台容量；真实50/100并发须另有明确授权，不直接把Fake命令改成真实端点。
+脚本启动正式独立HTTP网关和TCP/SSE Fake，分别验证无限额与30名额、同员工BUSY、先去重、ADP实际强杀恢复及模拟发送进入武装边界后的强杀恢复。报告给出实际峰值/拒绝集合、ACK P50/P95/P99/最大值、回调批次耗时/吞吐和日志事件关联/脱敏统计；ACK吞吐不是ADP模型吞吐。屏障保持期间50/100对30名额通常出现20/70入口拒绝，以本次真实集合为准。所有请求仅发一次，脚本只回收自身进程/监听/临时数据。Fake压力证据不等于真实平台容量；真实50/100并发须另有明确授权，不直接把Fake命令改成真实端点。
 
 **日常离线回归**：本次真实ADP响应已经脱敏保存到[tests/fixtures/adp_http_sse_recorded.json](../../tests/fixtures/adp_http_sse_recorded.json)，由[tests/adp_recorded_fixtures.py](../../tests/adp_recorded_fixtures.py)经Mock HTTP传输回放给正式异步客户端。[tests/test_wecom_dispatch.py](../../tests/test_wecom_dispatch.py)验证正常ReplyMethod18、入口QPS拒绝460031、成功ACK及处理事件之后的余额错误460702，并检查持久化、通知、释放、去重与不自动重试。双用户并发及重新打开状态目录后的下一轮，检查身份、稳定ConversationId、独立RequestId与通知关联。运行以下命令即可，不读取真实配置、不请求ADP或企业微信：
 
@@ -331,16 +331,20 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/hold
 
 本次两轮之间退出并重新启动网关进程：YNND从“我想改密码”到“windows”，实际回答从追问系统转为Windows密码修改指引；同时SIYU的“windows”被独立理解为一般Windows问题，后续BitLocker问题亦得到对应回复。已逐条阅读实际回答并核对两用户身份及会话标识，未以关键词匹配代替语义验证。完整回复、请求标识、状态和报告仅保留在本机忽略的`runtime/real-adp-validation-20261108-105520-95364d/`，共享样本只保留协议投影和请求标识哈希。出现专属模型余额错误460702后停止100用户批次，因此100用户真实容量未验证；需先由应用管理员核查模型余额和配置，不能靠重试解决。未修改平台提示词或模型配置，通知全部SEND_SIMULATED，未向真实员工发送消息。
 
-**查看JSON和JSONL**：消息事实源为配置目录下`runtime/messages/*.json`，使用`--inspect-state`共享读取；不要持有普通读取句柄轮询活动快照。日志在该配置的`logs/`，由[src/core/events.py](../../src/core/events.py)按[docs/wecom-integration/02_结构化日志事件.md](../wecom-integration/02_结构化日志事件.md)输出。可在消息完成后查看：
+**查看消息状态与统一普通日志**：消息事实源仍是配置目录下 `runtime/messages/*.json`，可使用 `--inspect-state` 共享读取。业务事件与诊断现在都写到配置指定的 `[logging].log_file`（例如 `logs/adp_chat.log`），**不再生成独立 `events-*.jsonl`**。旧版本遗留的 JSONL 不自动删除。
 
 ```powershell
-Get-ChildItem runtime/wecom-local/logs/events-*.jsonl |
-  ForEach-Object { Get-Content -LiteralPath $_.FullName -Encoding utf8 } |
-  ForEach-Object { try { $_ | ConvertFrom-Json } catch { Write-Warning '遇到不完整或损坏日志行，保留原文件核查' } } |
+# 人工排障：查看完整诊断和事件记录（路径以实际测试配置为准）。
+Get-Content runtime/wecom-local/logs/adp_chat.log -Tail 100 -Encoding utf8
+
+# 提取结构化业务事件；只解析有固定标记的行，不正则解析自由文本。
+Get-Content runtime/wecom-local/logs/adp_chat.log -Encoding utf8 |
+  Where-Object { $_.Contains('gateway_event ') } |
+  ForEach-Object { ($_ -split 'gateway_event ', 2)[1] | ConvertFrom-Json } |
   Select-Object timestamp,event,message_key,conversation_id,request_id,status,error_code,outcome_uncertain
 ```
 
-按同一message_key关联入站、ADP、保存/释放和独立发送。默认无员工原文/问答/密钥，`environment=test`，发送/恢复source单独标识。JSONL复用log_enabled/log_level、log_file父目录及log_max_bytes；events_retention_days默认14。新进程、日期/大小变化和短写后新开段，不拼接旧末尾半行；机器采集须按字节隔离未换行末行，完整JSON行解析失败报警。日志失败安全ERROR告警并累计进程内failed_writes，不能驱动业务重试；JSON状态保存失败则阻止成功ACK。
+轮转文件也可能包含历史事件，查询完整时间范围需同时读取 `adp_chat.log.1` 等备份。统一日志仍由 `log_max_bytes` 和 `log_backup_count` 控制；原 `events_retention_days` 暂保留为兼容配置，但不再控制文本日志轮转或清理。未来 Cosmos DB 采集器必须处理轮转、未完成尾行、断点、幂等和积压保留；当前没有采集器。日志写失败仅作安全告警/计数，不改变业务 ACK 或重试判断，消息快照写入失败则仍必须阻止成功 ACK。完整契约见 [docs/wecom-integration/02_统一日志与采集预留.md](../wecom-integration/02_统一日志与采集预留.md)。
 
 **命令行与PyCharm**：命令行使用上述同一模块/解释器即可启动和排障。本轮未操作PyCharm GUI，不把配置说明当作GUI实测证据。需要用户自行调试时，新建Python运行配置：解释器`.venv/Scripts/python.exe`，模块`uvicorn`，参数`api.app:app --host 127.0.0.1 --port 8000 --workers 1`，工作目录为仓库根，环境变量`ADP_CONFIG_FILE`填上述测试TOML的绝对路径。先在另一终端启动Fake。可在[src/api/wecom_routes.py](../../src/api/wecom_routes.py)、[src/application/wecom_worker.py](../../src/application/wecom_worker.py)和[src/wecom/sender.py](../../src/wecom/sender.py)设置断点。暂停事件循环可能超过回调ACK窗口，使用独立MsgId并读快照核查；断点恢复后不盲重发未知请求。不启多worker或同时用Docker读写该目录。
 
@@ -482,7 +486,7 @@ ADP继续使用已有`adp.app_key`和正式`wecom.adp_url`；先核查真实测�
 
 第二条仅使用 Fake ADP，不访问真实腾讯 ADP 或企业微信；本轮在与服务器相同的既有镜像内实际执行了该脚本的 100 用户模式。Docker 完整测试方式沿用1.10，不为 F 新建第二套配置来源。真实 QPS 错误 `460031` 已被现有离线 Fixture 覆盖，普通回归无需真实 API。公网错误验证没有发送合法单用户聊天输入。
 
-本机 Docker Desktop 的 Windows bind 目录在并发替换时出现过读取异常：100 用户 Probe 的观察器曾退出 1，原批次 100 条请求/模拟通知随后经静态快照与 JSONL 核对闭合；没有重发。单独文件系统实验仅在 bind 目录复现读取错误，Linux `/tmp` 对照正常，具体 errno 与原 FileNotFoundError 不同，不能断言完全相同根因。读取观察失败应保留原请求标识并核查原状态，不能为了让测试通过而重投 ADP、改快照或放宽业务断言；该结果也不代表目标服务器文件系统已被大并发压测。
+本机 Docker Desktop 的 Windows bind 目录在并发替换时出现过读取异常：100 用户 Probe 的观察器曾退出 1，原批次 100 条请求/模拟通知曾经由当时的静态快照与 JSONL 核对闭合（历史证据）；没有重发。单独文件系统实验仅在 bind 目录复现读取错误，Linux `/tmp` 对照正常，具体 errno 与原 FileNotFoundError 不同，不能断言完全相同根因。读取观察失败应保留原请求标识并核查原状态，不能为了让测试通过而重投 ADP、改快照或放宽业务断言；该结果也不代表目标服务器文件系统已被大并发压测。
 
 **后续迁移Ubuntu。** 停止旧实例并取得一致的配置/runtime快照后，迁移实际配置、完整生产消息状态和必要日志；保持企业/应用标识、固定`adp_application`及目录映射语义。核对Ubuntu的CPU架构、Docker、目录权限和网络，再启动唯一新实例。入口或出口改变时分别更新回调URL和可信IP并重新验收；旧新实例不能同时处理同一应用。回退同样先停新实例，保留UNKNOWN与发送状态，不能盲目重投已武装请求。
 

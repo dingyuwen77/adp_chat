@@ -14,7 +14,7 @@
 
 1. [docs/adp-chat/02_Docker部署与运维.md](adp-chat/02_Docker部署与运维.md)：本地 Python/PyCharm、模拟联调、服务器部署、跨机调用、升级、回滚及排障。篇幅较长，按文内章节跳转，不必从头顺读。
 2. [examples/http_client.py](../examples/http_client.py) 与 [examples/http_client.ps1](../examples/http_client.ps1)：HTTP 调用示例。
-3. [docs/wecom-integration/02_结构化日志事件.md](wecom-integration/02_结构化日志事件.md)：JSONL 诊断日志、脱敏、轮转、保留与未来 Cosmos DB 边界。
+3. [docs/wecom-integration/02_统一日志与采集预留.md](wecom-integration/02_统一日志与采集预留.md)：统一普通文本日志、事件字段、脱敏、轮转及未来 Cosmos DB 采集边界。
 
 ### 继续企业微信集成
 
