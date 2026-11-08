@@ -144,6 +144,19 @@ class _Formatter(logging.Formatter):
             "message": message,
             "kind": "diagnostic",
         }
+        # 已有诊断调用使用 key=value；在生成时提取安全、稳定的查询字段，
+        # 后续采集器不需要解析自由正文。用户问题/回答预览一律不参与提取。
+        metadata_prefix = message.split(" question=", 1)[0].split(" answer_preview=", 1)[0]
+        for key in ("request_id", "conversation_id", "message_key", "error_code",
+                    "provider_code", "provider_request_id", "provider_trace_id",
+                    "http_status", "stage", "code", "adp_state", "send_state"):
+            match = re.search(r"(?<!\S)" + key + r"=([A-Za-z0-9_.:-]{1,128})(?=\s|$)", metadata_prefix)
+            if match and match.group(1) not in ("None", "null"):
+                fields[key] = match.group(1)
+        for key in ("elapsed_ms", "duration_ms"):
+            match = re.search(r"(?<!\S)" + key + r"=(\d+(?:\.\d+)?)(?=\s|$)", metadata_prefix)
+            if match:
+                fields[key] = float(match.group(1))
         if message.startswith("gateway_event "):
             try:
                 event = json.loads(message[len("gateway_event "):])
