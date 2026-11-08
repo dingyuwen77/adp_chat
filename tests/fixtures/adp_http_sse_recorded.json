@@ -1,0 +1,500 @@
+{
+  "schema": "adp-http-sse-recorded/v1",
+  "recorded_on": "2026-11-08",
+  "implementation_revision": "f74be52045f149288ee01bafab4acc2cb3818c32",
+  "source": "controlled real Tencent ADP HTTPS/SSE",
+  "official_contract": "https://cloud.tencent.com/document/product/1759/129202",
+  "projection_notice": "事件顺序、状态、实际Code、ReplyMethod与可选字段形状来自本次真实响应；正文均为占位，身份/请求/记录/跟踪标识已匿名化。这里只回放协议，不把离线回放当成平台上下文或实时容量证明。",
+  "live_run_summary": {
+    "real_requests": 54,
+    "controlled_conversation_rounds": 4,
+    "pressure_users": 50,
+    "normal_answers": 18,
+    "entrance_qps_rejections_460031": 30,
+    "accepted_then_model_balance_errors_460702": 2,
+    "pressure_100_executed": false,
+    "stop_reason": "dedicated_model_balance_error_460702",
+    "automatic_retries": 0,
+    "notification_source": "simulated"
+  },
+  "cases": [
+    {
+      "id": "completed_reply_method_18",
+      "source_request_sha256": "7b0b455d889aaedf93f70b3c3a6b2b6fc95acf5bfb88b18594891b1951b817c2",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "expected_state": "ADP_SUCCEEDED",
+      "expected_provider_code": null,
+      "frames": [
+        {
+          "event": "request_ack",
+          "data": {
+            "Type": "request_ack",
+            "RequestAck": {
+              "Status": "success",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              },
+              "Messages": [
+                {
+                  "Type": "question",
+                  "Status": "success",
+                  "Contents": [
+                    {
+                      "Type": "text",
+                      "Text": "[回答正文已脱敏]"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "event": "response.created",
+          "data": {
+            "Type": "response.created",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "message.added",
+          "data": {
+            "Type": "message.added"
+          }
+        },
+        {
+          "event": "content.added",
+          "data": {
+            "Type": "content.added"
+          }
+        },
+        {
+          "event": "text.delta",
+          "data": {
+            "Type": "text.delta"
+          }
+        },
+        {
+          "event": "message.done",
+          "data": {
+            "Type": "message.done"
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "message.added",
+          "data": {
+            "Type": "message.added"
+          }
+        },
+        {
+          "event": "content.added",
+          "data": {
+            "Type": "content.added"
+          }
+        },
+        {
+          "event": "text.delta",
+          "data": {
+            "Type": "text.delta"
+          }
+        },
+        {
+          "event": "message.done",
+          "data": {
+            "Type": "message.done"
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 18
+              }
+            }
+          }
+        },
+        {
+          "event": "message.added",
+          "data": {
+            "Type": "message.added"
+          }
+        },
+        {
+          "event": "content.added",
+          "data": {
+            "Type": "content.added"
+          }
+        },
+        {
+          "event": "text.delta",
+          "data": {
+            "Type": "text.delta"
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 18
+              }
+            }
+          }
+        },
+        {
+          "event": "message.done",
+          "data": {
+            "Type": "message.done"
+          }
+        },
+        {
+          "event": "response.completed",
+          "data": {
+            "Type": "response.completed",
+            "Response": {
+              "Status": "success",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 18
+              },
+              "Messages": [
+                {
+                  "Type": "thought",
+                  "Status": "success",
+                  "Contents": [
+                    {
+                      "Type": "text",
+                      "Text": "[回答正文已脱敏]"
+                    }
+                  ]
+                },
+                {
+                  "Type": "thought",
+                  "Status": "success",
+                  "Contents": [
+                    {
+                      "Type": "text",
+                      "Text": "[回答正文已脱敏]"
+                    }
+                  ]
+                },
+                {
+                  "Type": "reply",
+                  "Status": "success",
+                  "Contents": [
+                    {
+                      "Type": "text",
+                      "Text": "[回答正文已脱敏]"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "entrance_qps_460031",
+      "source_request_sha256": "45eff19727cb14d30149b3e9da124d55929eee1cba7be69af3d522cb9e5d2bc0",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "expected_state": "ADP_REJECTED",
+      "expected_provider_code": "460031",
+      "frames": [
+        {
+          "event": "error",
+          "data": {
+            "Type": "error",
+            "Error": {
+              "Code": 460031,
+              "RequestId": "",
+              "TraceId": "fixture-provider-trace / fixture-provider-record",
+              "Message": "[厂商正文已脱敏]"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "accepted_then_model_balance_460702",
+      "source_request_sha256": "583cb012102748942f6ced700c945b5d39a73607d2a01ea19f8fe305e1e9cc0a",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "expected_state": "ADP_UNKNOWN",
+      "expected_provider_code": "460702",
+      "frames": [
+        {
+          "event": "request_ack",
+          "data": {
+            "Type": "request_ack",
+            "RequestAck": {
+              "Status": "success",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              },
+              "Messages": [
+                {
+                  "Type": "question",
+                  "Status": "success",
+                  "Contents": [
+                    {
+                      "Type": "text",
+                      "Text": "[回答正文已脱敏]"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "event": "response.created",
+          "data": {
+            "Type": "response.created",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "message.added",
+          "data": {
+            "Type": "message.added"
+          }
+        },
+        {
+          "event": "content.added",
+          "data": {
+            "Type": "content.added"
+          }
+        },
+        {
+          "event": "text.delta",
+          "data": {
+            "Type": "text.delta"
+          }
+        },
+        {
+          "event": "message.done",
+          "data": {
+            "Type": "message.done"
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "message.added",
+          "data": {
+            "Type": "message.added"
+          }
+        },
+        {
+          "event": "content.added",
+          "data": {
+            "Type": "content.added"
+          }
+        },
+        {
+          "event": "text.delta",
+          "data": {
+            "Type": "text.delta"
+          }
+        },
+        {
+          "event": "message.done",
+          "data": {
+            "Type": "message.done"
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "message.added",
+          "data": {
+            "Type": "message.added"
+          }
+        },
+        {
+          "event": "content.added",
+          "data": {
+            "Type": "content.added"
+          }
+        },
+        {
+          "event": "text.delta",
+          "data": {
+            "Type": "text.delta"
+          }
+        },
+        {
+          "event": "message.done",
+          "data": {
+            "Type": "message.done"
+          }
+        },
+        {
+          "event": "response.processing",
+          "data": {
+            "Type": "response.processing",
+            "Response": {
+              "Status": "processing",
+              "ConversationId": "{{conversation_id}}",
+              "RecordId": "fixture-provider-record",
+              "ExtraInfo": {
+                "ReplyMethod": 0
+              }
+            }
+          }
+        },
+        {
+          "event": "error",
+          "data": {
+            "Type": "error",
+            "Error": {
+              "Code": 460702,
+              "RequestId": "{{request_id}}",
+              "TraceId": "fixture-provider-trace / fixture-provider-record",
+              "Message": "[厂商正文已脱敏]"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
