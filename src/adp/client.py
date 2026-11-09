@@ -43,7 +43,7 @@ def _payload(config: ChatConfig, request_id: str, conversation_id: str, contents
         "RequestId": request_id,
         "Contents": contents,
         "Stream": "enable" if config.stream else "disable",
-        "Incremental": True,
+        "Incremental": config.stream,
     }
     optional = {
         "UserName": config.user_name,

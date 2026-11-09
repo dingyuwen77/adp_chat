@@ -121,10 +121,10 @@ data_changes: []
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | 可选URL、旧配置兼容、模板注释同步与真实值保留 | docs/wecom-integration/03_实施路线图.md#AC31 | satisfied | test_wecom_callback_url.py及实际两份TOML37项/注释同构核对 |
-| R2 | URL路径驱动GET/POST、验签存储、重启替换、保留原API | docs/wecom-integration/03_实施路线图.md#AC32 | satisfied | test_configured_callback_path_reuses_protocol_and_replaces_routes_on_restart；全171测试通过 |
-| R3 | 模拟器采用路径且保留loopback安全目标，访问日志不泄密 | docs/wecom-integration/03_实施路线图.md#AC33 | satisfied | 本地客户端内存HTTP断言；既有CallbackAccessFilter与回调日志测试 |
-| R4 | 先自行部署再后台保存，提供amd64打包命令并说明未部署 | docs/wecom-integration/03_实施路线图.md#AC34 | satisfied | 运维1.11/2.1；核对build_image.ps1参数和生成物逻辑 |
+| R1 | 可选URL、旧配置兼容、模板注释同步与真实值保留 | docs/wecom-integration/02_实施路线图.md#AC31 | satisfied | test_wecom_callback_url.py及实际两份TOML37项/注释同构核对 |
+| R2 | URL路径驱动GET/POST、验签存储、重启替换、保留原API | docs/wecom-integration/02_实施路线图.md#AC32 | satisfied | test_configured_callback_path_reuses_protocol_and_replaces_routes_on_restart；全171测试通过 |
+| R3 | 模拟器采用路径且保留loopback安全目标，访问日志不泄密 | docs/wecom-integration/02_实施路线图.md#AC33 | satisfied | 本地客户端内存HTTP断言；既有CallbackAccessFilter与回调日志测试 |
+| R4 | 先自行部署再后台保存，提供amd64打包命令并说明未部署 | docs/wecom-integration/02_实施路线图.md#AC34 | satisfied | 运维1.11/2.1；核对build_image.ps1参数和生成物逻辑 |
 
 # 计划改动
 

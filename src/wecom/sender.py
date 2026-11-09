@@ -13,6 +13,8 @@ from core.config import ChatConfig
 from core.logging import HTTPQueryFilter
 from core.models import ChatError
 from .models import is_employee_id
+from .images import ImageBudget, ImageDownloader, ImageError, MAX_REPLY_IMAGES
+from .reply_plan import ImageBlock, TextBlock, reply_plan, text_parts
 
 
 _BASE = "https://qyapi.weixin.qq.com"
@@ -36,23 +38,6 @@ def unknown_send(source="recovery", code="interrupted") -> SendOutcome:
     return SendOutcome("SEND_UNKNOWN", source, None, None, None, code)
 
 
-def text_parts(text: str) -> list[str]:
-    """按官方2048 UTF8字节边界完整切片，不拆Unicode字符或静默截断。"""
-    if not isinstance(text, str) or not text:
-        raise ValueError("empty notification")
-    parts, current, size = [], [], 0
-    for character in text:
-        length = len(character.encode("utf-8"))
-        if size + length > 2048:
-            parts.append("".join(current))
-            current, size = [], 0
-        current.append(character)
-        size += length
-    if current:
-        parts.append("".join(current))
-    return parts
-
-
 class SimulatedSender:
     """没有外部I/O的测试发送器，唯一成功状态为SEND_SIMULATED。"""
 
@@ -67,7 +52,8 @@ class SimulatedSender:
         """统一消费保存提示；不打印员工正文或构造平台接受证据。"""
         if not is_employee_id(record.get("user_id")):
             return SendOutcome("SEND_FAILED", self.source, False, 0, None, "invalid_target")
-        count = len(text_parts(record["notification"]))
+        count = sum(len(text_parts(block.text)) if isinstance(block, TextBlock) else 1
+                    for block in reply_plan(record))
         return SendOutcome("SEND_SIMULATED", self.source, None, count, count, "simulated")
 
     async def aclose(self):
@@ -98,6 +84,7 @@ class WeComSender:
             http_client = httpx.AsyncClient(transport=transport, follow_redirects=False,
                                            trust_env=False, timeout=config.send_timeout_seconds)
         self.http = http_client
+        self.images = ImageDownloader(config, http_client=None if self._owned else http_client)
         self._token = None
         self._expires = 0.0
         self._token_lock = asyncio.Lock()
@@ -107,14 +94,16 @@ class WeComSender:
     async def aclose(self):
         """保持请求期间查询脱敏，关闭自有连接后撤销本实例filter。"""
         try:
+            await self.images.aclose()
             if self._owned:
                 await self.http.aclose()
         finally:
             logging.getLogger("httpx").removeFilter(self._filter)
 
-    async def _json(self, method, path, *, params, payload=None):
+    async def _json(self, method, path, *, params, payload=None, files=None):
         """有界消费官方JSON响应；HTTP非200或畸形正文不当成功。"""
-        async with self.http.stream(method, _BASE + path, params=params, json=payload) as response:
+        async with self.http.stream(method, _BASE + path, params=params, json=payload, files=files,
+                                    follow_redirects=False) as response:
             if response.status_code != 200:
                 raise _ProtocolError("http_error")
             body = bytearray()
@@ -126,6 +115,10 @@ class WeComSender:
                 data = json.loads(body)
             except (ValueError, UnicodeError):
                 raise _ProtocolError("invalid_response") from None
+            # 官方素材成功响应可仅含 type/media_id/created_at，错误才保证 errcode。
+            if isinstance(data, dict) and path == "/cgi-bin/media/upload" and "errcode" not in data:
+                if data.get("type") == "image" and isinstance(data.get("media_id"), str) and data["media_id"]:
+                    data["errcode"] = 0
             if not isinstance(data, dict) or type(data.get("errcode")) is not int:
                 raise _ProtocolError("invalid_response")
             return data
@@ -149,47 +142,95 @@ class WeComSender:
             self._expires = monotonic() + seconds - min(30, seconds / 10)
             return token
 
+    async def _prepare_image(self, block, budget):
+        """素材准备不提交用户消息；失败可以降级，Token明确过期仅纠正一次。"""
+        async with self.images.slots:
+            body, mime = await self.images.download(block.url, budget)
+            try:
+                token = await self._access_token()
+                for correction in range(2):
+                    if isinstance(token, tuple):
+                        raise ImageError("image_token_rejected")
+                    data = await self._json("POST", "/cgi-bin/media/upload",
+                        params={"access_token": token, "type": "image"},
+                        files={"media": ("image.png" if mime == "image/png" else "image.jpg", body, mime)})
+                    if data["errcode"] in {40014, 42001} and correction == 0:
+                        token = await self._access_token(rejected_token=token)
+                        continue
+                    media_id = data.get("media_id")
+                    if (data["errcode"] != 0 or not isinstance(media_id, str) or not media_id
+                            or len(media_id) > 1024 or any(ord(c) < 32 for c in media_id)):
+                        raise ImageError("image_upload_rejected")
+                    return media_id
+            finally:
+                # 不缓存二进制或 media_id；上传请求退出后释放本图片内存引用。
+                del body
+
     async def send(self, record: dict) -> SendOutcome:
         """仅Token明确失效允许一次纠正；其他发送失败/未知没有自动重发。"""
         accepted, total, uncertain, last_code = 0, None, False, None
         if not is_employee_id(record.get("user_id")):
             return SendOutcome("SEND_FAILED", self.source, False, 0, None, "invalid_target")
         try:
-            parts = text_parts(record["notification"])
-            total = len(parts)
-            async with asyncio.timeout(self.config.send_timeout_seconds):
-                for part in parts:
-                    token = await self._access_token()
-                    if isinstance(token, tuple):
-                        return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
-                    for correction in range(2):
-                        uncertain, last_code = True, None
-                        data = await self._json("POST", "/cgi-bin/message/send", params={"access_token": token},
-                            payload={"touser": record["user_id"], "msgtype": "text", "agentid": self.config.agent_id,
-                                     "text": {"content": part}, "safe": 0, "enable_id_trans": 0, "enable_duplicate_check": 0})
-                        code = data["errcode"]
-                        if code != 0:
-                            uncertain, last_code = False, code
-                        if code in {40014, 42001} and correction == 0:
-                            token = await self._access_token(rejected_token=token)
-                            if isinstance(token, tuple):
-                                return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
-                            continue
-                        if code != 0:
-                            return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "wecom_error", code)
-                        for field in ("invaliduser", "unlicenseduser"):
-                            if field in data and not isinstance(data[field], str):
-                                raise _ProtocolError("invalid_response")
-                            values = data.get(field, "").split("|")
-                            if any(value and not is_employee_id(value) for value in values):
-                                raise _ProtocolError("invalid_response")
-                            if record["user_id"].casefold() in {value.casefold() for value in values}:
-                                return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "invalid_user", 0)
-                        accepted += 1
-                        uncertain = False
-                        break
+            blocks = reply_plan(record)
+            total = sum(len(text_parts(block.text)) if isinstance(block, TextBlock) else 1 for block in blocks)
+            send_remaining = self.config.send_timeout_seconds
+            prepare_remaining = self.config.image_prepare_timeout_seconds
+            budget, image_count, degraded = ImageBudget(), 0, False
+            for block in blocks:
+                if isinstance(block, ImageBlock):
+                    started = monotonic()
+                    try:
+                        image_count += 1
+                        if image_count > MAX_REPLY_IMAGES or prepare_remaining <= 0:
+                            raise ImageError("image_resource_limit")
+                        async with asyncio.timeout(min(10, prepare_remaining)):
+                            media_id = await self._prepare_image(block, budget)
+                        messages = [("image", {"media_id": media_id})]
+                    except (TimeoutError, httpx.HTTPError, OSError, _ProtocolError, ValueError):
+                        degraded = True
+                        messages = [("text", {"content": part}) for part in text_parts(block.fallback())]
+                        total += len(messages) - 1
+                    finally:
+                        prepare_remaining -= monotonic() - started
+                else:
+                    messages = [("text", {"content": part}) for part in text_parts(block.text)]
+                started = monotonic()
+                async with asyncio.timeout(send_remaining):
+                    for msgtype, content in messages:
+                        token = await self._access_token()
+                        if isinstance(token, tuple):
+                            return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
+                        for correction in range(2):
+                            uncertain, last_code = True, None
+                            data = await self._json("POST", "/cgi-bin/message/send", params={"access_token": token},
+                                payload={"touser": record["user_id"], "msgtype": msgtype, "agentid": self.config.agent_id,
+                                         msgtype: content, "safe": 0, "enable_id_trans": 0, "enable_duplicate_check": 0})
+                            code = data["errcode"]
+                            if code != 0:
+                                uncertain, last_code = False, code
+                            if code in {40014, 42001} and correction == 0:
+                                token = await self._access_token(rejected_token=token)
+                                if isinstance(token, tuple):
+                                    return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
+                                continue
+                            if code != 0:
+                                return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "wecom_error", code)
+                            for field in ("invaliduser", "unlicenseduser"):
+                                if field in data and not isinstance(data[field], str):
+                                    raise _ProtocolError("invalid_response")
+                                values = data.get(field, "").split("|")
+                                if any(value and not is_employee_id(value) for value in values):
+                                    raise _ProtocolError("invalid_response")
+                                if record["user_id"].casefold() in {value.casefold() for value in values}:
+                                    return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "invalid_user", 0)
+                            accepted += 1
+                            uncertain = False
+                            break
+                send_remaining -= monotonic() - started
             state = "SEND_ACCEPTED" if self.source == "wecom_api" else "SEND_SIMULATED"
-            return SendOutcome(state, self.source, True, accepted, total, "accepted")
+            return SendOutcome(state, self.source, True, accepted, total,
+                               "accepted_with_image_fallback" if degraded else "accepted")
         except (TimeoutError, httpx.HTTPError, OSError, _ProtocolError, ValueError):
             # Token阶段从未提交消息时可证明没有发送；提交后的传输/协议问题均保守未知。
             return SendOutcome("SEND_UNKNOWN" if uncertain else "SEND_FAILED", self.source, None,

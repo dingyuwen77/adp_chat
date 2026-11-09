@@ -4,6 +4,7 @@ import asyncio
 from time import perf_counter
 from dataclasses import asdict
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from adp.async_client import unknown_outcome
 from core.models import ChatError
@@ -20,6 +21,8 @@ class GatewayWorker:
         self.events = gateway.events
         self.tasks = {}
         self.send_tasks = {}
+        # 等待者持有强引用；员工无在途通知后自动释放锁，避免长期员工字典增长。
+        self._send_locks = WeakValueDictionary()
         self.sender = sender
         self.failure = None
         self._event = asyncio.Event()
@@ -129,6 +132,16 @@ class GatewayWorker:
         return saved
 
     async def _execute_notification(self, record):
+        """完整通知按员工互斥；等待时保持 PENDING，不占用 ADP 会话或发送超时。"""
+        user = record["user_id"].casefold()
+        lock = self._send_locks.get(user)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[user] = lock
+        async with lock:
+            await self._send_notification_locked(record)
+
+    async def _send_notification_locked(self, record):
         """通知武装先落盘，Token/消息网络或取消未知均不调用ADP或派生新通知。"""
         armed = None
         try:

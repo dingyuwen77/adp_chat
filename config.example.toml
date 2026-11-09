@@ -15,6 +15,7 @@ user_name = "本地API测试"
 [chat]
 # ADP 文本输出开关：false 非流式（默认），true 流式；两种模式都使用 SSE。
 # 仅控制上游 ADP；main/CLI/FastAPI 仍等待本轮完成后一次输出正式结果。
+# Incremental 与 stream 同值；本地 main/CLI 不下载、打开或渲染图片。
 stream = false
 # 单轮读取超时，单位秒，必须为正数；超时不会自动重试。
 chat_timeout_seconds = 180
@@ -70,8 +71,14 @@ gateway_environment = "test"
 # 自建应用详情页的Secret，填在实际配置；A～E保持空值，不提交Git。
 # access_token由发送器用CorpID和本Secret自动获取、缓存，无须手工增加配置项。
 wecom_app_secret = ""
-# 一次通知的总超时（含Token与全部文字分片），不影响ADP用户占用。
+# 一次通知的发送预算（Token与全部文字/图片消息）；图片准备另计，不影响ADP占用。
 send_timeout_seconds = 15
+# 图片下载仅允许这些完整可信域名；默认仅ADP短链域名，不支持通配符，[]禁用下载。
+# 如短链跳转到可信CDN，须显式加入其完整域名；每一跳均校验公网IP并固定连接。
+image_allowed_hosts = ["lke.cloud.tencent.com"]
+# 整条回复累计图片准备预算（下载、上传、等候共享名额），秒；每张至多10秒。
+# 固定资源上限：每张10MiB、每回复20MiB/8张、全局4张同时准备；全程内存处理。
+image_prepare_timeout_seconds = 30
 
 [logging]
 # true 写本地日志；false 不创建日志。问答可能含业务信息，请按需关闭。
