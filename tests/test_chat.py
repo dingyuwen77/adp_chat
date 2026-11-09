@@ -77,7 +77,7 @@ class ChatTests(unittest.TestCase):
             json.loads(call.args[0].data) for call in transport.call_args_list
         ]
         self.assertEqual([first_request["Stream"], second_request["Stream"]], ["disable", "enable"])
-        self.assertIs(first_request["Incremental"], True)
+        self.assertIs(first_request["Incremental"], False)
         self.assertIs(second_request["Incremental"], True)
         self.assertEqual(second_request["StreamingThrottle"], 20)
         self.assertEqual(first.text, "完整回答")

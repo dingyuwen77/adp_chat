@@ -231,13 +231,16 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
         worker = GatewayWorker(self.gateway, ADP(), sender=Sender())
         await worker.start()
         try:
-            await self.wait_for(lambda: len(notices) == 3)
+            await self.wait_for(lambda: len(notices) == 2
+                                and self.gateway.store.get(first["message_key"])["adp_state"] == "ADP_SUCCEEDED")
             self.assertEqual(self.receive(msg="4")["adp_state"], "RECEIVED")
+            await self.wait_for(lambda: len(adp_calls) == 3)
+            self.assertEqual(len(notices), 2)
+            release.set()
             await self.wait_for(lambda: len(notices) == 4)
             self.assertEqual(set((user, kind) for user, kind, _ in notices), {
                 ("YNND", "USER_BUSY"), ("YNND", "ADP_SUCCEEDED"), ("SIYU", "ADP_REJECTED"), ("YNND", "ADP_UNKNOWN")})
             self.assertEqual(len(adp_calls), 3)
-            release.set()
             await self.wait_for(lambda: self.gateway.store.get(first["message_key"])["send_state"] == "SEND_SIMULATED")
             self.assertEqual(self.gateway.store.get(busy["message_key"])["adp_state"], "REJECTED_USER_BUSY")
             self.assertEqual(self.gateway.store.get(third["message_key"])["adp_state"], "ADP_REJECTED")
@@ -541,6 +544,55 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(sender.http.follow_redirects)
             self.assertFalse(sender.http.trust_env)
             await sender.aclose()
+
+    async def test_same_employee_notifications_do_not_interleave_and_other_employee_progresses(self):
+        """屏障保持首条回复未结束；同员工第二条须等待，另一员工仍可完成。"""
+        class ADP:
+            """使用正式 Worker 保存可发送结果，释放员工的 ADP 占用。"""
+
+            async def request(inner, record):
+                """不调用真实供应方。"""
+                result = ChatResult("有序回答", record["conversation_id"], record["request_id"])
+                return ADPOutcome("ADP_SUCCEEDED", result.text, result=result)
+
+        preparing = GatewayWorker(self.gateway, ADP())
+        first = self.receive(msg="1001")
+        await preparing._execute(first)
+        second = self.receive(msg="1002")
+        await preparing._execute(second)
+        other = self.receive("SIYU", "1003")
+        await preparing._execute(other)
+        records = [self.gateway.store.get(r["message_key"]) for r in (first, second, other)]
+        entered, release, other_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        order = []
+
+        class Sender(SimulatedSender):
+            """通过可控调度观察完整通知的开始与结束。"""
+
+            async def send(inner, record):
+                """首条挂起直到另一员工完成，禁止同员工插队。"""
+                order.append((record["msg_id"], "start"))
+                if record["msg_id"] == "1001":
+                    entered.set()
+                    await release.wait()
+                result = await super().send(record)
+                order.append((record["msg_id"], "end"))
+                if record["msg_id"] == "1003":
+                    other_done.set()
+                return result
+
+        worker = GatewayWorker(self.gateway, ADP(), sender=Sender(self.config))
+        tasks = [asyncio.create_task(worker._execute_notification(records[0]))]
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            tasks.extend(asyncio.create_task(worker._execute_notification(r)) for r in records[1:])
+            await asyncio.wait_for(other_done.wait(), 2)
+            self.assertNotIn(("1002", "start"), order)
+            self.assertEqual(self.gateway.store.get(second["message_key"])["send_state"], "PENDING")
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+        self.assertLess(order.index(("1001", "end")), order.index(("1002", "start")))
 
     async def test_reserved_or_multiple_targets_never_reach_http(self):
         """单员工契约禁止@all/多人列表，连Token请求也不应发出。"""

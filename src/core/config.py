@@ -54,6 +54,8 @@ class ChatConfig:
     gateway_environment: str = "test"
     wecom_app_secret: str = field(default="", repr=False)
     send_timeout_seconds: float = 15
+    image_allowed_hosts: list[str] = field(default_factory=lambda: ["lke.cloud.tencent.com"])
+    image_prepare_timeout_seconds: float = 30
     callback_url: str = ""
 
     def __post_init__(self) -> None:
@@ -138,6 +140,12 @@ class ChatConfig:
                 or (self.notification_mode == "simulated" and self.gateway_environment != "test")
                 or not 0 < self.send_timeout_seconds <= TIMEOUT_MAX):
             raise ChatError("config", "invalid_notification", "通知模式、环境或超时配置无效。")
+        if (not 0 < self.image_prepare_timeout_seconds <= 300
+                or len(self.image_allowed_hosts) > 32
+                or any(not isinstance(host, str) or len(host) > 253
+                       or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", host) is None
+                       for host in self.image_allowed_hosts)):
+            raise ChatError("config", "invalid_image_limits", "图片须配置明确可信的完整域名和有效准备超时；空列表禁用下载。")
 
     @property
     def callback_path(self) -> str:
@@ -162,6 +170,7 @@ _SECTIONS = {
         "adp_url": str, "adp_response_max_bytes": int,
         "notification_mode": str, "gateway_environment": str, "wecom_app_secret": str,
         "send_timeout_seconds": (int, float),
+        "image_allowed_hosts": list, "image_prepare_timeout_seconds": (int, float),
     },
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,

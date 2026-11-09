@@ -94,7 +94,7 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 ## 服务行为和限制
 
 - `POST /api/v1/chat` 请求为 `{"message":"你好"}`，响应包括 `text`、`conversation_id`、`request_id`、`record_id`、`reply_method` 和 `reply_contents`；接口只在 `response.completed` 成功后一次性返回完整 JSON。
-- `[chat].stream` 控制上游 ADP 文本输出：默认 `false` 为非流式，`true` 为流式。修改后重启对应进程；main、CLI 和 FastAPI 都继续等待完整正式结果。当前配置与升级说明见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md)。
+- `[chat].stream` 控制上游 ADP 文本输出及 `Incremental`：默认 `false` 对应 `disable/false`，`true` 对应 `enable/true`。修改后重启对应进程；main、CLI 和 FastAPI 都继续等待完整正式结果。本地入口打印文字和原始内容，不下载或显示图片。
 - `GET /healthz` 是轻量健康检查，不调用腾讯 ADP；FastAPI 的交互文档默认在 `/docs`。
 - `runtime/session.json` 维持固定 UserId/AppKey 的单个 ConversationId；容器重建不应丢失该文件。三种模式不能**同时**操作同一份会话数据。
 - 原单用户 API 使用一把进程内互斥锁；单实例单 worker，同一时刻只能处理一个 ADP 请求，忙碌的第二条消息立即返回 HTTP **409**。不支持多用户、多会话、上传、队列或自动重试。
@@ -103,11 +103,13 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 正式对话入口在 [src/adp/client.py](src/adp/client.py)，服务编排在 [src/application/chat_service.py](src/application/chat_service.py)，HTTP 入口在 [src/api/routes.py](src/api/routes.py)，本地 CLI 在 [src/cli/runner.py](src/cli/runner.py)。
 
-## 企业微信网关（A～E已交付，F真实联调中）
+## 企业微信网关（A～E已交付，F客户端已验收）
 
 已有多员工身份、加密回调、可靠接收和真正异步 ADP 转发/状态恢复，操作见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#18-异步-adp与恢复阶段-c)。旧单用户接口保持原行为；启用网关后会调用配置的ADP，默认正式HTTPS，测试请使用文档的隔离Fake配置。通知默认disabled；本地显式simulated后走统一发送/恢复，只产生SEND_SIMULATED。正式企微发送适配器已用Fake HTTP核验，真实发送留F。网关JSONL已实现，本机50/100员工Fake压力、真实ADP跨进程两轮和Docker完整链路有直接证据；E交付状态见 [docs/wecom-integration/02_实施路线图.md](docs/wecom-integration/02_实施路线图.md)。完整Windows/命令行/可选PyCharm与Docker说明见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#110-ae完整本地链路jsonl与docker)，F 已有单员工真实回调与收发证据，但完整验收尚未关闭。
 
 同员工忙碌立即拒绝、不排队；重复MsgId不重复执行/通知。不同员工不设人为模型并发限额。ADP零自动重试，UNKNOWN可靠保存提示并释放本地占用，旧云端请求可能仍在执行。**A～E的本地协议模拟和ADP测试不代表企业微信真实收发成功。**
+
+企业微信回复按正式答案的原始顺序发送文字与原生图片；长文字按 2048 UTF-8 字节分段并保护链接，不添加技术编号。同员工的完整通知串行发送，图片仅在内存准备，失败在原位置以链接降级；已提交消息后结果未知不自动重发。配置、资源限制和验收边界见 [docs/wecom-integration/01_网关架构设计.md](docs/wecom-integration/01_网关架构设计.md#有序图文回复)。用户于 2026-11-09 确认既有 F 客户端验收通过；本次新增图文显示尚需部署后客户端验收，公网旧 API 访问控制单独核验。
 
 ## 测试
 
