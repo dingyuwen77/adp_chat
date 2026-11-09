@@ -235,6 +235,19 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(ImageError):
                         await downloader.download("https://lke.cloud.tencent.com/a", ImageBudget(32))
 
+    async def test_image_request_does_not_forward_cookie_jar(self):
+        """按IP连接时不能将连接池Cookie带到同IP托管的其他图片域名。"""
+        def handle(request):
+            """共享IP的旧Cookie不能进入图片GET。"""
+            self.assertNotIn("private-image-cookie", request.headers.get("cookie", ""))
+            return httpx.Response(200, headers={"Content-Type": "image/png"}, stream=httpx.ByteStream(PNG))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            http.cookies.set("image", "private-image-cookie", domain="8.8.8.8")
+            downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
+            with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
+                self.assertEqual((await downloader.download("https://lke.cloud.tencent.com/a", ImageBudget()))[0], PNG)
+
     async def test_config_rejects_wildcards_invalid_types_and_unbounded_timeout(self):
         """配置只接受明确主机，空列表是禁用下载的安全选项。"""
         from core.models import ChatError

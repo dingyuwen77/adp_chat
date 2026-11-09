@@ -26,6 +26,15 @@ class ReplyPlanTests(unittest.TestCase):
         text = r"\![示意](https://lke.cloud.tencent.com/a.png)" + "\n`![代码](https://lke.cloud.tencent.com/b.png)`"
         self.assertEqual(reply_plan({"notification": text}), [TextBlock(text)])
 
+    def test_image_destination_whitespace_title_and_code_fences(self):
+        """合法留白/title不留下多余括号，围栏中的Markdown示例保持原文。"""
+        url = "https://lke.cloud.tencent.com/a.png"
+        for syntax in (f'![x]( {url}  )', f'![x](<{url}> "标题")', f'![x]({url} "标题")'):
+            self.assertEqual(reply_plan({"notification": "前" + syntax + "后"}),
+                             [TextBlock("前"), ImageBlock(url, "x"), TextBlock("后")])
+        code = f"```markdown\n![x]({url})\n```\n"
+        self.assertEqual(reply_plan({"notification": code}), [TextBlock(code)])
+
     def test_paragraph_and_url_boundaries_preserve_all_bytes(self):
         """正常链接整体移到下一气泡，重组与原文完全一致。"""
         url = "https://adp.cloud.tencent.com/preview?" + "x" * 300
@@ -51,21 +60,25 @@ class ReplyPlanTests(unittest.TestCase):
         self.assertTrue(rendered.endswith(")。服务台联系方式"))
 
     def test_many_unclosed_image_openers_have_linear_character_reads(self):
-        """畸形 Markdown 不能反复扫描同一尾部而阻塞共享事件循环。"""
+        """未闭合及嵌套但无效的目的地都不能反复扫描或复制相同尾部。"""
         class CountedText(str):
             """计数直接逐字符访问，稳定捕捉二次方尾部重扫而不依赖机器速度。"""
 
             reads = 0
 
             def __getitem__(inner, index):
-                """切片不计入逐字符扫描量。"""
+                """计入逐字符读取及切片复制长度，不依赖机器速度。"""
                 if isinstance(index, int):
                     inner.reads += 1
+                elif isinstance(index, slice):
+                    start, end, step = index.indices(len(inner))
+                    inner.reads += len(range(start, end, step))
                 return super().__getitem__(index)
 
-        text = CountedText("![x](" * 500)
-        self.assertEqual(reply_plan({"notification": text}), [TextBlock(text)])
-        self.assertLessEqual(text.reads, len(text) * 10)
+        for sample in ("![x](" * 500, "![x]( " * 500 + ")" * 500):
+            text = CountedText(sample)
+            self.assertEqual(reply_plan({"notification": text}), [TextBlock(text)])
+            self.assertLessEqual(text.reads, len(text) * 10)
 
     def test_unknown_reply_uses_saved_notice_and_unsupported_is_visible(self):
         """未知结果只通知风险，正式不支持的媒体在原位置有说明。"""

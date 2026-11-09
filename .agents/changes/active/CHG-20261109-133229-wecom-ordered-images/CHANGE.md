@@ -10,11 +10,24 @@ created: 2026-11-09
 updated: 2026-11-09T13:54:53+08:00
 completion_gate: required
 depends_on: []
-affected_areas: [adp, wecom, configuration, docs]
+affected_areas:
+  - "adp"
   - "wecom"
-affected_paths: [src/adp/client.py, src/wecom, src/application/wecom_worker.py, src/core/config.py, tests, config.example.toml, README.md, docs/wecom-integration, docs/adp-chat/02_Docker部署与运维.md]
+  - "configuration"
+  - "docs"
+affected_paths:
+  - "src/adp/client.py"
   - "src/wecom"
-contracts: [企业微信应用消息与临时素材, wecom配置]
+  - "src/application/wecom_worker.py"
+  - "src/core/config.py"
+  - "tests"
+  - "config.example.toml"
+  - "README.md"
+  - "docs/wecom-integration"
+  - "docs/adp-chat/02_Docker部署与运维.md"
+contracts:
+  - "企业微信应用消息与临时素材"
+  - "wecom配置"
 data_changes: []
 ---
 

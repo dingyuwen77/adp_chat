@@ -1,7 +1,7 @@
 """只规划企业微信输出；保留正式 reply 顺序，不改变 ADP/API/终端内容。"""
 
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
 
@@ -145,6 +145,8 @@ def _markdown(text: str) -> list[TextBlock | ImageBlock]:
     blocks, cursor, code_index = [], 0, 0
     codes = _code_ranges(text)
     matches = list(_IMAGE.finditer(text))
+    spaces = [i for i, char in enumerate(text) if char.isspace()]
+    angles = [i for i, char in enumerate(text) if char == ">"]
     candidates = {m.end() - 1 for m in matches}
     stack, closing, escaped = [], {}, False
     # 只扫描一次括号关系；每个坏的图片开头不能重新读取整段尾部。
@@ -166,18 +168,37 @@ def _markdown(text: str) -> list[TextBlock | ImageBlock]:
         end = closing.get(match.end() - 1)
         if end is None:
             continue
-        destination = text[match.end():end].strip()
-        # CommonMark 的 <URL> 及可选 title；管道等查询参数不得按分隔符截断。
-        if destination.startswith("<") and ">" in destination:
-            destination = destination[1:destination.index(">")]
-        else:
-            destination = re.split(r'\s+["\']', destination, maxsplit=1)[0]
-        if not destination or any(c.isspace() for c in destination):
+        syntax_end = end + 1
+        start = match.end()
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        if start == end:
             continue
+        space_index = bisect_left(spaces, start)
+        first_space = spaces[space_index] if space_index < len(spaces) else len(text)
+        # CommonMark 的 <URL> 及可选 title；管道等查询参数不得按分隔符截断。
+        if text[start] == "<":
+            angle_index = bisect_left(angles, start)
+            if angle_index == len(angles) or angles[angle_index] >= end:
+                continue
+            url_start, url_end = start + 1, angles[angle_index]
+        else:
+            url_start, url_end = start, min(first_space, end)
+            title = url_end
+            while title < end and text[title].isspace():
+                title += 1
+            if title < end and text[title] not in "\"'":
+                continue
+        # 先用索引判断无效嵌套目的地，再复制；不能为每个候选复制同一长后缀。
+        if url_start == url_end or first_space < url_end:
+            continue
+        destination = text[url_start:url_end]
         if match.start() > cursor:
             blocks.append(TextBlock(text[cursor:match.start()]))
         blocks.append(ImageBlock(destination, match.group(1)))
-        cursor = end + 1
+        cursor = syntax_end
     if cursor < len(text):
         blocks.append(TextBlock(text[cursor:]))
     return blocks

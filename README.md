@@ -105,7 +105,7 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 ## 企业微信网关（A～E已交付，F客户端已验收）
 
-已有多员工身份、加密回调、可靠接收和真正异步 ADP 转发/状态恢复，操作见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#18-异步-adp与恢复阶段-c)。旧单用户接口保持原行为；启用网关后会调用配置的ADP，默认正式HTTPS，测试请使用文档的隔离Fake配置。通知默认disabled；本地显式simulated后走统一发送/恢复，只产生SEND_SIMULATED。正式企微发送适配器已用Fake HTTP核验，真实发送留F。网关JSONL已实现，本机50/100员工Fake压力、真实ADP跨进程两轮和Docker完整链路有直接证据；E交付状态见 [docs/wecom-integration/02_实施路线图.md](docs/wecom-integration/02_实施路线图.md)。完整Windows/命令行/可选PyCharm与Docker说明见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#110-ae完整本地链路jsonl与docker)，F 已有单员工真实回调与收发证据，但完整验收尚未关闭。
+已有多员工身份、加密回调、可靠接收和真正异步 ADP 转发/状态恢复，操作见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#18-异步-adp与恢复阶段-c)。旧单用户接口保持原行为；启用网关后会调用配置的ADP，默认正式HTTPS，测试请使用文档的隔离Fake配置。通知默认disabled；本地显式simulated后走统一发送/恢复，只产生SEND_SIMULATED。正式企微发送已有真实收发证据，用户已确认既有F客户端验收通过；故障分类仍需区分Fake与真实证据。当前日志共用普通文本文件，本机50/100员工Fake压力、真实ADP跨进程两轮和Docker完整链路有直接证据；E交付状态见 [docs/wecom-integration/02_实施路线图.md](docs/wecom-integration/02_实施路线图.md)。完整Windows/命令行/可选PyCharm与Docker说明见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#110-ae完整本地链路jsonl与docker)；新增图文与公网访问控制的验证边界独立记录。
 
 同员工忙碌立即拒绝、不排队；重复MsgId不重复执行/通知。不同员工不设人为模型并发限额。ADP零自动重试，UNKNOWN可靠保存提示并释放本地占用，旧云端请求可能仍在执行。**A～E的本地协议模拟和ADP测试不代表企业微信真实收发成功。**
 

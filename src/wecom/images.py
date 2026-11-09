@@ -73,7 +73,8 @@ class ImageDownloader:
             ip = await resolve_public(host)
             # URL 连接到已核验 IP；Host 与 TLS SNI/证书仍使用原域名。
             pinned = httpx.URL(url).copy_with(host=ip)
-            async with self.http.stream("GET", pinned, headers={"Host": host, "Accept-Encoding": "identity"},
+            # 空Cookie覆盖客户端CookieJar，防止共用公网IP的不同图片域名串用Cookie。
+            async with self.http.stream("GET", pinned, headers={"Host": host, "Accept-Encoding": "identity", "Cookie": ""},
                                         extensions={"sni_hostname": host}, follow_redirects=False) as response:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
