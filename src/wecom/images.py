@@ -1,4 +1,4 @@
-"""受限的图片下载：可信 HTTPS、公网 IP 固定连接、逐跳校验且不落盘。"""
+"""公网图片下载：HTTPS、公网 IP 固定连接、逐跳校验且不落盘。"""
 
 import asyncio
 import ipaddress
@@ -13,6 +13,11 @@ import httpx
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_REPLY_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_REPLY_IMAGES = 8
+# 图片预算独立于整个进程：为下载缓冲、bytes及HTTP/TLS临时副本按最大图片四倍预约。
+# 下载前取得名额，直到上传结束才释放；等待者只持有URL，不先分配图片二进制。
+IMAGE_MEMORY_BUDGET_BYTES = 2 * 1024 * 1024 * 1024
+IMAGE_PREPARE_RESERVATION_BYTES = 4 * MAX_IMAGE_BYTES
+MAX_IMAGE_PREPARATIONS = IMAGE_MEMORY_BUDGET_BYTES // IMAGE_PREPARE_RESERVATION_BYTES
 
 
 class ImageError(ValueError):
@@ -36,18 +41,18 @@ async def resolve_public(host: str) -> str:
 
 
 class ImageDownloader:
-    """独立无凭据连接池；共享四个准备名额覆盖下载到上传的完整内存生命周期。"""
+    """独立无凭据连接池；2GiB保守预约预算覆盖下载到上传的完整内存生命周期。"""
 
     def __init__(self, config, *, http_client=None):
         """正式连接关闭代理、自动跳转、重试和连接复用，避免跨 SNI 共用 IP 连接。"""
         self.config = config
-        self.slots = asyncio.Semaphore(4)
+        self.slots = asyncio.Semaphore(MAX_IMAGE_PREPARATIONS)
         self._owned = http_client is None
         if http_client is None:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_default_certs()
             transport = httpx.AsyncHTTPTransport(verify=context, retries=0,
-                limits=httpx.Limits(max_connections=4, max_keepalive_connections=0))
+                limits=httpx.Limits(max_connections=MAX_IMAGE_PREPARATIONS, max_keepalive_connections=0))
             http_client = httpx.AsyncClient(transport=transport, follow_redirects=False,
                                            trust_env=False, timeout=10)
         self.http = http_client
@@ -63,7 +68,9 @@ class ImageDownloader:
             try:
                 target = urlsplit(url)
                 host = target.hostname
-                valid = (target.scheme == "https" and host in self.config.image_allowed_hosts
+                # 默认开放公网来源；显式名单仍可收紧，公网 IP 与资源约束不会因通配而跳过。
+                valid = (target.scheme == "https" and host
+                         and ("*" in self.config.image_allowed_hosts or host in self.config.image_allowed_hosts)
                          and target.port in (None, 443) and not target.username and not target.password
                          and not target.fragment and not any(c.isspace() or ord(c) < 32 for c in url))
             except ValueError:
