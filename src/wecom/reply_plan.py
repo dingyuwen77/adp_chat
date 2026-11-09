@@ -145,7 +145,9 @@ def _markdown(text: str) -> list[TextBlock | ImageBlock]:
     blocks, cursor, code_index = [], 0, 0
     codes = _code_ranges(text)
     matches = list(_IMAGE.finditer(text))
-    spaces = [i for i, char in enumerate(text) if char.isspace()]
+    whitespace = list(re.finditer(r"\s+", text))
+    space_starts = [m.start() for m in whitespace]
+    space_ends = [m.end() for m in whitespace]
     angles = [i for i, char in enumerate(text) if char == ">"]
     candidates = {m.end() - 1 for m in matches}
     stack, closing, escaped = [], {}, False
@@ -170,14 +172,17 @@ def _markdown(text: str) -> list[TextBlock | ImageBlock]:
             continue
         syntax_end = end + 1
         start = match.end()
-        while start < end and text[start].isspace():
-            start += 1
-        while end > start and text[end - 1].isspace():
-            end -= 1
+        # 空白游程只扫描/索引一次；嵌套候选共享空白区时不能重复逐字符遍历。
+        space_index = bisect_right(space_starts, start) - 1
+        if space_index >= 0 and start < space_ends[space_index]:
+            start = min(end, space_ends[space_index])
+        space_index = bisect_right(space_starts, end - 1) - 1
+        if space_index >= 0 and end <= space_ends[space_index]:
+            end = max(start, space_starts[space_index])
         if start == end:
             continue
-        space_index = bisect_left(spaces, start)
-        first_space = spaces[space_index] if space_index < len(spaces) else len(text)
+        space_index = bisect_left(space_starts, start)
+        first_space = space_starts[space_index] if space_index < len(space_starts) else len(text)
         # CommonMark 的 <URL> 及可选 title；管道等查询参数不得按分隔符截断。
         if text[start] == "<":
             angle_index = bisect_left(angles, start)
@@ -187,8 +192,9 @@ def _markdown(text: str) -> list[TextBlock | ImageBlock]:
         else:
             url_start, url_end = start, min(first_space, end)
             title = url_end
-            while title < end and text[title].isspace():
-                title += 1
+            space_index = bisect_right(space_starts, title) - 1
+            if space_index >= 0 and title < space_ends[space_index]:
+                title = min(end, space_ends[space_index])
             if title < end and text[title] not in "\"'":
                 continue
         # 先用索引判断无效嵌套目的地，再复制；不能为每个候选复制同一长后缀。
@@ -208,31 +214,40 @@ def reply_plan(record: dict) -> list[TextBlock | ImageBlock]:
     """优先正式持久化内容；未知/忙碌通知只使用其已保存的风险说明。"""
     result = record.get("adp_result") or {}
     messages = result.get("reply_contents") if record.get("adp_state") == "ADP_SUCCEEDED" else None
-    blocks = []
+    blocks, pending = [], []
     if messages and any(messages):
         for message in messages:
-            if blocks:
-                blocks.append(TextBlock("\n"))
+            if blocks or pending:
+                pending.append("\n")
             for part in message:
                 kind = part.get("Type")
                 if kind in ("text", "json_text"):
-                    blocks.extend(_markdown(part["Text"]))
-                elif kind == "image":
+                    pending.append(part["Text"])
+                    continue
+                if pending:
+                    blocks.extend(_markdown("".join(pending)))
+                    pending.clear()
+                if kind == "image":
                     image = part.get("Image")
                     url = image.get("Url") if isinstance(image, dict) else None
                     blocks.append(ImageBlock(url) if isinstance(url, str) and url else
                                   TextBlock("[图片未能显示：缺少可用地址]"))
                 else:
                     blocks.append(TextBlock("[本回复含当前渠道未能呈现的媒体内容]"))
+        if pending:
+            blocks.extend(_markdown("".join(pending)))
+            pending.clear()
     else:
         blocks = _markdown(record["notification"])
     merged = []
     for block in blocks:
         if isinstance(block, TextBlock):
-            if not block.text:
-                continue
-            if merged and isinstance(merged[-1], TextBlock):
-                merged[-1] = TextBlock(merged[-1].text + block.text)
-                continue
+            pending.append(block.text)
+            continue
+        if pending:
+            merged.append(TextBlock("".join(pending)))
+            pending.clear()
         merged.append(block)
+    if pending:
+        merged.append(TextBlock("".join(pending)))
     return merged or [TextBlock(record["notification"])]

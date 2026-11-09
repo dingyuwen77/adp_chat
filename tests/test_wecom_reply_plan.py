@@ -75,7 +75,10 @@ class ReplyPlanTests(unittest.TestCase):
                     inner.reads += len(range(start, end, step))
                 return super().__getitem__(index)
 
-        for sample in ("![x](" * 500, "![x]( " * 500 + ")" * 500):
+        for sample in ("![x](" * 500, "![x]( " * 500 + ")" * 500,
+                       "![x](" * 500 + " " * 500 + ")" * 500,
+                       "![x](" * 500 + "<" + " " * 500 + ">" + ")" * 500,
+                       "`" * 3500, "![[" * 1000):
             text = CountedText(sample)
             self.assertEqual(reply_plan({"notification": text}), [TextBlock(text)])
             self.assertLessEqual(text.reads, len(text) * 10)
@@ -87,6 +90,14 @@ class ReplyPlanTests(unittest.TestCase):
         self.assertEqual(reply_plan(record), [TextBlock("执行结果未知")])
         record["adp_state"] = "ADP_SUCCEEDED"
         self.assertIn("未能呈现", "".join(p.text for p in reply_plan(record)))
+
+    def test_adjacent_adp_text_parts_are_parsed_together(self):
+        """ADP连续文字块拆开图片语法时，先合并文字再识别原位置图片。"""
+        url = "https://lke.cloud.tencent.com/a.png"
+        record = {"adp_state": "ADP_SUCCEEDED", "notification": "旧提示", "adp_result": {"reply_contents": [[
+            {"Type": "text", "Text": "步骤![截图]("}, {"Type": "json_text", "Text": url},
+            {"Type": "text", "Text": ")尾部"}]]}}
+        self.assertEqual(reply_plan(record), [TextBlock("步骤"), ImageBlock(url, "截图"), TextBlock("尾部")])
 
 
 if __name__ == "__main__":
