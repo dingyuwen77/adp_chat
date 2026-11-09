@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: "CHG-20261109-133229-wecom-ordered-images"
 title: "企业微信有序图文回复"
 level: L3
-status: ready_for_review
+status: done
 owner: "Codex"
 branch: "feature/wecom-ordered-images"
 created: 2026-11-09
-updated: 2026-11-09T14:13:57+08:00
+updated: 2026-11-09
 completion_gate: required
 depends_on: []
 affected_areas:
@@ -163,7 +163,7 @@ Red：Incremental真/假断言失败；图片规划模块缺失；同员工屏�
 未执行本次图文真实客户端、生产部署、公网访问控制及真实TLS下载成功验收；既有F文字客户端由用户2026-11-09确认。平台接受不代表终端显示或已读；UNKNOWN快照URL可能长期保留。
 
 ## 交付状态
-implementation=complete；delivery=pr_ready；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=incomplete；cleanup=incomplete；end_to_end=incomplete。AC8b/AC8c在合并后证据取得后继续完成。
+implementation=complete；delivery=merged；validation=complete；main_fresh=complete；requirement_closure=complete。实现任务分支已清理、受限测试遗留进程已核验退出；以下本地归档及治理同步按实际结果记录。
 
 ## 备注
 canonical Source已同步且本任务锁定dbae4a011f78ddeaf6e7a0411d3fb40df858fbed。只有主Agent写入；独立Reviewer只读并有上下文隔离。
@@ -182,3 +182,10 @@ canonical Source已同步且本任务锁定dbae4a011f78ddeaf6e7a0411d3fb40df858f
 ## 用户新增归档修复范围
 
 2026-11-09用户明确要求把旧归档链接错误一并修复，正式来源#28新增AC9。所有原需求、决策、验收证据、Change ID/status/Owner/时间均保留，只修当前Source文档迁移引用；无产品实现变化，不新增永久测试或Workflow，采用原canonical全仓检查、锚点与字节差异作为直接证据。独立Review/current-head CI在新的revision执行，既有实现证据保持。
+
+
+## 合并后收尾证据
+
+PR #29通过REST精确head136dea4合并为3fcacdf316c5c202be0197dd65b3443cfb2580c9；本地main已快进。implementation main-fresh CI42574009667在该revision执行197项/32.800秒/OK，无skip；全仓严格Ready14/14、errors=[]。Issue #28逐9条AC直接Evidence回写/重读后关闭为completed，并再次读回确认9条勾选保留。本地实现分支已安全删除，远程分支在合并后已自动删除并ls-remote确认不存在；最初受限离线测试遗留的子进程/启动器已核验退出。未发布/部署；新图文真实客户端显示仍依已确认范围保留未实测说明。
+
+本地归档后仅同步治理文件到远程main，产品代码不变化；该同步的独立Review、当前base/head、严格Ready和安全清理独立核验，不用重复产品CI冒充新的独立证据。
