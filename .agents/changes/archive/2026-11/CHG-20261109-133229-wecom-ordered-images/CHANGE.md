@@ -100,7 +100,7 @@ data_changes: []
 | R5 | 准备降级与发送未知 | #28 / AC5 | satisfied | test_wecom_images/test_wecom_sender；准备失败原位置降级、图片POST超时停止UNKNOWN、部分计数与既有恢复均通过，v3不变 |
 | R6 | 员工通知串行并独立ADP | #28 / AC6 | satisfied | test_wecom_sender屏障先Red复现交错再Green；跨员工继续、等待保持PENDING、ADP占用不延长；取消/武装恢复沿用既有回归 |
 | R7 | API/CLI/v3/依赖兼容与文档 | #28 / AC7 | satisfied | CI197项包含原main/CLI/API/v3回归；实际TOML字段/类型及旧值保留核对；146个文档本地链接与源码AST解析通过 |
-| R8 | 仅AC8a合并前门禁子阶段：验证与独立审查 | #28 / AC8 | satisfied | 独立Reviewer /root/independent_review 绑定4ba7f7d：F1/F2/F3/F4均关闭、NO_FINDINGS_WITHIN_SCOPE；CI42571409501 Windows Python3.14执行197项/27.435s/OK；AC8b未完成，Issue整体AC8仍未勾 |
+| R8 | AC8合并前及合并后关闭前验收 | #28 / AC8 | satisfied | 独立Review最终绑定136dea4，F1～F4及AC9复审通过；最终PR CI42573499736执行197项/29.034s/OK；REST精确head合并PR29为3fcacdf，main-fresh CI42574009667执行197项/32.800s/OK；Issue28九条AC回写/重读并closed/completed |
 | R9 | AC9历史引用修复、语义守恒及全仓校验 | #28 / AC9 | satisfied | 6份归档35处路径修正，34条Source/AC锚点实读存在；所有其他字节/元数据保持；全仓canonical严格Ready真实执行14/14、errors=[]/exit0；本PR修改的7份Change新实例Contract通过，新head独立Review仍为合并前必需门禁 |
 
 AC8b（guarded merge/main-fresh/Closure Audit）属于合并后、Issue关闭前交付轴；AC8c是Issue关闭后required的cleanup/archive轴，不作为关闭的循环前置。Ready不宣称这些已完成，Change保持active直到适用收尾条件满足，end_to_end仍incomplete。
@@ -189,3 +189,5 @@ canonical Source已同步且本任务锁定dbae4a011f78ddeaf6e7a0411d3fb40df858f
 PR #29通过REST精确head136dea4合并为3fcacdf316c5c202be0197dd65b3443cfb2580c9；本地main已快进。implementation main-fresh CI42574009667在该revision执行197项/32.800秒/OK，无skip；全仓严格Ready14/14、errors=[]。Issue #28逐9条AC直接Evidence回写/重读后关闭为completed，并再次读回确认9条勾选保留。本地实现分支已安全删除，远程分支在合并后已自动删除并ls-remote确认不存在；最初受限离线测试遗留的子进程/启动器已核验退出。未发布/部署；新图文真实客户端显示仍依已确认范围保留未实测说明。
 
 本地归档后仅同步治理文件到远程main，产品代码不变化；该同步的独立Review、当前base/head、严格Ready和安全清理独立核验，不用重复产品CI冒充新的独立证据。
+
+本地归档已由canonical CLI实际完成，同一ID/status=done已重新读取，全仓严格Ready14/14、errors=[]。归档治理同步通过单独PR，最终Git状态以该PR和远端ref为准；不把施工阶段的未完成状态当作最终交付结论。
