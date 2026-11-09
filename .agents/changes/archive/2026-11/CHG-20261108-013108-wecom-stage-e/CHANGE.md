@@ -103,12 +103,12 @@ E1支持同一Store/Worker；E2支持metadata白名单与诊断/状态解耦；E
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | E1 JSONL可解析/关联/脱敏、BUSY/拒绝/UNKNOWN/释放/发送 | docs/wecom-integration/03_实施路线图.md#AC25 | satisfied | 统一事件v1/9项日志专项、真实HTTP日志关联、磁盘/短写故障、脱敏/轮转/旧尾隔离，164项全回归；详见E-EVENTS/E-FINAL下方证据 |
-| R2 | E2 真实HTTP可靠ACK/100员工/Fake30/同用户拒绝 | docs/wecom-integration/03_实施路线图.md#AC26 | satisfied | 正式独立进程50/100员工、无限额/Fake30、实际拒绝集合、BUSY/先去重及强杀，JSONL关联；详见E-HTTP/E-PRESSURE |
-| R3 | E3 PyCharm/Docker恢复、armed不重放/UNKNOWN释放 | docs/wecom-integration/03_实施路线图.md#AC27 | satisfied | 用户后续要求无需操作PyCharm，采用同一Python命令行运行/故障注入；Docker ARM64真实SIGKILL、RECEIVED恢复、注入SEND_ARMED/PENDING恢复及UNKNOWN新消息，详见E-DOCKER/E-SCOPE |
-| R4 | E4 原main/CLI/API/配置/会话兼容 | docs/wecom-integration/03_实施路线图.md#AC28 | satisfied | 164项回归含旧main/CLI/API/配置；旧镜像独立HTTP→原ChatService/会话→SSE夹具→HTTP200和重建恢复，详见E-LEGACY |
-| R5 | E5 受控真实ADP跨进程两轮/错误结构及隔离 | docs/wecom-integration/03_实施路线图.md#AC29 | satisfied | 正式加密回调→真实已发布ADP，两轮YNND网关/客户端跨进程、SIYU隔离；实读语义通过，真实无效AppKey4505004且模拟提示完成，详见E-REAL |
-| R6 | E6 仅A～E本地验收，F边界/可复现文档 | docs/wecom-integration/03_实施路线图.md#AC30 | satisfied | 六份当前Owner同步、136本地链接、配置同源、明确CLI/可选IDE/模拟与真实切换/Docker/清理/F检查清单；阶段F未实施 |
+| R1 | E1 JSONL可解析/关联/脱敏、BUSY/拒绝/UNKNOWN/释放/发送 | docs/wecom-integration/02_实施路线图.md#AC25 | satisfied | 统一事件v1/9项日志专项、真实HTTP日志关联、磁盘/短写故障、脱敏/轮转/旧尾隔离，164项全回归；详见E-EVENTS/E-FINAL下方证据 |
+| R2 | E2 真实HTTP可靠ACK/100员工/Fake30/同用户拒绝 | docs/wecom-integration/02_实施路线图.md#AC26 | satisfied | 正式独立进程50/100员工、无限额/Fake30、实际拒绝集合、BUSY/先去重及强杀，JSONL关联；详见E-HTTP/E-PRESSURE |
+| R3 | E3 PyCharm/Docker恢复、armed不重放/UNKNOWN释放 | docs/wecom-integration/02_实施路线图.md#AC27 | satisfied | 用户后续要求无需操作PyCharm，采用同一Python命令行运行/故障注入；Docker ARM64真实SIGKILL、RECEIVED恢复、注入SEND_ARMED/PENDING恢复及UNKNOWN新消息，详见E-DOCKER/E-SCOPE |
+| R4 | E4 原main/CLI/API/配置/会话兼容 | docs/wecom-integration/02_实施路线图.md#AC28 | satisfied | 164项回归含旧main/CLI/API/配置；旧镜像独立HTTP→原ChatService/会话→SSE夹具→HTTP200和重建恢复，详见E-LEGACY |
+| R5 | E5 受控真实ADP跨进程两轮/错误结构及隔离 | docs/wecom-integration/02_实施路线图.md#AC29 | satisfied | 正式加密回调→真实已发布ADP，两轮YNND网关/客户端跨进程、SIYU隔离；实读语义通过，真实无效AppKey4505004且模拟提示完成，详见E-REAL |
+| R6 | E6 仅A～E本地验收，F边界/可复现文档 | docs/wecom-integration/02_实施路线图.md#AC30 | satisfied | 六份当前Owner同步、136本地链接、配置同源、明确CLI/可选IDE/模拟与真实切换/Docker/清理/F检查清单；阶段F未实施 |
 
 # 计划改动
 

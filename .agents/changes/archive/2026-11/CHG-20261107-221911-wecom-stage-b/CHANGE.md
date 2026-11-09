@@ -101,12 +101,12 @@ E1 支持复用既有模块；E2/E3 决定必须验签解密、校验内外企�
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | B1 正式 GET/POST 协议 | docs/wecom-integration/03_实施路线图.md#AC6 | satisfied | 正式 GET/POST、独立 AES 布局回归及官方 path/90968 向量通过；真实 HTTP smoke 通过 |
-| R2 | B2 签名/解密/企业应用身份拒绝 | docs/wecom-integration/03_实施路线图.md#AC7 | satisfied | 签名/接收企业/内外企业和 AgentID/员工/MsgId/DTD/巨包/旧时间戳均在写盘前拒绝 |
-| R3 | B3 同用户竞态一次获准及 BUSY 提示 | docs/wecom-integration/03_实施路线图.md#AC8 | satisfied | Barrier 双线程真实 HTTP：一条 RECEIVED、一条 REJECTED_USER_BUSY/PENDING；跨员工独立获准 |
-| R4 | B4 重复消息一次接收 | docs/wecom-integration/03_实施路线图.md#AC9 | satisfied | 并发相同 MsgId 只有一条快照/一次接收序号；顺序重复和跨进程重复不改变原意图 |
-| R5 | B5 落盘失败不能ACK | docs/wecom-integration/03_实施路线图.md#AC10 | satisfied | 真实 fsync/replace 故障和发布后结果未知均不 ACK；关闭后续接收，重启按已保存快照去重 |
-| R6 | B6 非文字/事件不投ADP | docs/wecom-integration/03_实施路线图.md#AC11 | satisfied | 非文字和事件返回空 ACK，不创建状态、不调用 ADP（正式出站边界断言） |
+| R1 | B1 正式 GET/POST 协议 | docs/wecom-integration/02_实施路线图.md#AC6 | satisfied | 正式 GET/POST、独立 AES 布局回归及官方 path/90968 向量通过；真实 HTTP smoke 通过 |
+| R2 | B2 签名/解密/企业应用身份拒绝 | docs/wecom-integration/02_实施路线图.md#AC7 | satisfied | 签名/接收企业/内外企业和 AgentID/员工/MsgId/DTD/巨包/旧时间戳均在写盘前拒绝 |
+| R3 | B3 同用户竞态一次获准及 BUSY 提示 | docs/wecom-integration/02_实施路线图.md#AC8 | satisfied | Barrier 双线程真实 HTTP：一条 RECEIVED、一条 REJECTED_USER_BUSY/PENDING；跨员工独立获准 |
+| R4 | B4 重复消息一次接收 | docs/wecom-integration/02_实施路线图.md#AC9 | satisfied | 并发相同 MsgId 只有一条快照/一次接收序号；顺序重复和跨进程重复不改变原意图 |
+| R5 | B5 落盘失败不能ACK | docs/wecom-integration/02_实施路线图.md#AC10 | satisfied | 真实 fsync/replace 故障和发布后结果未知均不 ACK；关闭后续接收，重启按已保存快照去重 |
+| R6 | B6 非文字/事件不投ADP | docs/wecom-integration/02_实施路线图.md#AC11 | satisfied | 非文字和事件返回空 ACK，不创建状态、不调用 ADP（正式出站边界断言） |
 
 # 计划改动
 

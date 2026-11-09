@@ -108,14 +108,14 @@ E1支持沿同一存储Owner；E2要求实际Code和阶段证据、UNKNOWN而非
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | C1 100独立用户同时转发 | docs/wecom-integration/03_实施路线图.md#AC12 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
-| R2 | C2 Fake30名额入口拒绝 | docs/wecom-integration/03_实施路线图.md#AC13 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
-| R3 | C3 同用户竞态只提交一条 | docs/wecom-integration/03_实施路线图.md#AC14 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
-| R4 | C4 真实Code与阶段准确分类 | docs/wecom-integration/03_实施路线图.md#AC15 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
-| R5 | C5 UNKNOWN可靠保存/释放/不重投 | docs/wecom-integration/03_实施路线图.md#AC16 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
-| R6 | C6 armed进程崩溃恢复 | docs/wecom-integration/03_实施路线图.md#AC17 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
-| R7 | C7 身份与结果隔离 | docs/wecom-integration/03_实施路线图.md#AC18 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
-| R8 | C8 旧CLI/API兼容 | docs/wecom-integration/03_实施路线图.md#AC19 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R1 | C1 100独立用户同时转发 | docs/wecom-integration/02_实施路线图.md#AC12 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R2 | C2 Fake30名额入口拒绝 | docs/wecom-integration/02_实施路线图.md#AC13 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R3 | C3 同用户竞态只提交一条 | docs/wecom-integration/02_实施路线图.md#AC14 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R4 | C4 真实Code与阶段准确分类 | docs/wecom-integration/02_实施路线图.md#AC15 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R5 | C5 UNKNOWN可靠保存/释放/不重投 | docs/wecom-integration/02_实施路线图.md#AC16 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R6 | C6 armed进程崩溃恢复 | docs/wecom-integration/02_实施路线图.md#AC17 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R7 | C7 身份与结果隔离 | docs/wecom-integration/02_实施路线图.md#AC18 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
+| R8 | C8 旧CLI/API兼容 | docs/wecom-integration/02_实施路线图.md#AC19 | satisfied | 正式worker/客户端、18项定向测试、本机HTTP/崩溃及完整129项回归，详见新鲜证据 |
 
 # 计划改动
 

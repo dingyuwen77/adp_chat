@@ -24,6 +24,7 @@ affected_paths:
   - "config.example.toml"
   - "README.md"
   - "docs/wecom-integration"
+  - ".agents/changes/archive"
   - "docs/adp-chat/02_Docker部署与运维.md"
 contracts:
   - "企业微信应用消息与临时素材"
@@ -56,7 +57,7 @@ data_changes: []
 企业微信按最终答案顺序获得文字/原生图片或原位置链接降级。
 
 ## 成功标准
-以正式 #28 AC1～AC7 与 AC8a 为实现/合并前施工验收；AC8b为合并后关闭前交付轴；AC8c为Issue关闭后required收尾，整体端到端完成仍须全部轴完成。
+以正式 #28 AC1～AC7、AC8a及用户新增AC9为实现/合并前施工验收；AC8b为合并后关闭前交付轴；AC8c为Issue关闭后required收尾，整体端到端完成仍须全部轴完成。
 
 ## 范围
 规划、下载、上传、发送、员工互斥、配置、测试和针对性文档。
@@ -100,6 +101,7 @@ data_changes: []
 | R6 | 员工通知串行并独立ADP | #28 / AC6 | satisfied | test_wecom_sender屏障先Red复现交错再Green；跨员工继续、等待保持PENDING、ADP占用不延长；取消/武装恢复沿用既有回归 |
 | R7 | API/CLI/v3/依赖兼容与文档 | #28 / AC7 | satisfied | CI197项包含原main/CLI/API/v3回归；实际TOML字段/类型及旧值保留核对；146个文档本地链接与源码AST解析通过 |
 | R8 | 仅AC8a合并前门禁子阶段：验证与独立审查 | #28 / AC8 | satisfied | 独立Reviewer /root/independent_review 绑定4ba7f7d：F1/F2/F3/F4均关闭、NO_FINDINGS_WITHIN_SCOPE；CI42571409501 Windows Python3.14执行197项/27.435s/OK；AC8b未完成，Issue整体AC8仍未勾 |
+| R9 | AC9历史引用修复、语义守恒及全仓校验 | #28 / AC9 | satisfied | 6份归档35处路径修正，34条Source/AC锚点实读存在；所有其他字节/元数据保持；全仓严格Ready随后以真实输出核验，新head独立Review仍为合并前必需门禁 |
 
 AC8b（guarded merge/main-fresh/Closure Audit）属于合并后、Issue关闭前交付轴；AC8c是Issue关闭后required的cleanup/archive轴，不作为关闭的循环前置。Ready不宣称这些已完成，Change保持active直到适用收尾条件满足，end_to_end仍incomplete。
 
@@ -174,4 +176,9 @@ canonical Source已同步且本任务锁定dbae4a011f78ddeaf6e7a0411d3fb40df858f
 
 ## Ready检查范围
 
-全仓canonical ready_check发现34条base已存在且本PR未触及的历史archive断链，均引用旧docs/wecom-integration/03_实施路线图.md（当前Owner为02）；本次不改历史。当前Change直接复用同一canonical元数据/Active carrier/单文档Ready函数，严格Acceptance绑定与Completion审计通过；全仓原始错误单独保留并报告OUT_OF_SCOPE/NON_BLOCKING/REPORT_ONLY，不声称全仓Ready通过，不降低CI/Ruleset。
+此前全仓Ready发现34条旧归档Source断链。用户随后明确要求全部修复，因此纳入AC9/decision_epoch=2；6份历史归档仅替换已迁移的文档路径，35处旧引用及34个稳定AC锚点已重新核对，元数据与其他历史字节保持。现在必须执行全仓严格Ready并取得零错误证据，不再将这些错误排除出本任务。新head的Review与CI仍须满足后才合并。
+
+
+## 用户新增归档修复范围
+
+2026-11-09用户明确要求把旧归档链接错误一并修复，正式来源#28新增AC9。所有原需求、决策、验收证据、Change ID/status/Owner/时间均保留，只修当前Source文档迁移引用；无产品实现变化，不新增永久测试或Workflow，采用原canonical全仓检查、锚点与字节差异作为直接证据。独立Review/current-head CI在新的revision执行，既有实现证据保持。
