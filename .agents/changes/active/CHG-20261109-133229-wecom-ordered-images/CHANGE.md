@@ -101,7 +101,7 @@ data_changes: []
 | R6 | 员工通知串行并独立ADP | #28 / AC6 | satisfied | test_wecom_sender屏障先Red复现交错再Green；跨员工继续、等待保持PENDING、ADP占用不延长；取消/武装恢复沿用既有回归 |
 | R7 | API/CLI/v3/依赖兼容与文档 | #28 / AC7 | satisfied | CI197项包含原main/CLI/API/v3回归；实际TOML字段/类型及旧值保留核对；146个文档本地链接与源码AST解析通过 |
 | R8 | 仅AC8a合并前门禁子阶段：验证与独立审查 | #28 / AC8 | satisfied | 独立Reviewer /root/independent_review 绑定4ba7f7d：F1/F2/F3/F4均关闭、NO_FINDINGS_WITHIN_SCOPE；CI42571409501 Windows Python3.14执行197项/27.435s/OK；AC8b未完成，Issue整体AC8仍未勾 |
-| R9 | AC9历史引用修复、语义守恒及全仓校验 | #28 / AC9 | satisfied | 6份归档35处路径修正，34条Source/AC锚点实读存在；所有其他字节/元数据保持；全仓严格Ready随后以真实输出核验，新head独立Review仍为合并前必需门禁 |
+| R9 | AC9历史引用修复、语义守恒及全仓校验 | #28 / AC9 | satisfied | 6份归档35处路径修正，34条Source/AC锚点实读存在；所有其他字节/元数据保持；全仓canonical严格Ready真实执行14/14、errors=[]/exit0；本PR修改的7份Change新实例Contract通过，新head独立Review仍为合并前必需门禁 |
 
 AC8b（guarded merge/main-fresh/Closure Audit）属于合并后、Issue关闭前交付轴；AC8c是Issue关闭后required的cleanup/archive轴，不作为关闭的循环前置。Ready不宣称这些已完成，Change保持active直到适用收尾条件满足，end_to_end仍incomplete。
 
