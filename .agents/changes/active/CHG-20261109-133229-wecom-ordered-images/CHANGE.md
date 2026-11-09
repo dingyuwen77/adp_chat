@@ -3,11 +3,11 @@ schema: coding-change/v1
 id: "CHG-20261109-133229-wecom-ordered-images"
 title: "企业微信有序图文回复"
 level: L3
-status: in_progress
+status: ready_for_review
 owner: "Codex"
 branch: "feature/wecom-ordered-images"
 created: 2026-11-09
-updated: 2026-11-09T13:54:53+08:00
+updated: 2026-11-09T14:13:57+08:00
 completion_gate: required
 depends_on: []
 affected_areas:
@@ -56,7 +56,7 @@ data_changes: []
 企业微信按最终答案顺序获得文字/原生图片或原位置链接降级。
 
 ## 成功标准
-以正式 #28 AC1～AC7 与 AC8a 为实现/合并前施工验收；AC8b/AC8c 为后续交付轴，整体AC8仅实际收尾完成才勾选。
+以正式 #28 AC1～AC7 与 AC8a 为实现/合并前施工验收；AC8b为合并后关闭前交付轴；AC8c为Issue关闭后required收尾，整体端到端完成仍须全部轴完成。
 
 ## 范围
 规划、下载、上传、发送、员工互斥、配置、测试和针对性文档。
@@ -92,16 +92,16 @@ data_changes: []
 
 | 编号 | 要求 | 来源 | 状态 | 证据 |
 | --- | --- | --- | --- | --- |
-| R1 | 非流式Incremental及最终完成机制 | #28 / AC1 | not_satisfied | 实现开发中，完成前绑定实际检查 |
-| R2 | 有序图文与尾文来源 | #28 / AC2 | not_satisfied | 实现开发中，完成前绑定实际检查 |
-| R3 | 2048字节和链接完整 | #28 / AC3 | not_satisfied | 实现开发中，完成前绑定实际检查 |
-| R4 | 安全有界内存图片准备 | #28 / AC4 | not_satisfied | 实现开发中，完成前绑定实际检查 |
-| R5 | 准备降级与发送未知 | #28 / AC5 | not_satisfied | 实现开发中，完成前绑定实际检查 |
-| R6 | 员工通知串行并独立ADP | #28 / AC6 | not_satisfied | 实现开发中，完成前绑定实际检查 |
-| R7 | API/CLI/v3/依赖兼容与文档 | #28 / AC7 | not_satisfied | 实现开发中，完成前绑定实际检查 |
-| R8 | 合并前验证与独立审查 | #28 / AC8a | not_satisfied | 开发阶段 |
+| R1 | 非流式Incremental及最终完成机制 | #28 / AC1 | satisfied | src/adp/client.py + test_chat；实现revision4ba7f7d的CI42571409501执行197项/OK，默认disable/false与enable/true均有断言 |
+| R2 | 有序图文与尾文来源 | #28 / AC2 | satisfied | reply_plan.py + 规划9项/正式加密HTTP关键链路1项；保序、来源/尾文、结构化与跨文字块图片、代码/转义已验证 |
+| R3 | 2048字节和链接完整 | #28 / AC3 | satisfied | test_wecom_reply_plan与test_wecom_sender；2048字节、UTF8重组、自然边界、超长来源链接保留相邻尾文均通过 |
+| R4 | 安全有界内存图片准备 | #28 / AC4 | satisfied | 图片13项/OK；公网DNS、逐跳固定IP、MIME/实际字节/累计预算、8张/共享4名额、无Cookie转发；真实TLS成功下载未实测，不夸大Fake证据 |
+| R5 | 准备降级与发送未知 | #28 / AC5 | satisfied | test_wecom_images/test_wecom_sender；准备失败原位置降级、图片POST超时停止UNKNOWN、部分计数与既有恢复均通过，v3不变 |
+| R6 | 员工通知串行并独立ADP | #28 / AC6 | satisfied | test_wecom_sender屏障先Red复现交错再Green；跨员工继续、等待保持PENDING、ADP占用不延长；取消/武装恢复沿用既有回归 |
+| R7 | API/CLI/v3/依赖兼容与文档 | #28 / AC7 | satisfied | CI197项包含原main/CLI/API/v3回归；实际TOML字段/类型及旧值保留核对；146个文档本地链接与源码AST解析通过 |
+| R8 | 仅AC8a合并前门禁子阶段：验证与独立审查 | #28 / AC8 | satisfied | 独立Reviewer /root/independent_review 绑定4ba7f7d：F1/F2/F3/F4均关闭、NO_FINDINGS_WITHIN_SCOPE；CI42571409501 Windows Python3.14执行197项/27.435s/OK；AC8b未完成，Issue整体AC8仍未勾 |
 
-AC8b（guarded merge/main-fresh/Closure）与AC8c（cleanup/archive）属于合并后交付轴，Ready不宣称这些已完成，Change保持active直到整体授权Scope收尾。
+AC8b（guarded merge/main-fresh/Closure Audit）属于合并后、Issue关闭前交付轴；AC8c是Issue关闭后required的cleanup/archive轴，不作为关闭的循环前置。Ready不宣称这些已完成，Change保持active直到适用收尾条件满足，end_to_end仍incomplete。
 
 # 计划改动
 
@@ -147,10 +147,10 @@ Docs Impact=targeted：架构解释有序输出/失败/资源；路线图区分�
 
 # 完成审计
 
-- [ ] upstream_re_read：完成前重新读取live #28及用户最新决定。
-- [ ] change_coverage：逐AC1～AC7/AC8a核对实现与文档。
-- [ ] reverse_audit：从回调/存储到发送及终端/API消费者反查。
-- [ ] unresolved_cleared：合并前施工项无未满足；合并后轴仍独立追踪。
+- [x] upstream_re_read：已重新读取live #28与用户最新F客户端/保留API决定，AC8时序已正式澄清且live Contract通过。
+- [x] change_coverage：逐AC1～AC7/AC8a核对实现、文档和直接证据；AC8b/c保留在交付轴，不提前宣称完成。
+- [x] reverse_audit：正式加密回调→真实文件/Worker→Fake远端图文；反查API/CLI无图片下载，未运行真实终端不写已实测。
+- [x] unresolved_cleared：合并前施工项与阻塞Finding已清零，Validation Asset Redundancy=clean；合并后轴仍独立追踪。
 
 # 完成证据与状态
 
@@ -161,7 +161,17 @@ Red：Incremental真/假断言失败；图片规划模块缺失；同员工屏�
 未执行本次图文真实客户端、生产部署、公网访问控制及真实TLS下载成功验收；既有F文字客户端由用户2026-11-09确认。平台接受不代表终端显示或已读；UNKNOWN快照URL可能长期保留。
 
 ## 交付状态
-implementation=in_progress；delivery=incomplete；validation=in_progress；main_fresh=incomplete；change_archive=incomplete；requirement_closure=incomplete；cleanup=incomplete；end_to_end=incomplete。AC8b/AC8c在合并后证据取得后继续完成。
+implementation=complete；delivery=pr_ready；validation=complete；main_fresh=incomplete；change_archive=incomplete；requirement_closure=incomplete；cleanup=incomplete；end_to_end=incomplete。AC8b/AC8c在合并后证据取得后继续完成。
 
 ## 备注
 canonical Source已同步且本任务锁定dbae4a011f78ddeaf6e7a0411d3fb40df858fbed。只有主Agent写入；独立Reviewer只读并有上下文隔离。
+
+
+## 根因调试与最终审查证据
+
+同步解析的实际风险是重叠候选反复扫描或复制同一输入区间，不能只修首个while。已审计并切断：未闭合括号尾扫、代码正则回溯/区间反复遍历、无效嵌套长切片、共享空白/title逐字符尾扫及连续文字拼接复制；采用一次索引/前进游标/二分区间/list-join。六族复杂度回归同时计入字符读和切片复制；原共享空白n=500先Red255995>35000，最终独立复测4498≤35000；生产函数840000字符约0.1603秒，Reviewer独立约0.1631秒，原文保留。规划9项、图片13项、正式加密回调链路1项在最终实现工作区直接复验通过；CI42571409501绑定4ba7f7d执行197项/27.435秒/OK。后续Change-only更新不改变这些实现边界，最终PR current-head gate仍独立执行。
+
+
+## Ready检查范围
+
+全仓canonical ready_check发现34条base已存在且本PR未触及的历史archive断链，均引用旧docs/wecom-integration/03_实施路线图.md（当前Owner为02）；本次不改历史。当前Change直接复用同一canonical元数据/Active carrier/单文档Ready函数，严格Acceptance绑定与Completion审计通过；全仓原始错误单独保留并报告OUT_OF_SCOPE/NON_BLOCKING/REPORT_ONLY，不声称全仓Ready通过，不降低CI/Ruleset。
