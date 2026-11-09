@@ -28,15 +28,17 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                            "步骤一![截图](https://lke.cloud.tencent.com/a.png?sig=private)步骤二"}]]}}
         self.sent, self.uploads, self.downloads = [], [], []
 
-    async def send(self, *, download_status=200, upload_error=0, image_error=None):
+    async def send(self, *, download_status=200, upload_error=0, image_error=None, redirect_host=None):
         """仅替换远端 HTTP/DNS；正式规划、下载校验和发送逻辑均参与。"""
         def handle(request):
             """校验每个生产协议，伪造图片、素材和消息响应。"""
             if request.url.host == "8.8.8.8":
                 self.downloads.append(request)
-                self.assertEqual(request.headers["host"], "lke.cloud.tencent.com")
-                self.assertEqual(request.extensions["sni_hostname"], "lke.cloud.tencent.com")
+                self.assertIn(request.headers["host"], {"lke.cloud.tencent.com", redirect_host})
+                self.assertEqual(request.extensions["sni_hostname"], request.headers["host"])
                 self.assertNotIn("authorization", request.headers)
+                if redirect_host and request.headers["host"] == "lke.cloud.tencent.com":
+                    return httpx.Response(302, headers={"Location": f"https://{redirect_host}/image.png?sig=private"})
                 return httpx.Response(download_status, stream=httpx.ByteStream(PNG), headers={"Content-Type": "image/png"})
             if request.url.path == "/cgi-bin/gettoken":
                 return httpx.Response(200, json={"errcode": 0, "access_token": "fixture-token", "expires_in": 7200})
@@ -80,6 +82,14 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(outcome.state, "SEND_SIMULATED")
             self.assertEqual(outcome.code, "accepted_with_image_fallback")
 
+    async def test_default_allows_cross_domain_cdn_and_sends_native_image(self):
+        """默认短链跳到未列出的公网 CDN 后仍发送原生图片，不降级为链接。"""
+        outcome = await self.send(redirect_host="images.example.net")
+        self.assertEqual([p["msgtype"] for p in self.sent], ["text", "image", "text"])
+        self.assertEqual([r.headers["host"] for r in self.downloads],
+                         ["lke.cloud.tencent.com", "images.example.net"])
+        self.assertEqual((outcome.code, len(self.uploads)), ("accepted", 1))
+
     async def test_image_message_timeout_stops_and_never_falls_back_or_resends(self):
         """提交后超时是 UNKNOWN，不能再补链接或重发图片。"""
         outcome = await self.send(image_error=httpx.ReadTimeout("private URL must not be logged"))
@@ -87,12 +97,16 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([p["msgtype"] for p in self.sent], ["text", "image"])
 
     async def test_disallowed_host_falls_back_without_download(self):
-        """非可信图片只发送降级链接，不能主动访问。"""
+        """显式名单和空名单继续阻止未允许来源，只发送降级链接。"""
         self.record["adp_result"]["reply_contents"][0][0]["Text"] = "![x](https://evil.example/a.png)"
-        outcome = await self.send()
-        self.assertEqual(self.downloads, [])
-        self.assertEqual(outcome.state, "SEND_SIMULATED")
-        self.assertIn("图片未能显示", self.sent[0]["text"]["content"])
+        for hosts in ([], ["lke.cloud.tencent.com"]):
+            with self.subTest(hosts=hosts):
+                self.config = replace(self.config, image_allowed_hosts=hosts)
+                self.sent.clear()
+                outcome = await self.send()
+                self.assertEqual(self.downloads, [])
+                self.assertEqual(outcome.state, "SEND_SIMULATED")
+                self.assertIn("图片未能显示", self.sent[0]["text"]["content"])
 
     async def test_image_count_limit_keeps_order_and_explicit_fallback(self):
         """第九张不再下载，前八张和原位置降级均纳入接受计数。"""
@@ -105,12 +119,12 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((outcome.accepted_parts, outcome.total_parts), (9, 9))
 
     async def test_shared_prepare_slots_bound_upload_lifetime_and_allow_text_progress(self):
-        """素材上传挂起时最多四张持有图片，纯文字用户无需等待图片名额。"""
+        """百人请求共享2GiB预约预算：最多51张准备，其余等待且纯文字可继续。"""
         active, peak, downloads = 0, 0, 0
         full, release = asyncio.Event(), asyncio.Event()
 
         async def handle(request):
-            """挂起四个素材上传，显式释放后才允许第五张准备。"""
+            """挂起51个素材上传，未获预算者不能先下载图片。"""
             nonlocal active, peak, downloads
             if request.url.host == "8.8.8.8":
                 downloads += 1
@@ -120,7 +134,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
             if request.url.path == "/cgi-bin/media/upload":
                 active += 1
                 peak = max(peak, active)
-                if active == 4:
+                if active == 51:
                     full.set()
                 try:
                     await release.wait()
@@ -132,18 +146,63 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
             sender = WeComSender(self.config, http_client=http)
             with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
-                tasks = [asyncio.create_task(sender.send({**self.record, "user_id": f"EMP{i}"})) for i in range(5)]
+                tasks = [asyncio.create_task(sender.send({**self.record, "user_id": f"EMP{i}"})) for i in range(100)]
                 try:
                     await asyncio.wait_for(full.wait(), 2)
                     outcome = await sender.send({"user_id": "OTHER", "notification": "纯文字"})
                     self.assertEqual(outcome.state, "SEND_SIMULATED")
-                    self.assertEqual(downloads, 4)
+                    self.assertEqual(downloads, 51)
                 finally:
                     release.set()
                     outcomes = await asyncio.gather(*tasks)
                     await sender.aclose()
-            self.assertEqual((peak, active, downloads), (4, 0, 5))
+            self.assertEqual((peak, active, downloads), (51, 0, 100))
             self.assertTrue(all(o.state == "SEND_SIMULATED" for o in outcomes))
+
+    async def test_full_image_budget_times_out_in_place_and_recovers_capacity(self):
+        """预算全满时不下载，等待超时降级并保留尾文；释放后新图片正常发送。"""
+        sent, downloads, uploads = [], [], []
+
+        def handle(request):
+            """仅模拟图片、Token、素材及发送响应，观察正式发送器的结果。"""
+            if request.url.host == "8.8.8.8":
+                downloads.append(request)
+                return httpx.Response(200, headers={"Content-Type": "image/png"}, stream=httpx.ByteStream(PNG))
+            if request.url.path == "/cgi-bin/gettoken":
+                return httpx.Response(200, json={"errcode": 0, "access_token": "fixture-token", "expires_in": 7200})
+            if request.url.path == "/cgi-bin/media/upload":
+                uploads.append(request)
+                return httpx.Response(200, json={"type": "image", "media_id": "fixture-media"})
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"errcode": 0})
+
+        config = replace(self.config, image_prepare_timeout_seconds=0.01)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(config, http_client=http)
+            held = 0
+            try:
+                async with asyncio.timeout(1):
+                    for _ in range(51):
+                        await sender.images.slots.acquire()
+                        held += 1
+                with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
+                    outcome = await sender.send(self.record)
+                    self.assertEqual(outcome.code, "accepted_with_image_fallback")
+                    self.assertEqual((downloads, uploads), ([], []))
+                    self.assertEqual([p["msgtype"] for p in sent], ["text", "text", "text"])
+                    self.assertIn("图片未能显示", sent[1]["text"]["content"])
+                    self.assertEqual(sent[-1]["text"]["content"], "步骤二")
+                    for _ in range(held):
+                        sender.images.slots.release()
+                    held = 0
+                    sent.clear()
+                    outcome = await sender.send(self.record)
+                    self.assertEqual((outcome.code, len(downloads), len(uploads)), ("accepted", 1, 1))
+                    self.assertEqual([p["msgtype"] for p in sent], ["text", "image", "text"])
+            finally:
+                for _ in range(held):
+                    sender.images.slots.release()
+                await sender.aclose()
 
     async def test_prepare_timeout_falls_back_without_image_message(self):
         """图片准备超时尚未提交图片消息，仍能发送降级及尾文。"""
@@ -185,7 +244,8 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data"})
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle), follow_redirects=True) as http:
-            downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
+            config = ChatConfig("fixture", "local", image_allowed_hosts=["lke.cloud.tencent.com"])
+            downloader = ImageDownloader(config, http_client=http)
             with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
                 for url in ("file:///tmp/a.png", "http://lke.cloud.tencent.com/a", "https://evil.example/a",
                             "https://user:secret@lke.cloud.tencent.com/a", "https://lke.cloud.tencent.com:8443/a",
@@ -196,6 +256,59 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ImageError):
                     await downloader.download("https://lke.cloud.tencent.com/start", ImageBudget())
             self.assertEqual(len(requests), 1)
+
+    async def test_default_allows_arbitrary_public_https_origin(self):
+        """任意公网 HTTPS 图片首链均可下载，不要求预先登记域名。"""
+        requests = []
+
+        def handle(request):
+            """返回 PNG 并记录真实下载器生成的固定 IP 请求。"""
+            requests.append(request)
+            return httpx.Response(200, headers={"Content-Type": "image/png"}, stream=httpx.ByteStream(PNG))
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
+            with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
+                result = await downloader.download("https://unlisted.example.org/a.png", ImageBudget())
+        self.assertEqual(result, (PNG, "image/png"))
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].url.host, "8.8.8.8")
+        self.assertEqual(requests[0].headers["host"], "unlisted.example.org")
+        self.assertEqual(requests[0].extensions["sni_hostname"], "unlisted.example.org")
+
+    async def test_open_domains_still_block_private_origins_and_redirects(self):
+        """放开来源后仍通过真实 DNS 校验，内部首链与跳转均不能产生内部 HTTP 请求。"""
+        import socket
+
+        loop = asyncio.get_running_loop()
+        for target, ips in (("127.0.0.1", ("127.0.0.1",)), ("[::1]", ("::1",)),
+                            ("10.0.0.1", ("10.0.0.1",)), ("192.168.1.1", ("192.168.1.1",)),
+                            ("169.254.169.254", ("169.254.169.254",)),
+                            ("internal.example.net", ("10.1.1.1",)),
+                            ("mixed.example.net", ("8.8.8.8", "10.1.1.1"))):
+            for redirected in (False, True):
+                with self.subTest(target=target, redirected=redirected):
+                    requests = []
+
+                    def resolve(host, port, **kwargs):
+                        """仅短链域名解析为公网，其余输入返回对应内部或混合地址。"""
+                        addresses = ("8.8.8.8",) if host == "lke.cloud.tencent.com" else ips
+                        return [(socket.AF_INET6 if ":" in ip else socket.AF_INET,
+                                 socket.SOCK_STREAM, 6, "", (ip, port)) for ip in addresses]
+
+                    def handle(request):
+                        """公网入口返回内部跳转，记录任何不应发生的后续 HTTP 请求。"""
+                        requests.append(request)
+                        return httpx.Response(302, headers={"Location": f"https://{target}/image.png"})
+
+                    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+                        downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
+                        url = "https://lke.cloud.tencent.com/start" if redirected else f"https://{target}/image.png"
+                        with patch.object(loop, "getaddrinfo", side_effect=resolve):
+                            with self.assertRaisesRegex(ImageError, "image_address_blocked"):
+                                await downloader.download(url, ImageBudget())
+                    self.assertEqual(len(requests), int(redirected))
+                    self.assertTrue(all(r.url.host == "8.8.8.8" for r in requests))
 
     async def test_each_redirect_resolves_and_pins_again_without_credential_headers(self):
         """第二跳使用新核验 IP，路径查询保持原样，Host/SNI 始终是原域名。"""
@@ -248,8 +361,16 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
             with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
                 self.assertEqual((await downloader.download("https://lke.cloud.tencent.com/a", ImageBudget()))[0], PNG)
 
-    async def test_config_rejects_wildcards_invalid_types_and_unbounded_timeout(self):
-        """配置只接受明确主机，空列表是禁用下载的安全选项。"""
+    async def test_config_accepts_full_wildcard_and_preserves_explicit_lists(self):
+        """默认及显式完整通配开放公网域名，旧完整名单及空名单仍可使用。"""
+        config = ChatConfig("fixture", "local")
+        self.assertEqual(config.image_allowed_hosts, ["*"])
+        self.assertEqual(replace(config, image_allowed_hosts=["*"]).image_allowed_hosts, ["*"])
+        self.assertEqual(replace(config, image_allowed_hosts=["lke.cloud.tencent.com"]).image_allowed_hosts,
+                         ["lke.cloud.tencent.com"])
+
+    async def test_config_rejects_partial_wildcards_invalid_types_and_unbounded_timeout(self):
+        """不引入子域模式解析；畸形名单和无界超时仍拒绝，空列表继续禁用。"""
         from core.models import ChatError
 
         config = ChatConfig("fixture", "local")

@@ -54,7 +54,7 @@ class ChatConfig:
     gateway_environment: str = "test"
     wecom_app_secret: str = field(default="", repr=False)
     send_timeout_seconds: float = 15
-    image_allowed_hosts: list[str] = field(default_factory=lambda: ["lke.cloud.tencent.com"])
+    image_allowed_hosts: list[str] = field(default_factory=lambda: ["*"])
     image_prepare_timeout_seconds: float = 30
     callback_url: str = ""
 
@@ -143,9 +143,9 @@ class ChatConfig:
         if (not 0 < self.image_prepare_timeout_seconds <= 300
                 or len(self.image_allowed_hosts) > 32
                 or any(not isinstance(host, str) or len(host) > 253
-                       or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", host) is None
+                       or (host != "*" and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", host) is None)
                        for host in self.image_allowed_hosts)):
-            raise ChatError("config", "invalid_image_limits", "图片须配置明确可信的完整域名和有效准备超时；空列表禁用下载。")
+            raise ChatError("config", "invalid_image_limits", "图片来源须为完整域名或 *，并配置有效准备超时；空列表禁用下载。")
 
     @property
     def callback_path(self) -> str:
