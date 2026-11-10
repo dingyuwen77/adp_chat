@@ -114,6 +114,98 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("".join(parts), text)
         self.assertEqual((result.state, result.accepted_parts), ("SEND_SIMULATED", len(parts)))
 
+    async def test_whitespace_only_reply_makes_no_http_calls_and_keeps_valid_failure_counts(self):
+        """无可发送内容时真实/模拟发送均不伪造零分片成功，也不发送空白气泡。"""
+        calls = []
+
+        def handle(request):
+            """记录任何意外的Token获取或消息提交。"""
+            calls.append(request)
+            return httpx.Response(200, json={'errcode': 0, 'access_token': self.token, 'expires_in': 7200})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+            try:
+                for adapter in (sender, SimulatedSender(self.config)):
+                    outcome = await adapter.send(self.pending(text='\n \t\u3000\n'))
+                    self.assertEqual((outcome.state, outcome.code), ('SEND_FAILED', 'empty_notification'))
+                    self.assertEqual((outcome.accepted_parts, outcome.total_parts), (0, None))
+            finally:
+                await sender.aclose()
+        self.assertEqual(calls, [])
+
+    async def test_hyperlink_payload_and_simulated_counts_use_the_same_plan(self):
+        """正式协议的文字类型、完整安全标签与模拟分段计数一致，输入始终保留原文。"""
+        posts = []
+
+        def handle(request):
+            """只隔离企微网络，核对实际请求正文。"""
+            if request.method == "GET":
+                return httpx.Response(200, json={"errcode": 0, "access_token": self.token, "expires_in": 7200})
+            posts.append(json.loads(request.content))
+            return httpx.Response(200, json={"errcode": 0})
+
+        source = '[A账号密码_Windows_修改密码](https://adp.cloud.tencent.com/workflow/preview?cat=phone&id=2115993105014657280)'
+        anchor = '<a href="https://adp.cloud.tencent.com/workflow/preview?cat=phone&amp;id=2115993105014657280">A账号密码_Windows_修改密码</a>'
+        guide = ('**四、电脑端更改密码方法二**\n\n'
+                 '1. 在您公司电脑或个人电脑的浏览器里打开网址：https://passwordreset.microsoftonline.com/ 在校下载的页面输入您的公司邮箱和验证项\n'
+                 '2. 在接下来的页面输入您的公司邮箱和验证码，点击下一步\n'
+                 '3. 选择①，在②的框里输入您的手机号码，点击③\n'
+                 '4. 届时您的手机会收到验证码短信，请将验证码输入到④，点击⑤\n'
+                 '5. 选择⑥，点击⑦\n'
+                 '6. 将您电脑浏览器界面出来的验证码输入到 Authentication App（打开您配置【MFA 多重身份验证】的移动设备上的 Authentication App）\n'
+                 '7. 待验证完成后，浏览器会跳转至以下界面，输入您的新密码（需按公司密码规则修改）后点完成，即可\n\n'
+                 '参考来源：' + source + '\n\n您还可以问诺诺：① 如何重置 Windows 密码 ② Windows 账户被锁了怎么解锁')
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+            try:
+                for text in (guide, '甲' * 670 + source + '\n尾文'):
+                    with self.subTest(long_reply=text != guide):
+                        posts.clear()
+                        record = self.pending(text=text)
+                        simulated = await SimulatedSender(self.config).send(record)
+                        outcome = await sender.send(record)
+                        self.assertEqual(outcome.state, 'SEND_SIMULATED')
+                        self.assertEqual((outcome.accepted_parts, outcome.total_parts), (len(posts), len(posts)))
+                        self.assertEqual(simulated.total_parts, len(posts))
+                        self.assertEqual(len(posts), 1 if text == guide else 2)
+                        self.assertTrue(all(p['msgtype'] == 'text' and 'markdown' not in p for p in posts))
+                        contents = [p['text']['content'] for p in posts]
+                        self.assertEqual(''.join(contents), text.replace(source, anchor))
+                        self.assertTrue(any(anchor in part for part in contents))
+                        self.assertTrue(all(len(part.encode()) <= 2048 for part in contents))
+                        self.assertEqual(record['notification'], text)
+            finally:
+                await sender.aclose()
+
+    async def test_hyperlink_partial_failure_keeps_counts_and_does_not_retry(self):
+        """前片成功后链接片拒绝或响应丢失，沿用FAILED/UNKNOWN且不重复已发片。"""
+        for rejected in (True, False):
+            posts = []
+
+            def handle(request):
+                """第二片在确定拒绝和不确定超时之间切换，不访问真实平台。"""
+                if request.method == 'GET':
+                    return httpx.Response(200, json={"errcode": 0, "access_token": self.token, "expires_in": 7200})
+                posts.append(json.loads(request.content))
+                if len(posts) == 2:
+                    if not rejected:
+                        raise httpx.ReadTimeout('fixture response lost')
+                    return httpx.Response(200, json={"errcode": 60020})
+                return httpx.Response(200, json={"errcode": 0})
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+                sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+                try:
+                    result = await sender.send(self.pending(text='甲' * 670 + '[来源](https://example.com/)' + '尾' * 700))
+                finally:
+                    await sender.aclose()
+            self.assertEqual(result.state, 'SEND_FAILED' if rejected else 'SEND_UNKNOWN')
+            self.assertEqual(result.accepted_parts, 1)
+            self.assertEqual(result.total_parts, 3)
+            self.assertEqual(len(posts), 2)
+            self.assertIn('<a href="https://example.com/">来源</a>', posts[1]['text']['content'])
+
     async def test_expired_token_refreshes_only_one_definitively_unaccepted_send(self):
         """42001/40014可证明未接受，仅允许一次刷新重发相同已保存提示。"""
         for error_code in (42001, 40014):
@@ -541,6 +633,8 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(options["verify"].check_hostname)
             self.assertIsNone(options["verify"].keylog_filename)
             self.assertEqual(options["retries"], 0)
+            self.assertEqual(options["limits"].max_connections, 153)
+            self.assertEqual(options["limits"].max_keepalive_connections, 0)
             self.assertFalse(sender.http.follow_redirects)
             self.assertFalse(sender.http.trust_env)
             await sender.aclose()

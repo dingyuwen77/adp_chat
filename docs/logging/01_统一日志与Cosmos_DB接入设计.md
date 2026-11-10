@@ -37,6 +37,7 @@
 | 业务状态 | `event`、`status`、`reason`、`attempt` | 有明确语义才输出；`event` 用于需要稳定聚合的业务事件，不强制所有诊断记录都有 |
 | 耗时与网络 | `elapsed_ms`、`http_status` | 统一单位/类型；实际计时完成后才输出 |
 | 错误诊断 | `error_code`、`error_stage`、`error_type` | 只写已确认、已脱敏的错误事实；不臆造成功或失败 |
+| 图片失败 | `image_index`、`image_fallback`、`provider_code` | 图片序号及平台整数错误码按数字解析，降级标记按布尔解析；处理阶段与原因见 [docs/wecom-integration/01_网关架构设计.md](../wecom-integration/01_网关架构设计.md#有序图文回复) |
 | 可选上下文 | 来源、恢复动作、结果是否不确定、数量统计等 | 以真实代码与查询价值决定；必要时保留已有合法字段 |
 
 字段**名称与语义**应统一，字段**集合不要求一致**。例如启动日志没有请求 ID；正常完成日志不应凭空输出 `error_code=None`。现有 `duration_ms`、`elapsed_ms` 等命名差异应在实施前核对所有生产者和消费者，再决定统一为 `elapsed_ms`，不得因重命名丢失信息或破坏回归。不要把供应商返回的“接受”描述成用户已收到/已读，也不要把执行结果未知写成明确失败。

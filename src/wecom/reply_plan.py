@@ -3,10 +3,14 @@
 import re
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from html import escape, unescape
+from urllib.parse import urlsplit
 
 
 _URL = re.compile(r"https?://", re.I)
-_IMAGE = re.compile(r"(?<!\\)!\[([^\[\]\n]*)\]\(")
+_REFERENCE = re.compile(r"!?\[")
+_MARKDOWN_ESCAPE = re.compile(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])")
+_LONG_LINK = "[链接过长，无法在企业微信文字消息中完整展示]"
 
 
 def _url_ranges(text: str) -> list[tuple[int, int]]:
@@ -18,7 +22,7 @@ def _url_ranges(text: str) -> list[tuple[int, int]]:
         round_depth, square_depth, end = 0, 0, len(text)
         for index in range(match.end(), len(text)):
             char = text[index]
-            if char.isspace() or char in '<>"\'。！？；，':
+            if char.isspace() or char in '<>"\'。！？；，（）':
                 end = index
                 break
             if char == "(":
@@ -41,7 +45,7 @@ def _url_ranges(text: str) -> list[tuple[int, int]]:
 
 
 def _code_ranges(text: str) -> list[tuple[int, int]]:
-    """代码围栏与反引号游标只向前推进，畸形长串不触发正则尾部回溯。"""
+    """保护围栏、缩进代码和行内反引号；游标前进，畸形长串不触发尾部回溯。"""
     fences = list(re.finditer(r"(?m)^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)", text))
     ranges, index = [], 0
     while index < len(fences):
@@ -57,6 +61,15 @@ def _code_ranges(text: str) -> list[tuple[int, int]]:
                 end = closing.end()
                 break
         ranges.append((opening.start(), end))
+    # 缩进内容保守作为代码保护，避免将示例变成可点击链接或主动下载图片。
+    ranges.extend((match.start(), match.end()) for match in re.finditer(r"(?m)^(?: {4}|\t)[^\n]*(?:\n|$)", text))
+    merged = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    ranges = merged
     runs = list(re.finditer(r"`+", text))
     next_run, next_same = {}, {}
     for index in range(len(runs) - 1, -1, -1):
@@ -102,76 +115,105 @@ class ImageBlock:
 
 
 def text_parts(text: str) -> list[str]:
-    """完整按 UTF-8 分段，优先段落/换行，能容纳的 URL 不从中切断。"""
+    """出站转换安全链接并按字节分段；跳过纯空白片，保留正文格式及完整链接。"""
     if not isinstance(text, str) or not text:
         raise ValueError("empty notification")
-    # 单个 URL 已超平台上限时，明确告知无法展示，避免生成看似可用的半条链接。
-    rewritten, cursor = [], 0
-    for start, end in _url_ranges(text):
-        rewritten.append(text[cursor:start])
-        rewritten.append("[链接过长，无法在企业微信文字消息中完整展示]"
-                         if len(text[start:end].encode("utf-8")) > 2048 else text[start:end])
-        cursor = end
-    rewritten.append(text[cursor:])
+    rewritten, protected, offset = [], [], 0
+    for value, atomic in _wecom_text_units(text):
+        rewritten.append(value)
+        if atomic:
+            protected.append((offset, offset + len(value)))
+        offset += len(value)
     text = "".join(rewritten)
-    urls = _url_ranges(text)
-    url_starts = [a for a, _ in urls]
+    unit_starts = [a for a, _ in protected]
     raw = text.encode("utf-8")
     parts, start, byte_start = [], 0, 0
     while start < len(text):
         end = start + len(raw[byte_start:byte_start + 2048].decode("utf-8", errors="ignore"))
         if end < len(text):
-            url_index = bisect_right(url_starts, end) - 1
-            if url_index >= 0 and urls[url_index][0] < end < urls[url_index][1]:
-                end = urls[url_index][0]
+            unit_index = bisect_right(unit_starts, end) - 1
+            if unit_index >= 0 and protected[unit_index][0] < end < protected[unit_index][1]:
+                end = protected[unit_index][0]
             # 自然边界过近会产生大量短消息；只在当前容量后半区寻找。
             floor = start + (end - start) // 2
             for separator in ("\n\n", "\n", "。", "！", "？", " "):
                 boundary = text.rfind(separator, floor, end)
                 cut = boundary + len(separator)
-                url_index = bisect_right(url_starts, cut) - 1
-                inside_url = url_index >= 0 and urls[url_index][0] < cut < urls[url_index][1]
-                if boundary >= floor and not inside_url:
+                unit_index = bisect_right(unit_starts, cut) - 1
+                inside_unit = unit_index >= 0 and protected[unit_index][0] < cut < protected[unit_index][1]
+                if boundary >= floor and not inside_unit:
                     end = cut
                     break
         parts.append(text[start:end])
         byte_start += len(parts[-1].encode("utf-8"))
         start = end
-    return parts
+    return [part for part in parts if part.strip()]
 
 
-def _markdown(text: str) -> list[TextBlock | ImageBlock]:
-    """识别行内图片及平衡括号，代码/转义语法原样保留，普通来源不转换。"""
-    blocks, cursor, code_index = [], 0, 0
+def _markdown_references(text: str, *, images_only: bool = False):
+    """图文和文字链接共用一次索引；跳过代码/转义，保持嵌套括号和尾文边界。"""
+    cursor, code_index = 0, 0
     codes = _code_ranges(text)
-    matches = list(_IMAGE.finditer(text))
+    matches = [match for match in _REFERENCE.finditer(text) if not images_only or text[match.start()] == "!"]
+    reference_starts = [m.start() for m in matches]
     whitespace = list(re.finditer(r"\s+", text))
     space_starts = [m.start() for m in whitespace]
     space_ends = [m.end() for m in whitespace]
     angles = [i for i, char in enumerate(text) if char == ">"]
-    candidates = {m.end() - 1 for m in matches}
-    stack, closing, escaped = [], {}, False
-    # 只扫描一次括号关系；每个坏的图片开头不能重新读取整段尾部。
+    newlines = [i for i, char in enumerate(text) if char == "\n"]
+    escaped_positions, escaped, quotes = set(), False, []
     for index, char in enumerate(text):
-        if not escaped:
-            if char == "(":
-                stack.append(index)
-            elif char == ")" and stack:
-                opening = stack.pop()
-                if opening in candidates:
-                    closing[opening] = index
+        if escaped:
+            escaped_positions.add(index)
+        elif char in "\"'":
+            quotes.append(index)
         escaped = char == "\\" and not escaped
+    next_quote, quote_ends = {}, {}
+    for index in reversed(quotes):
+        char = text[index]
+        if char in next_quote:
+            quote_ends[index] = next_quote[char]
+        next_quote[char] = index
+    stacks, closing, ignored_until = {"(": [], "[": []}, {}, 0
+    # 两种括号独立建索引；合法title内的括号是文字，不参与目的地配对。
+    for index, char in enumerate(text):
+        if index < ignored_until or index in escaped_positions:
+            continue
+        if char in "\"'" and index and text[index - 1].isspace() and stacks["("]:
+            quote_end = quote_ends.get(index)
+            if quote_end is not None:
+                after = quote_end + 1
+                space_index = bisect_right(space_starts, after) - 1
+                if space_index >= 0 and after < space_ends[space_index]:
+                    after = space_ends[space_index]
+                if text[after:after + 1] == ")":
+                    ignored_until = quote_end + 1
+                    continue
+        if char in stacks:
+            stacks[char].append(index)
+        elif char in ")]":
+            stack = stacks["(" if char == ")" else "["]
+            if stack:
+                closing[stack.pop()] = index
     for match in matches:
         while code_index < len(codes) and codes[code_index][1] <= match.start():
             code_index += 1
-        if (match.start() < cursor or code_index < len(codes)
+        if (match.start() < cursor or match.start() in escaped_positions or code_index < len(codes)
                 and codes[code_index][0] <= match.start() < codes[code_index][1]):
             continue
-        end = closing.get(match.end() - 1)
+        label_start = match.end()
+        label_end = closing.get(label_start - 1)
+        if label_end is None or text[label_end + 1:label_end + 2] != "(":
+            continue
+        line_index = bisect_left(newlines, label_start)
+        if line_index < len(newlines) and newlines[line_index] < label_end:
+            continue
+        opening = label_end + 1
+        end = closing.get(opening)
         if end is None:
             continue
         syntax_end = end + 1
-        start = match.end()
+        start = opening + 1
         # 空白游程只扫描/索引一次；嵌套候选共享空白区时不能重复逐字符遍历。
         space_index = bisect_right(space_starts, start) - 1
         if space_index >= 0 and start < space_ends[space_index]:
@@ -189,25 +231,89 @@ def _markdown(text: str) -> list[TextBlock | ImageBlock]:
             if angle_index == len(angles) or angles[angle_index] >= end:
                 continue
             url_start, url_end = start + 1, angles[angle_index]
+            title = url_end + 1
         else:
             url_start, url_end = start, min(first_space, end)
             title = url_end
-            space_index = bisect_right(space_starts, title) - 1
-            if space_index >= 0 and title < space_ends[space_index]:
-                title = min(end, space_ends[space_index])
-            if title < end and text[title] not in "\"'":
-                continue
+        space_index = bisect_right(space_starts, title) - 1
+        if space_index >= 0 and title < space_ends[space_index]:
+            title = min(end, space_ends[space_index])
         # 先用索引判断无效嵌套目的地，再复制；不能为每个候选复制同一长后缀。
         if url_start == url_end or first_space < url_end:
             continue
+        # 非HTTP目的地内的嵌套候选先排除，避免畸形输入反复复制长后缀。
+        candidate_index = bisect_left(reference_starts, url_start)
+        if (candidate_index < len(matches) and reference_starts[candidate_index] < url_end
+                and not text[url_start:url_start + 8].lower().startswith(("http://", "https://"))):
+            continue
+        if title < end:
+            if text[title] in "\"'":
+                title_end = quote_ends.get(title)
+            else:
+                title_end = closing.get(title) if text[title] == "(" else None
+            if title_end != end - 1:
+                continue
         destination = text[url_start:url_end]
-        if match.start() > cursor:
-            blocks.append(TextBlock(text[cursor:match.start()]))
-        blocks.append(ImageBlock(destination, match.group(1)))
+        yield match.start(), syntax_end, text[label_start:label_end], destination, text[match.start()] == "!"
         cursor = syntax_end
+
+
+def _markdown(text: str) -> list[TextBlock | ImageBlock]:
+    """只提取原位置图片；文字原文留给统一出站渲染，避免污染持久化结果。"""
+    blocks, cursor = [], 0
+    for start, end, label, destination, _ in _markdown_references(text, images_only=True):
+        if start > cursor:
+            blocks.append(TextBlock(text[cursor:start]))
+        blocks.append(ImageBlock(destination, label))
+        cursor = end
     if cursor < len(text):
         blocks.append(TextBlock(text[cursor:]))
     return blocks
+
+
+def _literal_units(text: str):
+    """转义所有原始标签和实体；普通 URL 按实际发送长度整体保护或明确降级。"""
+    cursor = 0
+    for start, end in _url_ranges(text):
+        for char in text[cursor:start]:
+            yield escape(char, quote=False), char in "&<>"
+        value = escape(text[start:end], quote=False)
+        yield value if len(value.encode("utf-8")) <= 2048 else _LONG_LINK, True
+        cursor = end
+    for char in text[cursor:]:
+        yield escape(char, quote=False), char in "&<>"
+
+
+def _safe_link(url: str) -> bool:
+    """仅接受无控制字符、空白、凭据或反斜杠的绝对 HTTP(S) 目标，不发起访问。"""
+    if any(char.isspace() or ord(char) < 32 or 127 <= ord(char) <= 159 or char in "\\<>" for char in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        return (parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
+                and parsed.username is None and parsed.password is None and parsed.port != 0)
+    except ValueError:
+        return False
+
+
+def _wecom_text_units(text: str):
+    """安全文字链接是唯一生成HTML的入口，超大标签退为名称与原地址的普通文字。"""
+    cursor = 0
+    for start, end, label, destination, image in _markdown_references(text):
+        if image:
+            continue
+        url = unescape(_MARKDOWN_ESCAPE.sub(r"\1", destination))
+        if not _safe_link(url):
+            continue
+        yield from _literal_units(text[cursor:start])
+        label = unescape(_MARKDOWN_ESCAPE.sub(r"\1", label))
+        anchor = f'<a href="{escape(url, quote=True)}">{escape(label, quote=False)}</a>'
+        if len(anchor.encode("utf-8")) <= 2048:
+            yield anchor, True
+        else:
+            yield from _literal_units(f"{label}（{url}）")
+        cursor = end
+    yield from _literal_units(text[cursor:])
 
 
 def reply_plan(record: dict) -> list[TextBlock | ImageBlock]:
@@ -250,4 +356,6 @@ def reply_plan(record: dict) -> list[TextBlock | ImageBlock]:
         merged.append(block)
     if pending:
         merged.append(TextBlock("".join(pending)))
-    return merged or [TextBlock(record["notification"])]
+    # 图片之间只用于排版的换行不能独立发成气泡；有正文的块不strip，保留格式。
+    planned = merged or [TextBlock(record["notification"])]
+    return [block for block in planned if not isinstance(block, TextBlock) or block.text.strip()]

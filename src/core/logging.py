@@ -116,8 +116,8 @@ _PREFIX = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) ([^\s\]]+) L(\
 _PAIR = re.compile(r'([a-z][a-z0-9_]*)=("(?:\\.|[^"\\])*"|[^\s]+)')
 _FIELD_NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
 _NUMERIC_FIELDS = {"elapsed_ms", "duration_ms", "http_status", "attempt", "reply_chars",
-                   "reply_method", "queue_depth", "removed", "accepted_parts", "total_parts"}
-_BOOL_FIELDS = {"outcome_uncertain", "duplicate", "stream", "answer_truncated", "local_session_released"}
+                   "reply_method", "queue_depth", "removed", "accepted_parts", "total_parts", "image_index", "provider_code"}
+_BOOL_FIELDS = {"outcome_uncertain", "duplicate", "stream", "answer_truncated", "local_session_released", "image_fallback"}
 # 中文可自由随代码变化；这里仅给既有英文诊断事件提供有意义的默认说明。
 _DESCRIPTIONS = {
     "request_started": "开始调用ADP服务",

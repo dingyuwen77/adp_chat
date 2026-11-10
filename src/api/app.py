@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
             async with AsyncExitStack() as outgoing:
                 adp = AsyncADPClient(config)
                 outgoing.push_async_callback(adp.aclose)
-                sender = create_sender(config)
+                sender = create_sender(config, logger=logger)
                 if sender is not None:
                     outgoing.push_async_callback(sender.aclose)
                 worker = GatewayWorker(gateway, adp, sender=sender)

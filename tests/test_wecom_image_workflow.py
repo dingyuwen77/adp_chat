@@ -25,7 +25,7 @@ class ImageWorkflowTests(unittest.TestCase):
     """仅隔离外部 ADP/企微/图片 HTTP，真实执行回调验签、文件状态及 Worker。"""
 
     def test_callback_to_ordered_native_reply_and_duplicate_is_not_resent(self):
-        """员工提交一次后收到文字/图/文字；相同 MsgId 回调不重复执行或通知。"""
+        """文字/图/图/文字有序发送，图片间纯换行不生成气泡，重复回调不重发。"""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = ChatConfig("fake-key", "local", corp_id="wwfixture", agent_id=1,
@@ -34,6 +34,9 @@ class ImageWorkflowTests(unittest.TestCase):
                 wecom_app_secret="fake-secret", notification_mode="wecom", log_enabled=False,
                 messages_dir=str(root / "messages"), session_file=str(root / "session.json"))
             submitted, sent = [], []
+            answer = ('步骤一![截图](https://lke.cloud.tencent.com/a.png)\n\n \t\n'
+                      '![截图二](https://lke.cloud.tencent.com/b.png)\n'
+                      '参考来源：[密码说明](https://example.com/help?a=1&b=2)\n服务台尾部')
 
             def handle(request):
                 """通过正式协议交付最终 reply，思考内容绝不能进入用户通知。"""
@@ -44,8 +47,7 @@ class ImageWorkflowTests(unittest.TestCase):
                     value = {"Type": "response.completed", "Response": {"Status": "success",
                         "ConversationId": payload["ConversationId"], "Messages": [
                             {"Type": "thought", "Contents": [{"Type": "text", "Text": "内部思考"}]},
-                            {"Type": "reply", "Contents": [{"Type": "text", "Text":
-                                "步骤一![截图](https://lke.cloud.tencent.com/a.png)\n来源与服务台尾部"}]}]}}
+                            {"Type": "reply", "Contents": [{"Type": "text", "Text": answer}]}]}}
                     content = "event: response.completed\ndata: " + json.dumps(value) + "\n\n"
                     return httpx.Response(200, content=content, headers={"Content-Type": "text/event-stream"})
                 if request.url.host == "8.8.8.8":
@@ -85,17 +87,21 @@ class ImageWorkflowTests(unittest.TestCase):
             try:
                 with patch("api.app.load_config", return_value=config), \
                      patch("api.app.AsyncADPClient", side_effect=lambda c: AsyncADPClient(c, http_client=http)), \
-                     patch("api.app.create_sender", side_effect=lambda c: WeComSender(c, http_client=http)), \
+                     patch("api.app.create_sender", side_effect=lambda c, *, logger: WeComSender(c, http_client=http, logger=logger)), \
                      patch("wecom.images.resolve_public", return_value="8.8.8.8"), TestClient(app) as client:
                     response = client.post("/wecom/callback", params=query, content=body)
                     self.assertEqual((response.status_code, response.content), (200, b""))
                     record = client.portal.call(completed)
-                    self.assertEqual([p["msgtype"] for p in sent], ["text", "image", "text"])
-                    self.assertEqual(sent[-1]["text"]["content"], "\n来源与服务台尾部")
-                    self.assertEqual(record["send_result"]["accepted_parts"], 3)
+                    self.assertEqual([p["msgtype"] for p in sent], ["text", "image", "image", "text"])
+                    self.assertTrue(all(p['text']['content'].strip() for p in sent if p['msgtype'] == 'text'))
+                    self.assertEqual(sent[-1]["text"]["content"], '\n参考来源：<a href="https://example.com/help?a=1&amp;b=2">密码说明</a>\n服务台尾部')
+                    self.assertEqual(record['notification'], answer)
+                    self.assertEqual(record['adp_result']['reply_contents'][0][0]['Text'], answer)
+                    self.assertEqual(record["send_result"]["accepted_parts"], 4)
+                    self.assertEqual(record['send_result']['total_parts'], 4)
                     self.assertEqual(record["schema_version"], 3)
                     self.assertEqual(client.post("/wecom/callback", params=query, content=body).status_code, 200)
-                    self.assertEqual((len(submitted), len(sent)), (1, 3))
+                    self.assertEqual((len(submitted), len(sent)), (1, 4))
                     self.assertEqual(read_snapshot(root / "messages" / f"{key}.json")["adp_state"], "ADP_SUCCEEDED")
                     self.assertNotIn("内部思考", str(sent))
             finally:

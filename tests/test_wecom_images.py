@@ -2,15 +2,18 @@
 
 import asyncio
 import json
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 
 from core.config import ChatConfig
+from core.logging import diagnostic_logger, parse_log_line
 from wecom.sender import WeComSender
-from wecom.images import ImageBudget, ImageDownloader, ImageError, resolve_public
+from wecom.images import ImageDownloader, ImageError, resolve_public
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"fixture-image"
@@ -28,7 +31,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                            "步骤一![截图](https://lke.cloud.tencent.com/a.png?sig=private)步骤二"}]]}}
         self.sent, self.uploads, self.downloads = [], [], []
 
-    async def send(self, *, download_status=200, upload_error=0, image_error=None, redirect_host=None):
+    async def send(self, *, download_status=200, upload_error=0, image_error=None, redirect_host=None, logger=None, image_body=PNG):
         """仅替换远端 HTTP/DNS；正式规划、下载校验和发送逻辑均参与。"""
         def handle(request):
             """校验每个生产协议，伪造图片、素材和消息响应。"""
@@ -39,7 +42,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("authorization", request.headers)
                 if redirect_host and request.headers["host"] == "lke.cloud.tencent.com":
                     return httpx.Response(302, headers={"Location": f"https://{redirect_host}/image.png?sig=private"})
-                return httpx.Response(download_status, stream=httpx.ByteStream(PNG), headers={"Content-Type": "image/png"})
+                return httpx.Response(download_status, stream=httpx.ByteStream(image_body), headers={"Content-Type": "image/png"})
             if request.url.path == "/cgi-bin/gettoken":
                 return httpx.Response(200, json={"errcode": 0, "access_token": "fixture-token", "expires_in": 7200})
             if request.url.path == "/cgi-bin/media/upload":
@@ -57,7 +60,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
             with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
-                sender = WeComSender(self.config, http_client=http)
+                sender = WeComSender(self.config, http_client=http, logger=logger)
                 try:
                     return await sender.send(self.record)
                 finally:
@@ -108,23 +111,33 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(outcome.state, "SEND_SIMULATED")
                 self.assertIn("图片未能显示", self.sent[0]["text"]["content"])
 
-    async def test_image_count_limit_keeps_order_and_explicit_fallback(self):
-        """第九张不再下载，前八张和原位置降级均纳入接受计数。"""
+    async def test_thirteen_images_are_all_downloaded_uploaded_and_sent_in_order(self):
+        """正常十三图回答全部尝试原生发送，数量本身不再触发链接降级。"""
         self.record["adp_result"]["reply_contents"] = [[
             {"Type": "image", "Image": {"Url": f"https://lke.cloud.tencent.com/{i}.png"}}
-            for i in range(9)]]
+            for i in range(13)]]
         outcome = await self.send()
-        self.assertEqual((len(self.downloads), len(self.uploads)), (8, 8))
-        self.assertEqual([p["msgtype"] for p in self.sent], ["image"] * 8 + ["text"])
-        self.assertEqual((outcome.accepted_parts, outcome.total_parts), (9, 9))
+        self.assertEqual((len(self.downloads), len(self.uploads)), (13, 13))
+        self.assertEqual([request.url.path for request in self.downloads], [f'/{i}.png' for i in range(13)])
+        self.assertEqual([p["msgtype"] for p in self.sent], ["image"] * 13)
+        self.assertEqual((outcome.accepted_parts, outcome.total_parts, outcome.code), (13, 13, 'accepted'))
+
+    async def test_reply_can_send_multiple_images_totalling_more_than_twenty_mib(self):
+        """同一回答的两张12MiB图片全部发送，整条回复不存在20MiB累计大小限制。"""
+        self.record['adp_result']['reply_contents'] = [[
+            {'Type': 'image', 'Image': {'Url': f'https://lke.cloud.tencent.com/{index}.png'}} for index in range(2)]]
+        outcome = await self.send(image_body=PNG + b'x' * (12 * 1024 * 1024 - len(PNG)))
+        self.assertEqual((len(self.downloads), len(self.uploads)), (2, 2))
+        self.assertEqual([message['msgtype'] for message in self.sent], ['image', 'image'])
+        self.assertEqual((outcome.accepted_parts, outcome.total_parts, outcome.code), (2, 2, 'accepted'))
 
     async def test_shared_prepare_slots_bound_upload_lifetime_and_allow_text_progress(self):
-        """百人请求共享2GiB预约预算：最多51张准备，其余等待且纯文字可继续。"""
+        """两百人共享3GiB预约预算：最多153张准备，其余等待且纯文字可继续。"""
         active, peak, downloads = 0, 0, 0
         full, release = asyncio.Event(), asyncio.Event()
 
         async def handle(request):
-            """挂起51个素材上传，未获预算者不能先下载图片。"""
+            """挂起153个素材上传，未获预算者不能先下载图片。"""
             nonlocal active, peak, downloads
             if request.url.host == "8.8.8.8":
                 downloads += 1
@@ -134,7 +147,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
             if request.url.path == "/cgi-bin/media/upload":
                 active += 1
                 peak = max(peak, active)
-                if active == 51:
+                if active == 153:
                     full.set()
                 try:
                     await release.wait()
@@ -146,21 +159,23 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
             sender = WeComSender(self.config, http_client=http)
             with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
-                tasks = [asyncio.create_task(sender.send({**self.record, "user_id": f"EMP{i}"})) for i in range(100)]
+                tasks = [asyncio.create_task(sender.send({**self.record, "user_id": f"EMP{i}"})) for i in range(200)]
                 try:
                     await asyncio.wait_for(full.wait(), 2)
                     outcome = await sender.send({"user_id": "OTHER", "notification": "纯文字"})
                     self.assertEqual(outcome.state, "SEND_SIMULATED")
-                    self.assertEqual(downloads, 51)
+                    self.assertEqual(downloads, 153)
                 finally:
                     release.set()
                     outcomes = await asyncio.gather(*tasks)
                     await sender.aclose()
-            self.assertEqual((peak, active, downloads), (51, 0, 100))
+            self.assertEqual((peak, active, downloads), (153, 0, 200))
             self.assertTrue(all(o.state == "SEND_SIMULATED" for o in outcomes))
 
     async def test_full_image_budget_times_out_in_place_and_recovers_capacity(self):
         """预算全满时不下载，等待超时降级并保留尾文；释放后新图片正常发送。"""
+        self.record['adp_result']['reply_contents'][0][0]['Text'] = (
+            '步骤一![截图](https://lke.cloud.tencent.com/a.png)![截图二](https://lke.cloud.tencent.com/b.png)步骤二')
         sent, downloads, uploads = [], [], []
 
         def handle(request):
@@ -182,14 +197,18 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
             held = 0
             try:
                 async with asyncio.timeout(1):
-                    for _ in range(51):
+                    for _ in range(153):
                         await sender.images.slots.acquire()
                         held += 1
                 with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
-                    outcome = await sender.send(self.record)
+                    with self.assertLogs('wecom.sender', level='WARNING') as captured:
+                        outcome = await sender.send(self.record)
+                    logs = [record.log_fields for record in captured.records]
+                    self.assertEqual([(entry['image_index'], entry['error_stage'], entry['reason']) for entry in logs],
+                                     [(1, 'capacity_wait', 'image_timeout'), (2, 'prepare_budget', 'image_prepare_budget_exhausted')])
                     self.assertEqual(outcome.code, "accepted_with_image_fallback")
                     self.assertEqual((downloads, uploads), ([], []))
-                    self.assertEqual([p["msgtype"] for p in sent], ["text", "text", "text"])
+                    self.assertEqual([p["msgtype"] for p in sent], ["text", "text", "text", "text"])
                     self.assertIn("图片未能显示", sent[1]["text"]["content"])
                     self.assertEqual(sent[-1]["text"]["content"], "步骤二")
                     for _ in range(held):
@@ -197,8 +216,8 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                     held = 0
                     sent.clear()
                     outcome = await sender.send(self.record)
-                    self.assertEqual((outcome.code, len(downloads), len(uploads)), ("accepted", 1, 1))
-                    self.assertEqual([p["msgtype"] for p in sent], ["text", "image", "text"])
+                    self.assertEqual((outcome.code, len(downloads), len(uploads)), ("accepted", 2, 2))
+                    self.assertEqual([p["msgtype"] for p in sent], ["text", "image", "image", "text"])
             finally:
                 for _ in range(held):
                     sender.images.slots.release()
@@ -209,7 +228,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.config = replace(self.config, image_prepare_timeout_seconds=0.01)
         self.sent.clear()
 
-        async def blocked(block, budget):
+        async def blocked(url):
             """无限等待由正式准备预算取消，不靠人为延长超时制造成功。"""
             await asyncio.Event().wait()
 
@@ -218,9 +237,127 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.code, "accepted_with_image_fallback")
         self.assertEqual([p["msgtype"] for p in self.sent], ["text", "text", "text"])
 
+    async def test_image_failures_are_written_to_the_shared_log_without_private_details(self):
+        """逐图失败日志可解析，包含阶段/序号/错误码，绝不写URL、凭据或异常原文。"""
+        cases = [({'download_status': 404}, 'download', 'image_http_error', 404, None, False),
+                 ({'upload_error': 40005}, 'upload', 'image_upload_rejected', None, 40005, False),
+                 ({'image_error': httpx.ReadTimeout('private-url-token-fixture')}, 'send', 'image_timeout', None, None, True)]
+        self.record['message_key'] = 'a' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            for index, (options, stage, reason, status, provider_code, uncertain) in enumerate(cases):
+                with self.subTest(stage=stage):
+                    path = Path(directory) / f'{index}.log'
+                    config = replace(self.config, log_enabled=True, log_file=str(path))
+                    with diagnostic_logger(config) as logger:
+                        await self.send(logger=logger, **options)
+                    content = path.read_text(encoding='utf-8')
+                    lines = content.splitlines()
+                    self.assertEqual(len(lines), 1)
+                    log = parse_log_line(lines[0])
+                    self.assertEqual(log['message_key'], self.record['message_key'])
+                    self.assertEqual((log['image_index'], log['error_stage'], log['reason']), (1, stage, reason))
+                    self.assertEqual(log.get('http_status'), status)
+                    self.assertEqual(log.get('provider_code'), provider_code)
+                    self.assertEqual(log['outcome_uncertain'], uncertain)
+                    self.assertEqual(log['image_fallback'], not uncertain)
+                    self.assertGreaterEqual(log['elapsed_ms'], 0)
+                    self.assertEqual(log['source_file'], 'sender.py')
+                    self.assertTrue(log['timestamp'].endswith('+08:00'))
+                    for private in ('https://', 'sig=private', 'private-url-token-fixture', 'fixture-token', 'fixture-secret', 'YNND'):
+                        self.assertNotIn(private, content)
+
+    async def test_cancelled_preparation_releases_slot_and_logs_the_current_image(self):
+        """取消上传时释放该图片的名额，日志保留阶段，取消仍向Worker传播。"""
+        entered = asyncio.Event()
+
+        async def handle(request):
+            """挂起上传形成确定取消边界，不提交图片消息。"""
+            if request.url.host == '8.8.8.8':
+                return httpx.Response(200, headers={'Content-Type': 'image/png'}, stream=httpx.ByteStream(PNG))
+            if request.url.path == '/cgi-bin/gettoken':
+                return httpx.Response(200, json={'errcode': 0, 'access_token': 'fixture-token', 'expires_in': 7200})
+            if request.url.path == '/cgi-bin/media/upload':
+                entered.set()
+                await asyncio.Event().wait()
+            raise AssertionError('取消前不应提交图片消息')
+
+        self.record['adp_result']['reply_contents'] = [[{'Type': 'image', 'Image': {'Url': 'https://example.com/one.png'}}]]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(self.config, http_client=http)
+            try:
+                with patch('wecom.images.resolve_public', return_value='8.8.8.8'):
+                    task = asyncio.create_task(sender.send(self.record))
+                    try:
+                        await asyncio.wait_for(entered.wait(), 2)
+                        with self.assertLogs('wecom.sender', level='WARNING') as captured:
+                            task.cancel()
+                            with self.assertRaises(asyncio.CancelledError):
+                                await task
+                        fields = captured.records[0].log_fields
+                        self.assertEqual((fields['image_index'], fields['error_stage'], fields['reason']), (1, 'upload', 'image_cancelled'))
+                        self.assertFalse(fields['outcome_uncertain'])
+                        held = 0
+                        try:
+                            async with asyncio.timeout(1):
+                                for _ in range(153):
+                                    await sender.images.slots.acquire()
+                                    held += 1
+                        finally:
+                            for _ in range(held):
+                                sender.images.slots.release()
+                    finally:
+                        if not task.done():
+                            task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+            finally:
+                await sender.aclose()
+
 
 class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
     """下载安全独立于微信接口，用实际 HTTPX 请求断言公网固定连接。"""
+
+    async def test_single_image_twenty_mib_boundary(self):
+        """单张20MiB可下载，超过一字节无论有无长度头都拒绝。"""
+        mib = 1024 * 1024
+
+        class GeneratedImage(httpx.AsyncByteStream):
+            """逐块生成边界字节，仅本地内存模拟，不构造并发大图或访问外部网络。"""
+
+            def __init__(inner, size):
+                """只保存目标长度和已消费字节，用于验证提前拒绝。"""
+                inner.size, inner.read_bytes = size, 0
+
+            async def __aiter__(inner):
+                """首块保留PNG签名，后续重复固定小块控制测试内存。"""
+                remaining = inner.size
+                first = True
+                while remaining:
+                    length = min(65536, remaining)
+                    chunk = (PNG + b'x' * (length - len(PNG))) if first else b'x' * length
+                    inner.read_bytes += len(chunk)
+                    yield chunk
+                    remaining -= length
+                    first = False
+
+        for size, has_length in ((10 * mib + 1, True), (20 * mib, False), (20 * mib + 1, True), (20 * mib + 1, False)):
+            with self.subTest(size=size, has_length=has_length):
+                stream = GeneratedImage(size)
+                headers = {'Content-Type': 'image/png'}
+                if has_length:
+                    headers['Content-Length'] = str(size)
+                async with httpx.AsyncClient(transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, headers=headers, stream=stream))) as http:
+                    downloader = ImageDownloader(ChatConfig('fixture', 'local'), http_client=http)
+                    with patch('wecom.images.resolve_public', return_value='8.8.8.8'):
+                        if size <= 20 * mib:
+                            body, mime = await downloader.download('https://example.com/image')
+                            self.assertEqual((len(body), mime), (size, 'image/png'))
+                            del body
+                        else:
+                            with self.assertRaisesRegex(ImageError, 'image_size_limit'):
+                                await downloader.download('https://example.com/image')
+                            if has_length:
+                                self.assertEqual(stream.read_bytes, 0)
 
     async def test_dns_rejects_any_private_or_mixed_result(self):
         """混合公网/私网 DNS 不能只挑公网结果后继续。"""
@@ -251,10 +388,10 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
                             "https://user:secret@lke.cloud.tencent.com/a", "https://lke.cloud.tencent.com:8443/a",
                             "https://lke.cloud.tencent.com/a#fragment", "https://127.0.0.1/a"):
                     with self.assertRaises(ImageError):
-                        await downloader.download(url, ImageBudget())
+                        await downloader.download(url)
                 self.assertEqual(requests, [])
                 with self.assertRaises(ImageError):
-                    await downloader.download("https://lke.cloud.tencent.com/start", ImageBudget())
+                    await downloader.download("https://lke.cloud.tencent.com/start")
             self.assertEqual(len(requests), 1)
 
     async def test_default_allows_arbitrary_public_https_origin(self):
@@ -269,7 +406,7 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
             downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
             with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
-                result = await downloader.download("https://unlisted.example.org/a.png", ImageBudget())
+                result = await downloader.download("https://unlisted.example.org/a.png")
         self.assertEqual(result, (PNG, "image/png"))
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0].url.host, "8.8.8.8")
@@ -306,7 +443,7 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
                         url = "https://lke.cloud.tencent.com/start" if redirected else f"https://{target}/image.png"
                         with patch.object(loop, "getaddrinfo", side_effect=resolve):
                             with self.assertRaisesRegex(ImageError, "image_address_blocked"):
-                                await downloader.download(url, ImageBudget())
+                                await downloader.download(url)
                     self.assertEqual(len(requests), int(redirected))
                     self.assertTrue(all(r.url.host == "8.8.8.8" for r in requests))
 
@@ -324,14 +461,14 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
             downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
             with patch("wecom.images.resolve_public", side_effect=("8.8.8.8", "1.1.1.1")) as resolver:
-                body, mime = await downloader.download("https://lke.cloud.tencent.com/start", ImageBudget())
+                body, mime = await downloader.download("https://lke.cloud.tencent.com/start")
             self.assertEqual((body, mime), (PNG, "image/png"))
             self.assertEqual([r.url.host for r in requests], ["8.8.8.8", "1.1.1.1"])
             self.assertEqual(resolver.await_count, 2)
             self.assertEqual(requests[-1].url.params["size"], "mid|1*2|0.2")
             self.assertTrue(all(r.headers["host"] == "lke.cloud.tencent.com" for r in requests))
 
-    async def test_size_format_encoding_and_total_bytes_are_bounded(self):
+    async def test_size_format_and_encoding_are_bounded(self):
         """无长度头的超量流、伪 PNG、压缩响应和不支持格式均不能上传。"""
         for headers, body in (({"Content-Type": "image/png"}, PNG * 4),
                               ({"Content-Type": "image/png"}, b"not a png"),
@@ -344,9 +481,9 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
 
             async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
                 downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
-                with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
+                with patch("wecom.images.resolve_public", return_value="8.8.8.8"), patch("wecom.images.MAX_IMAGE_BYTES", 32):
                     with self.assertRaises(ImageError):
-                        await downloader.download("https://lke.cloud.tencent.com/a", ImageBudget(32))
+                        await downloader.download("https://lke.cloud.tencent.com/a")
 
     async def test_image_request_does_not_forward_cookie_jar(self):
         """按IP连接时不能将连接池Cookie带到同IP托管的其他图片域名。"""
@@ -359,7 +496,7 @@ class ImageDownloadTests(unittest.IsolatedAsyncioTestCase):
             http.cookies.set("image", "private-image-cookie", domain="8.8.8.8")
             downloader = ImageDownloader(ChatConfig("fixture", "local"), http_client=http)
             with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
-                self.assertEqual((await downloader.download("https://lke.cloud.tencent.com/a", ImageBudget()))[0], PNG)
+                self.assertEqual((await downloader.download("https://lke.cloud.tencent.com/a"))[0], PNG)
 
     async def test_config_accepts_full_wildcard_and_preserves_explicit_lists(self):
         """默认及显式完整通配开放公网域名，旧完整名单及空名单仍可使用。"""
