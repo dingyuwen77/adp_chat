@@ -4,11 +4,13 @@ import asyncio
 import base64
 import json
 import os
+import re
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from fastapi.testclient import TestClient
@@ -34,9 +36,9 @@ class ImageWorkflowTests(unittest.TestCase):
                 wecom_app_secret="fake-secret", notification_mode="wecom", log_enabled=False,
                 messages_dir=str(root / "messages"), session_file=str(root / "session.json"))
             submitted, sent = [], []
-            answer = ('步骤一![截图](https://lke.cloud.tencent.com/a.png)\n\n \t\n'
+            answer = ('\n\n 步骤一\n\n![截图](https://lke.cloud.tencent.com/a.png)\n\n \t\n'
                       '![截图二](https://lke.cloud.tencent.com/b.png)\n'
-                      '参考来源：[密码说明](https://example.com/help?a=1&b=2)\n服务台尾部')
+                      '参考来源：[密码说明](https://adp.cloud.tencent.com/workflow/preview?cat=phone&id=2117492441892717568)\n服务台尾部\n\n')
 
             def handle(request):
                 """通过正式协议交付最终 reply，思考内容绝不能进入用户通知。"""
@@ -52,11 +54,12 @@ class ImageWorkflowTests(unittest.TestCase):
                     return httpx.Response(200, content=content, headers={"Content-Type": "text/event-stream"})
                 if request.url.host == "8.8.8.8":
                     return httpx.Response(200, headers={"Content-Type": "image/png"},
-                        stream=httpx.ByteStream(b"\x89PNG\r\n\x1a\nfixture"))
+                        stream=httpx.ByteStream(b"\x89PNG\r\n\x1a\n" + (b'fixture-one' if request.url.path == '/a.png' else b'fixture-two')))
                 if request.url.path == "/cgi-bin/gettoken":
                     return httpx.Response(200, json={"errcode": 0, "access_token": "fake-token", "expires_in": 7200})
                 if request.url.path == "/cgi-bin/media/upload":
-                    return httpx.Response(200, json={"type": "image", "media_id": "fake-media", "created_at": 1})
+                    media = 'fake-media-one' if b'fixture-one' in request.content else 'fake-media-two'
+                    return httpx.Response(200, json={"type": "image", "media_id": media, "created_at": 1})
                 self.assertEqual(request.url.path, "/cgi-bin/message/send")
                 sent.append(json.loads(request.content))
                 return httpx.Response(200, json={"errcode": 0})
@@ -93,8 +96,12 @@ class ImageWorkflowTests(unittest.TestCase):
                     self.assertEqual((response.status_code, response.content), (200, b""))
                     record = client.portal.call(completed)
                     self.assertEqual([p["msgtype"] for p in sent], ["text", "image", "image", "text"])
-                    self.assertTrue(all(p['text']['content'].strip() for p in sent if p['msgtype'] == 'text'))
-                    self.assertEqual(sent[-1]["text"]["content"], '\n参考来源：<a href="https://example.com/help?a=1&amp;b=2">密码说明</a>\n服务台尾部')
+                    self.assertTrue(all(p['text']['content'] == p['text']['content'].strip() for p in sent if p['msgtype'] == 'text'))
+                    self.assertEqual(sent[0]['text']['content'], '步骤一')
+                    self.assertEqual([p['image']['media_id'] for p in sent if p['msgtype'] == 'image'], ['fake-media-one', 'fake-media-two'])
+                    href = re.search(r'href="([^"]+)"', sent[-1]['text']['content']).group(1)
+                    self.assertEqual(parse_qs(urlsplit(href).query), {'cat': ['phone'], 'id': ['2117492441892717568']})
+                    self.assertEqual(sent[-1]['text']['content'], '参考来源：<a href="https://adp.cloud.tencent.com/workflow/preview?cat=phone&id=2117492441892717568">密码说明</a>\n服务台尾部')
                     self.assertEqual(record['notification'], answer)
                     self.assertEqual(record['adp_result']['reply_contents'][0][0]['Text'], answer)
                     self.assertEqual(record["send_result"]["accepted_parts"], 4)

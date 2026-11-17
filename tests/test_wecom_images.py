@@ -99,6 +99,71 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((outcome.state, outcome.accepted_parts, outcome.total_parts), ("SEND_UNKNOWN", 1, 3))
         self.assertEqual([p["msgtype"] for p in self.sent], ["text", "image"])
 
+    async def test_blocked_image_preparation_and_send_ack_preserve_mixed_content_order(self):
+        """首图下载和消息响应分别阻塞时，后文/次图不得越过；下载失败仍原位降级。"""
+        self.record['adp_result']['reply_contents'] = [[
+            {'Type': 'text', 'Text': '\n 步骤一\n\n![一](https://lke.cloud.tencent.com/one.png)\n步骤二\n'},
+            {'Type': 'image', 'Image': {'Url': 'https://lke.cloud.tencent.com/two.png'}},
+            {'Type': 'text', 'Text': '\n尾部\n\n'}]]
+        for fail_first in (False, True):
+            with self.subTest(fail_first=fail_first):
+                sent, downloads = [], []
+                downloading, release_download = asyncio.Event(), asyncio.Event()
+                submitting, release_ack = asyncio.Event(), asyncio.Event()
+
+                async def handle(request):
+                    """通过两处事件屏障观察真实Sender，图片内容与media_id逐张对应。"""
+                    if request.url.host == '8.8.8.8':
+                        downloads.append(request.url.path)
+                        if request.url.path == '/one.png':
+                            downloading.set()
+                            await release_download.wait()
+                            if fail_first:
+                                return httpx.Response(404)
+                        return httpx.Response(200, headers={'Content-Type': 'image/png'},
+                            stream=httpx.ByteStream(PNG + request.url.path.encode()))
+                    if request.url.path == '/cgi-bin/gettoken':
+                        return httpx.Response(200, json={'errcode': 0, 'access_token': 'fixture-token', 'expires_in': 7200})
+                    if request.url.path == '/cgi-bin/media/upload':
+                        media = 'media-one' if b'/one.png' in request.content else 'media-two'
+                        return httpx.Response(200, json={'type': 'image', 'media_id': media})
+                    self.assertEqual(request.url.path, '/cgi-bin/message/send')
+                    payload = json.loads(request.content)
+                    sent.append(payload['text']['content'] if payload['msgtype'] == 'text' else payload['image']['media_id'])
+                    if len(sent) == 2:
+                        submitting.set()
+                        await release_ack.wait()
+                    return httpx.Response(200, json={'errcode': 0})
+
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+                    sender = WeComSender(self.config, http_client=http)
+                    with patch('wecom.images.resolve_public', return_value='8.8.8.8'):
+                        task = asyncio.create_task(sender.send(self.record))
+                        try:
+                            await asyncio.wait_for(downloading.wait(), 2)
+                            await asyncio.sleep(0)
+                            self.assertEqual(sent, ['步骤一'])
+                            self.assertEqual(downloads, ['/one.png'])
+                            release_download.set()
+                            await asyncio.wait_for(submitting.wait(), 2)
+                            await asyncio.sleep(0)
+                            first_image = '[图片未能显示，请打开链接查看]\nhttps://lke.cloud.tencent.com/one.png' if fail_first else 'media-one'
+                            self.assertEqual(sent, ['步骤一', first_image])
+                            self.assertEqual(downloads, ['/one.png'])
+                            release_ack.set()
+                            outcome = await asyncio.wait_for(task, 2)
+                            self.assertEqual(sent, ['步骤一', first_image, '步骤二', 'media-two', '尾部'])
+                            self.assertEqual(downloads, ['/one.png', '/two.png'])
+                            self.assertEqual((outcome.accepted_parts, outcome.total_parts), (5, 5))
+                            self.assertEqual(outcome.code, 'accepted_with_image_fallback' if fail_first else 'accepted')
+                        finally:
+                            release_download.set()
+                            release_ack.set()
+                            if not task.done():
+                                task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+                            await sender.aclose()
+
     async def test_disallowed_host_falls_back_without_download(self):
         """显式名单和空名单继续阻止未允许来源，只发送降级链接。"""
         self.record["adp_result"]["reply_contents"][0][0]["Text"] = "![x](https://evil.example/a.png)"

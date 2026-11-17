@@ -4,12 +4,14 @@ import re
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from html import escape, unescape
-from urllib.parse import urlsplit
+from html.entities import html5
+from urllib.parse import quote, urlsplit
 
 
 _URL = re.compile(r"https?://", re.I)
 _REFERENCE = re.compile(r"!?\[")
 _MARKDOWN_ESCAPE = re.compile(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])")
+_MARKDOWN_ENTITY = re.compile(r"&(?:#[xX][0-9a-fA-F]{1,6}|#[0-9]{1,7}|[a-zA-Z][a-zA-Z0-9]*);")
 _LONG_LINK = "[链接过长，无法在企业微信文字消息中完整展示]"
 
 
@@ -115,7 +117,7 @@ class ImageBlock:
 
 
 def text_parts(text: str) -> list[str]:
-    """出站转换安全链接并按字节分段；跳过纯空白片，保留正文格式及完整链接。"""
+    """先解析再分段并清理气泡首尾空白；保留内部格式及完整链接。"""
     if not isinstance(text, str) or not text:
         raise ValueError("empty notification")
     rewritten, protected, offset = [], [], 0
@@ -147,7 +149,8 @@ def text_parts(text: str) -> list[str]:
         parts.append(text[start:end])
         byte_start += len(parts[-1].encode("utf-8"))
         start = end
-    return [part for part in parts if part.strip()]
+    # 必须在代码/链接识别之后清理，否则缩进代码会被误识别为可点击链接。
+    return [trimmed for part in parts if (trimmed := part.strip())]
 
 
 def _markdown_references(text: str, *, images_only: bool = False):
@@ -296,18 +299,30 @@ def _safe_link(url: str) -> bool:
         return False
 
 
+def _markdown_value(value: str) -> str:
+    """只解码带分号的合法实体，避免unescape误改&copy=、&notin=等查询参数。"""
+    def decode(match):
+        """只将已识别的实体交给标准库，未知名称保持原样。"""
+        entity = match.group()
+        return unescape(entity) if entity.startswith("&#") or entity[1:] in html5 else entity
+
+    return _MARKDOWN_ENTITY.sub(decode, _MARKDOWN_ESCAPE.sub(r"\1", value))
+
+
 def _wecom_text_units(text: str):
     """安全文字链接是唯一生成HTML的入口，超大标签退为名称与原地址的普通文字。"""
     cursor = 0
     for start, end, label, destination, image in _markdown_references(text):
         if image:
             continue
-        url = unescape(_MARKDOWN_ESCAPE.sub(r"\1", destination))
+        url = _markdown_value(destination)
         if not _safe_link(url):
             continue
         yield from _literal_units(text[cursor:start])
-        label = unescape(_MARKDOWN_ESCAPE.sub(r"\1", label))
-        anchor = f'<a href="{escape(url, quote=True)}">{escape(label, quote=False)}</a>'
+        label = _markdown_value(label)
+        # 企微保留href中的HTML实体；URL用百分号编码隔离引号，保留&/=和已有%编码。
+        href = quote(url, safe=":/?#[]@!$&()*+,;=%")
+        anchor = f'<a href="{href}">{escape(label, quote=False)}</a>'
         if len(anchor.encode("utf-8")) <= 2048:
             yield anchor, True
         else:

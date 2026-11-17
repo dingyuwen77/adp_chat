@@ -1,7 +1,9 @@
 """企业微信有序图文规划：直接断言内容顺序、完整性和链接边界。"""
 
+import re
 import unittest
 from html import escape, unescape
+from urllib.parse import parse_qsl, urlsplit
 
 from wecom.reply_plan import ImageBlock, TextBlock, reply_plan, text_parts
 
@@ -49,13 +51,13 @@ class ReplyPlanTests(unittest.TestCase):
         self.assertEqual(repr(record), original)
 
     def test_blank_text_and_long_whitespace_chunks_are_never_sent(self):
-        """纯空白通知及长消息切出的纯换行片全部跳过，有正文的空白保持原样。"""
+        """纯空白片跳过，气泡首尾留白清理，正文内部段落与缩进保持原样。"""
         for blank in ('\n\n', ' \t\r\n', '\u00a0\u3000', '\n' * 5000):
             with self.subTest(blank_length=len(blank)):
                 self.assertEqual(reply_plan({'notification': blank}), [])
                 self.assertEqual(text_parts(blank), [])
         normal = '\n\n正文\n\n    缩进与段落\n\n'
-        self.assertEqual(text_parts(normal), [normal])
+        self.assertEqual(text_parts(normal), [normal.strip()])
         for text in ('\n' * 5000 + '正文', '正文' + '\n' * 5000, '\n' * 2048 + '[来源](https://example.com/)'):
             with self.subTest(length=len(text)):
                 parts = text_parts(text)
@@ -63,15 +65,23 @@ class ReplyPlanTests(unittest.TestCase):
                 self.assertTrue(all(part.strip() and len(part.encode()) <= 2048 for part in parts))
                 self.assertTrue(any('正文' in part or '<a href=' in part for part in parts))
 
-    def test_paragraph_and_url_boundaries_preserve_all_bytes(self):
-        """来源转为完整超链接后整体移动，正文与段落边界保留。"""
+    def test_every_emitted_text_part_has_no_outer_whitespace(self):
+        """普通图文文字和长段落各分片都清理边界，不能重新生成空白气泡。"""
+        text = '\r\n \t正文\n\n    保留内部缩进\n\n结束\t \r\n'
+        self.assertEqual(text_parts(text), ['正文\n\n    保留内部缩进\n\n结束'])
+        parts = text_parts('\n' * 3 + ('甲' * 600 + '\n\n') * 4 + '\t\n')
+        self.assertTrue(all(part == part.strip() and part for part in parts))
+        self.assertEqual(''.join(parts).replace('\n', ''), '甲' * 2400)
+
+    def test_paragraph_boundaries_trim_bubbles_and_keep_links_complete(self):
+        """来源整体移到下一气泡，气泡边界的空行清理，气泡内部换行保留。"""
         url = "https://adp.cloud.tencent.com/preview?" + "x" * 300
         text = "甲" * 600 + "\n\n" + "[来源](" + url + ")\n尾部"
         parts = text_parts(text)
-        self.assertEqual("".join(parts), "甲" * 600 + "\n\n" + f'<a href="{url}">来源</a>\n尾部')
+        self.assertEqual("".join(parts), "甲" * 600 + f'<a href="{url}">来源</a>\n尾部')
         self.assertTrue(all(len(p.encode()) <= 2048 for p in parts))
         self.assertTrue(any(url in p for p in parts))
-        self.assertTrue(parts[0].endswith("\n\n"))
+        self.assertEqual(parts[0], "甲" * 600)
 
     def test_oversized_single_url_has_explicit_fallback(self):
         """平台无法容纳的单个链接明确说明，不发截断且无法打开的 URL。"""
@@ -92,7 +102,7 @@ class ReplyPlanTests(unittest.TestCase):
         text = "请查看：[Windows_修改密码](https://example.com/help?a=1&b=2)\n相关：[MFA](http://example.com/mfa)"
         record = {"notification": text}
         self.assertEqual(reply_plan(record), [TextBlock(text)])
-        self.assertEqual(text_parts(text), ['请查看：<a href="https://example.com/help?a=1&amp;b=2">Windows_修改密码</a>\n'
+        self.assertEqual(text_parts(text), ['请查看：<a href="https://example.com/help?a=1&b=2">Windows_修改密码</a>\n'
                                            '相关：<a href="http://example.com/mfa">MFA</a>'])
         self.assertEqual(record["notification"], text)
 
@@ -111,7 +121,8 @@ class ReplyPlanTests(unittest.TestCase):
         ]
         for source, label, url in cases:
             with self.subTest(source=source):
-                self.assertEqual(text_parts(source), [f'<a href="{escape(url, quote=True)}">{escape(label, quote=False)}</a>尾文'])
+                expected_url = url.replace('"', '%22').replace("'", '%27')
+                self.assertEqual(text_parts(source), [f'<a href="{expected_url}">{escape(label, quote=False)}</a>尾文'])
 
     def test_code_images_escaped_and_malformed_links_remain_literal(self):
         """图片、代码、转义与畸形语法不被误转成文字超链接。"""
@@ -124,7 +135,7 @@ class ReplyPlanTests(unittest.TestCase):
                    '[示例](https://example.com/a "未闭合)', '[示例](<https://example.com/a> garbage)']
         for source in samples:
             with self.subTest(source=source):
-                self.assertEqual(unescape(''.join(text_parts(source))), source)
+                self.assertEqual(unescape(''.join(text_parts(source))), source.strip())
                 self.assertNotIn('<a ', ''.join(text_parts(source)))
 
     def test_unsafe_schemes_controls_and_raw_html_cannot_create_anchors(self):
@@ -133,6 +144,8 @@ class ReplyPlanTests(unittest.TestCase):
                    '[名称](//example.com/a)', '[名称](https://)',
                    '[名称](https://example.com/\x00a)', '[名称](https://example.com/\x80a)',
                    '[名称](https://user:pass@example.com/a)',
+                   '[名称](https://example.com/?q=&NewLine;foo)',
+                   '[名称](https://example.com/?q=&#x09;foo)',
                    '[名称](java&#115;cript:alert(1))', '<a href="javascript:alert(1)">原始标签</a>',
                    '<a href="https://example.com/">原始链接</a>']
         for source in samples:
@@ -144,11 +157,44 @@ class ReplyPlanTests(unittest.TestCase):
     def test_markdown_entities_are_decoded_once_then_escaped_for_wecom(self):
         """目的地实体不能双重编码，实体编码的属性注入仍被封在href内。"""
         source = '[A &amp; B](https://example.com/?a=1&amp;b=&quot;x&quot;)'
-        self.assertEqual(text_parts(source), ['<a href="https://example.com/?a=1&amp;b=&quot;x&quot;">A &amp; B</a>'])
+        self.assertEqual(text_parts(source), ['<a href="https://example.com/?a=1&b=%22x%22">A &amp; B</a>'])
+
+    def test_invalid_numeric_entities_cannot_break_a_notification(self):
+        """超长数字不是可解码实体，仍作为普通文字分段，不能触发整数转换失败。"""
+        label = '&#' + '9' * 5000 + ';'
+        parts = text_parts(f'[{label}](https://example.com/)尾文')
+        self.assertEqual(''.join(parts), escape(label, quote=False) + '（https://example.com/）尾文')
+        self.assertTrue(all(0 < len(part.encode()) <= 2048 for part in parts))
+
+    def test_literal_href_preserves_query_keys_and_percent_encodes_attribute_delimiters(self):
+        """按企微实际复制的href直接解析，禁止依赖HTML反转义掩盖amp;id回归。"""
+        urls = [
+            ('https://adp.cloud.tencent.com/workflow/preview?cat=phone&id=2117492441892717568',
+             [('cat', 'phone'), ('id', '2117492441892717568')]),
+            ('https://example.com/?a=1&copy=2&notin=3&id=one&id=two&empty=',
+             [('a', '1'), ('copy', '2'), ('notin', '3'), ('id', 'one'), ('id', 'two'), ('empty', '')]),
+            ('https://example.com/?a=1&notit;=2', [('a', '1'), ('notit;', '2')]),
+            ('https://example.com/?q=%26amp%3Bid%3Dvalue&name=中文#section',
+             [('q', '&amp;id=value'), ('name', '中文')]),
+            ('https://example.com/?q=&quot;x&quot;&a=&#39;y&#39;', [('q', '"x"'), ('a', "'y'")]),
+        ]
+        for url, expected in urls:
+            with self.subTest(url=url):
+                rendered = text_parts(f'[来源]({url})')[0]
+                href = re.search(r'<a href="([^"]+)">', rendered).group(1)
+                self.assertEqual(parse_qsl(urlsplit(href).query, keep_blank_values=True), expected)
+                self.assertNotIn('&amp;', href)
+                self.assertNotIn('&quot;', href)
+                self.assertNotIn('&#', href)
+                if '#section' in url:
+                    self.assertTrue(href.endswith('#section'))
+
+        rendered = text_parts('''[来源](https://example.com/?q="onclick='boom')''')[0]
+        self.assertEqual(rendered, '''<a href="https://example.com/?q=%22onclick=%27boom%27">来源</a>''')
 
     def test_anchor_and_entities_are_atomic_at_utf8_boundaries(self):
         """按实际转义后字节分段，标签与实体都完整，名称中的自然边界不能截断链接。"""
-        anchor = '<a href="https://example.com/?a=1&amp;b=2">来源 一。二</a>'
+        anchor = '<a href="https://example.com/?a=1&b=2">来源 一。二</a>'
         source = '[来源 一。二](https://example.com/?a=1&b=2)'
         for prefix in ('甲' * 670, 'x' * (2048 - len(anchor.encode())), 'x' * 2047):
             parts = text_parts(prefix + source + '<&>尾文')
@@ -168,7 +214,7 @@ class ReplyPlanTests(unittest.TestCase):
         self.assertTrue(any(url in part for part in parts))
 
     def test_single_anchor_at_exact_limit_and_escape_expansion_overflow(self):
-        """2048字节标签可以整体发送，多一个字节或转义膨胀后降级也不能截断标签。"""
+        """2048字节标签整体发送，URL编码膨胀后降级；&分隔符不能人为膨胀。"""
         prefix = 'https://example.com/'
         overhead = len(f'<a href="{prefix}">名</a>'.encode())
         url = prefix + 'x' * (2048 - overhead)
@@ -177,9 +223,11 @@ class ReplyPlanTests(unittest.TestCase):
         self.assertEqual(text_parts(f'[名]({url})'), [expected])
         self.assertEqual(''.join(text_parts(f'[名]({url}x)')), f'名（{url}x）')
         rendered = ''.join(text_parts('[名](https://example.com/?' + '&' * 500 + ')尾文'))
-        self.assertIn('链接过长', rendered)
-        self.assertTrue(rendered.endswith('）尾文'))
-        self.assertNotIn('<a ', rendered)
+        self.assertIn('<a ', rendered)
+        self.assertNotIn('链接过长', rendered)
+        encoded_overflow = ''.join(text_parts('[名](https://example.com/?q=' + '中' * 250 + ')尾文'))
+        self.assertNotIn('<a ', encoded_overflow)
+        self.assertTrue(encoded_overflow.endswith('）尾文'))
 
     def test_many_unclosed_image_openers_have_linear_character_reads(self):
         """未闭合及嵌套但无效的目的地都不能反复扫描或复制相同尾部。"""
@@ -209,7 +257,14 @@ class ReplyPlanTests(unittest.TestCase):
                        '[x](' * 500 + ' ' * 500 + ')' * 500,
                        '[x]( "' * 500 + ')' * 500):
             text = CountedText(sample)
-            self.assertEqual(''.join(text_parts(text)), sample)
+            parts = text_parts(text)
+            remaining = sample
+            for part in parts:
+                remaining = remaining.lstrip()
+                self.assertTrue(remaining.startswith(part))
+                remaining = remaining[len(part):]
+            self.assertFalse(remaining.strip())
+            self.assertTrue(all(part == part.strip() for part in parts))
             self.assertLessEqual(text.reads, len(text) * 10)
 
     def test_unknown_reply_uses_saved_notice_and_unsupported_is_visible(self):

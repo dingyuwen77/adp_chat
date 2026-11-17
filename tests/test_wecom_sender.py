@@ -146,7 +146,7 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, json={"errcode": 0})
 
         source = '[A账号密码_Windows_修改密码](https://adp.cloud.tencent.com/workflow/preview?cat=phone&id=2115993105014657280)'
-        anchor = '<a href="https://adp.cloud.tencent.com/workflow/preview?cat=phone&amp;id=2115993105014657280">A账号密码_Windows_修改密码</a>'
+        anchor = '<a href="https://adp.cloud.tencent.com/workflow/preview?cat=phone&id=2115993105014657280">A账号密码_Windows_修改密码</a>'
         guide = ('**四、电脑端更改密码方法二**\n\n'
                  '1. 在您公司电脑或个人电脑的浏览器里打开网址：https://passwordreset.microsoftonline.com/ 在校下载的页面输入您的公司邮箱和验证项\n'
                  '2. 在接下来的页面输入您的公司邮箱和验证码，点击下一步\n'
