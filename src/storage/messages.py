@@ -418,13 +418,14 @@ class MessageStore:
             return deepcopy(record)
 
     def list_unfinished(self) -> list[dict]:
-        """返回恢复/核查所需记录；UNKNOWN保留证据但不会占用用户。"""
+        """按可靠接收序号返回恢复记录；目录枚举顺序不能决定通知先后。"""
         with self._lock:
             if not self._healthy:
                 raise _storage_error()
-            return [deepcopy(r) for r in self._messages.values()
-                    if r["adp_state"] in ACTIVE_ADP or r["send_state"] not in FINAL_SEND
-                    or r["adp_state"] == "ADP_UNKNOWN" or r["send_state"] == "SEND_UNKNOWN"]
+            unfinished = [deepcopy(r) for r in self._messages.values()
+                          if r["adp_state"] in ACTIVE_ADP or r["send_state"] not in FINAL_SEND
+                          or r["adp_state"] == "ADP_UNKNOWN" or r["send_state"] == "SEND_UNKNOWN"]
+            return sorted(unfinished, key=lambda record: record["receive_sequence"])
 
     def purge(self, *, now=None) -> int:
         """只处理可证明闭合的状态；7天脱敏已接受正文，30天后删去重记录。"""
