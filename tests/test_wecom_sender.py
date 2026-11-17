@@ -12,7 +12,7 @@ from dataclasses import replace
 from dataclasses import asdict
 from pathlib import Path
 from threading import Event
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -687,6 +687,114 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await asyncio.gather(*tasks)
         self.assertLess(order.index(("1001", "end")), order.index(("1002", "start")))
+
+    async def test_final_image_pause_holds_only_the_same_employee_notification(self):
+        """已接受末图后的等待仍占同员工通知锁，其他员工的纯文字可立即完成。"""
+        class ADP:
+            """沿真实 Worker 生成一轮单图及两轮纯文字待发快照。"""
+
+            async def request(inner, record):
+                """只有首轮包含原生图片，其他回复不应进入等待。"""
+                contents = (({"Type": "image", "Image": {"Url": "https://example.test/a.png"}},),) if record["msg_id"] == "3001" else ()
+                result = ChatResult(record["msg_id"], record["conversation_id"], record["request_id"], reply_contents=contents)
+                return ADPOutcome("ADP_SUCCEEDED", result.text, result=result)
+
+        preparing = GatewayWorker(self.gateway, ADP())
+        records = []
+        for user, msg in (("YNND", "3001"), ("YNND", "3002"), ("SIYU", "3003")):
+            record = self.receive(user, msg)
+            await preparing._execute(record)
+            records.append(self.gateway.store.get(record["message_key"]))
+        entered, release = asyncio.Event(), asyncio.Event()
+        sent = []
+
+        async def pause(seconds):
+            """在末图已接受的等待阶段建立屏障，不能用固定短等待猜测锁状态。"""
+            self.assertEqual(seconds, 2)
+            entered.set()
+            await release.wait()
+
+        def handle(request):
+            """仅模拟 Token、素材与消息接口，观察实际提交的接收人及类型。"""
+            if request.url.path == "/cgi-bin/gettoken":
+                return httpx.Response(200, json={"errcode": 0, "access_token": "fixture-token", "expires_in": 7200})
+            if request.url.path == "/cgi-bin/media/upload":
+                return httpx.Response(200, json={"type": "image", "media_id": "fixture-media"})
+            self.assertEqual(request.url.path, "/cgi-bin/message/send")
+            payload = json.loads(request.content)
+            sent.append((payload["touser"], payload["msgtype"]))
+            return httpx.Response(200, json={"errcode": 0})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            sender = WeComSender(replace(self.config, wecom_app_secret=self.secret), http_client=http)
+            worker = GatewayWorker(self.gateway, ADP(), sender=sender)
+            with patch("wecom.sender.sleep", side_effect=pause), \
+                 patch.object(sender.images, "download", new_callable=AsyncMock, return_value=(b"fixture", "image/png")):
+                tasks = [asyncio.create_task(worker._execute_notification(records[0]))]
+                try:
+                    await asyncio.wait_for(entered.wait(), 2)
+                    tasks.extend(asyncio.create_task(worker._execute_notification(record)) for record in records[1:])
+                    await asyncio.wait_for(tasks[2], 2)
+                    self.assertEqual(sent, [("YNND", "image"), ("SIYU", "text")])
+                    self.assertEqual(self.gateway.store.get(records[1]["message_key"])["send_state"], "PENDING")
+                    self.assertEqual(self.gateway.store.get(records[0]["message_key"])["send_state"], "SEND_ARMED")
+                finally:
+                    release.set()
+                    await asyncio.gather(*tasks)
+                    await sender.aclose()
+        self.assertEqual(sent, [("YNND", "image"), ("SIYU", "text"), ("YNND", "text")])
+        self.assertTrue(all(self.gateway.store.get(record["message_key"])["send_state"] == "SEND_SIMULATED" for record in records))
+
+    async def test_recovered_notifications_follow_receive_sequence_instead_of_directory_order(self):
+        """重启后目录倒序枚举，两轮已完成答案仍须按接收序号发送。"""
+        class ADP:
+            """沿真实 Worker 生成待发送快照，不调用外部平台。"""
+
+            async def request(inner, record):
+                """每轮立即成功，允许同员工接收下一轮。"""
+                result = ChatResult("恢复顺序测试", record["conversation_id"], record["request_id"])
+                return ADPOutcome("ADP_SUCCEEDED", result.text, result=result)
+
+        preparing = GatewayWorker(self.gateway, ADP())
+        records = []
+        for msg_id in ("2001", "2002"):
+            record = self.receive(msg=msg_id)
+            await preparing._execute(record)
+            records.append(self.gateway.store.get(record["message_key"]))
+        expected = [record["receive_sequence"] for record in records]
+        self.assertEqual([r["receive_sequence"] for r in self.gateway.store.list_unfinished()], expected)
+        self.gateway.close()
+        original_glob = Path.glob
+        snapshots = [self.root / "messages" / f'{r["message_key"]}.json' for r in reversed(records)]
+
+        def reversed_snapshots(path, pattern, *args, **kwargs):
+            """文件系统没有顺序保证；只倒置本用例的普通快照枚举。"""
+            if path == self.root / "messages" and pattern == "*.json":
+                return iter(snapshots)
+            return original_glob(path, pattern, *args, **kwargs)
+
+        with patch.object(Path, "glob", reversed_snapshots):
+            self.gateway = WeComGateway(self.config, logging.getLogger("wecom-d-test"))
+        self.addCleanup(self.gateway.close)
+        order = []
+
+        class Sender(SimulatedSender):
+            """观察恢复后的真实调度，不直接调用通知执行函数。"""
+
+            async def send(inner, record):
+                """仅记录接收序号，企微边界保持模拟。"""
+                order.append(record["receive_sequence"])
+                return await super().send(record)
+
+        worker = GatewayWorker(self.gateway, ADP(), sender=Sender(self.config))
+        try:
+            await worker.start()
+            await self.wait_for(lambda: all(
+                self.gateway.store.get(r["message_key"])["send_state"] == "SEND_SIMULATED" for r in records))
+            self.assertEqual(order, expected)
+            self.assertIsNone(worker.failure)
+        finally:
+            await worker.stop()
 
     async def test_reserved_or_multiple_targets_never_reach_http(self):
         """单员工契约禁止@all/多人列表，连Token请求也不应发出。"""

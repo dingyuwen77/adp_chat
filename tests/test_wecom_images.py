@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -30,6 +30,10 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                        "adp_result": {"reply_contents": [[{"Type": "text", "Text":
                            "步骤一![截图](https://lke.cloud.tencent.com/a.png?sig=private)步骤二"}]]}}
         self.sent, self.uploads, self.downloads = [], [], []
+        # 仅替换发送器的业务等待；事件循环和网络超时仍使用真实调度。
+        pacing = patch("wecom.sender.sleep", new_callable=AsyncMock, create=True)
+        self.pause = pacing.start()
+        self.addCleanup(pacing.stop)
 
     async def send(self, *, download_status=200, upload_error=0, image_error=None, redirect_host=None, logger=None, image_body=PNG):
         """仅替换远端 HTTP/DNS；正式规划、下载校验和发送逻辑均参与。"""
@@ -73,6 +77,97 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([self.sent[0]["text"]["content"], self.sent[2]["text"]["content"]], ["步骤一", "步骤二"])
         self.assertEqual(self.sent[1]["image"], {"media_id": "fixture-media"})
         self.assertEqual((outcome.state, outcome.accepted_parts, outcome.total_parts), ("SEND_SIMULATED", 3, 3))
+
+    async def test_mixed_reply_paces_each_accepted_message_without_spending_io_budgets(self):
+        """首图前的文字和末条也等待；累计六秒业务等待不耗尽一秒 I/O 预算。"""
+        pauses, clock = [], [100.0]
+
+        async def pause(seconds):
+            """在每次等待时记录已提交内容，并推进独立于事件循环的业务时钟。"""
+            pauses.append((len(self.sent), self.sent[-1]["msgtype"], seconds))
+            clock[0] += seconds
+
+        self.pause.side_effect = pause
+        self.config = replace(self.config, send_timeout_seconds=1, image_prepare_timeout_seconds=1)
+        with patch("wecom.sender.monotonic", side_effect=lambda: clock[0]):
+            outcome = await self.send()
+        self.assertEqual(pauses, [(1, "text", 2), (2, "image", 2), (3, "text", 2)])
+        self.assertEqual((outcome.state, outcome.accepted_parts, outcome.total_parts), ("SEND_SIMULATED", 3, 3))
+
+    async def test_mixed_reply_paces_each_utf8_text_part_and_native_image(self):
+        """原生图片前的长文字拆成两个气泡，两个气泡都分别等待。"""
+        text = "长" * 700
+        self.record["adp_result"]["reply_contents"] = [[
+            {"Type": "text", "Text": text},
+            {"Type": "image", "Image": {"Url": "https://lke.cloud.tencent.com/a.png"}},
+            {"Type": "text", "Text": "尾部"}]]
+        pauses = []
+
+        async def pause(seconds):
+            """记录真实 UTF-8 分段提交后的等待边界。"""
+            pauses.append((len(self.sent), seconds))
+
+        self.pause.side_effect = pause
+        outcome = await self.send()
+        self.assertEqual([p["msgtype"] for p in self.sent], ["text", "text", "image", "text"])
+        self.assertEqual("".join(p["text"]["content"] for p in self.sent[:2]), text)
+        self.assertEqual(pauses, [(1, 2), (2, 2), (3, 2), (4, 2)])
+        self.assertEqual((outcome.accepted_parts, outcome.total_parts), (4, 4))
+
+    async def test_pure_text_reply_never_waits_even_when_split(self):
+        """无图片的短回复与超长多分段回复均保持立即连续提交。"""
+        for text in ("纯文字", "长文字" * 1600):
+            with self.subTest(length=len(text)):
+                self.sent.clear()
+                self.record["adp_result"]["reply_contents"] = [[{"Type": "text", "Text": text}]]
+                outcome = await self.send()
+                self.assertEqual("".join(p["text"]["content"] for p in self.sent), text)
+                self.assertEqual((outcome.state, outcome.accepted_parts), ("SEND_SIMULATED", len(self.sent)))
+                self.pause.assert_not_awaited()
+
+    async def test_image_fallback_keeps_the_reply_pacing_policy(self):
+        """图片准备失败而改发文字链接，仍按整轮含图片对每条实际消息等待。"""
+        for options in ({"download_status": 404}, {"upload_error": 40005}):
+            with self.subTest(options=options):
+                self.sent.clear()
+                pauses = []
+
+                async def pause(seconds):
+                    """观察降级回复中每个已提交分段的等待位置。"""
+                    pauses.append((len(self.sent), seconds))
+
+                self.pause.side_effect = pause
+                outcome = await self.send(**options)
+                self.assertEqual(pauses, [(1, 2), (2, 2), (3, 2)])
+                self.assertEqual(outcome.code, "accepted_with_image_fallback")
+                self.assertTrue(all(p["msgtype"] == "text" for p in self.sent))
+
+    async def test_unknown_image_send_waits_only_after_the_accepted_text(self):
+        """结果未知的图片不等待、不补后文、不重发，已接受的前文已完成等待。"""
+        pauses = []
+
+        async def pause(seconds):
+            """记录等待位置，排除向结果未知的消息之后继续发送。"""
+            pauses.append((len(self.sent), seconds))
+
+        self.pause.side_effect = pause
+        outcome = await self.send(image_error=httpx.ReadTimeout("fixture"))
+        self.assertEqual(pauses, [(1, 2)])
+        self.assertEqual((outcome.state, outcome.accepted_parts, outcome.total_parts), ("SEND_UNKNOWN", 1, 3))
+        self.assertEqual([p["msgtype"] for p in self.sent], ["text", "image"])
+
+    async def test_cancel_after_accepted_image_does_not_log_an_image_failure(self):
+        """已确认图片后的等待可取消，不误报图片失败或继续提交后文。"""
+        async def pause(seconds):
+            """只在图片明确接受后的等待边界模拟取消。"""
+            if self.sent[-1]["msgtype"] == "image":
+                raise asyncio.CancelledError
+
+        self.pause.side_effect = pause
+        with self.assertNoLogs("wecom.sender", level="WARNING"):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.send()
+        self.assertEqual([p["msgtype"] for p in self.sent], ["text", "image"])
 
     async def test_download_or_upload_failure_falls_back_in_place(self):
         """未提交图片消息时，失败只降级一次并继续后文。"""

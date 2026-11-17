@@ -9,7 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, call, patch
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -91,6 +91,7 @@ class ImageWorkflowTests(unittest.TestCase):
                 with patch("api.app.load_config", return_value=config), \
                      patch("api.app.AsyncADPClient", side_effect=lambda c: AsyncADPClient(c, http_client=http)), \
                      patch("api.app.create_sender", side_effect=lambda c, *, logger: WeComSender(c, http_client=http, logger=logger)), \
+                     patch("wecom.sender.sleep", new_callable=AsyncMock) as pause, \
                      patch("wecom.images.resolve_public", return_value="8.8.8.8"), TestClient(app) as client:
                     response = client.post("/wecom/callback", params=query, content=body)
                     self.assertEqual((response.status_code, response.content), (200, b""))
@@ -106,6 +107,7 @@ class ImageWorkflowTests(unittest.TestCase):
                     self.assertEqual(record['adp_result']['reply_contents'][0][0]['Text'], answer)
                     self.assertEqual(record["send_result"]["accepted_parts"], 4)
                     self.assertEqual(record['send_result']['total_parts'], 4)
+                    self.assertEqual(pause.await_args_list, [call(2)] * 4)
                     self.assertEqual(record["schema_version"], 3)
                     self.assertEqual(client.post("/wecom/callback", params=query, content=body).status_code, 200)
                     self.assertEqual((len(submitted), len(sent)), (1, 4))

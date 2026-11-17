@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import ssl
+from asyncio import sleep
 from dataclasses import dataclass
 from time import monotonic
 
@@ -224,6 +225,7 @@ class WeComSender:
             total = sum(len(text_parts(block.text)) if isinstance(block, TextBlock) else 1 for block in blocks)
             if not total:
                 return SendOutcome("SEND_FAILED", self.source, False, 0, None, "empty_notification")
+            pace_messages = any(isinstance(block, ImageBlock) for block in blocks)
             send_remaining = self.config.send_timeout_seconds
             prepare_remaining = self.config.image_prepare_timeout_seconds
             image_count, degraded = 0, False
@@ -250,9 +252,9 @@ class WeComSender:
                         prepare_remaining -= monotonic() - started
                 else:
                     messages = [("text", {"content": part}) for part in text_parts(block.text)]
-                started = monotonic()
-                async with asyncio.timeout(send_remaining):
-                    for msgtype, content in messages:
+                for msgtype, content in messages:
+                    started = monotonic()
+                    async with asyncio.timeout(send_remaining):
                         if attempt is not None:
                             attempt.stage = "send_token"
                         token = await self._access_token()
@@ -292,7 +294,12 @@ class WeComSender:
                             accepted += 1
                             uncertain = False
                             break
-                send_remaining -= monotonic() - started
+                    send_remaining -= monotonic() - started
+                    attempt = None
+                    if pace_messages:
+                        # 整轮含图才逐条等待；末条也等待以保留同员工跨回复的间隔。
+                        # 异步等待位于 I/O 预算外，不能让长图文因业务延时提前超时。
+                        await sleep(2)
             state = "SEND_ACCEPTED" if self.source == "wecom_api" else "SEND_SIMULATED"
             return SendOutcome(state, self.source, True, accepted, total,
                                "accepted_with_image_fallback" if degraded else "accepted")
