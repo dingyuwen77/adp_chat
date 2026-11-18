@@ -57,6 +57,7 @@ class ChatConfig:
     image_allowed_hosts: list[str] = field(default_factory=lambda: ["*"])
     image_prepare_timeout_seconds: float = 30
     callback_url: str = ""
+    mixed_message_delay_seconds: float = 2
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -140,6 +141,8 @@ class ChatConfig:
                 or (self.notification_mode == "simulated" and self.gateway_environment != "test")
                 or not 0 < self.send_timeout_seconds <= TIMEOUT_MAX):
             raise ChatError("config", "invalid_notification", "通知模式、环境或超时配置无效。")
+        if not 0 <= self.mixed_message_delay_seconds <= TIMEOUT_MAX:
+            raise ChatError("config", "invalid_notification", "图文消息间隔必须在0至系统支持的秒数范围之间。")
         if (not 0 < self.image_prepare_timeout_seconds <= 300
                 or len(self.image_allowed_hosts) > 32
                 or any(not isinstance(host, str) or len(host) > 253
@@ -170,6 +173,7 @@ _SECTIONS = {
         "adp_url": str, "adp_response_max_bytes": int,
         "notification_mode": str, "gateway_environment": str, "wecom_app_secret": str,
         "send_timeout_seconds": (int, float),
+        "mixed_message_delay_seconds": (int, float),
         "image_allowed_hosts": list, "image_prepare_timeout_seconds": (int, float),
     },
     "logging": {

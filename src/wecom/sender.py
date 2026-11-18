@@ -225,7 +225,8 @@ class WeComSender:
             total = sum(len(text_parts(block.text)) if isinstance(block, TextBlock) else 1 for block in blocks)
             if not total:
                 return SendOutcome("SEND_FAILED", self.source, False, 0, None, "empty_notification")
-            pace_messages = any(isinstance(block, ImageBlock) for block in blocks)
+            pace_messages = (self.config.mixed_message_delay_seconds > 0
+                             and any(isinstance(block, ImageBlock) for block in blocks))
             send_remaining = self.config.send_timeout_seconds
             prepare_remaining = self.config.image_prepare_timeout_seconds
             image_count, degraded = 0, False
@@ -299,7 +300,7 @@ class WeComSender:
                     if pace_messages:
                         # 整轮含图才逐条等待；末条也等待以保留同员工跨回复的间隔。
                         # 异步等待位于 I/O 预算外，不能让长图文因业务延时提前超时。
-                        await sleep(2)
+                        await sleep(self.config.mixed_message_delay_seconds)
             state = "SEND_ACCEPTED" if self.source == "wecom_api" else "SEND_SIMULATED"
             return SendOutcome(state, self.source, True, accepted, total,
                                "accepted_with_image_fallback" if degraded else "accepted")
