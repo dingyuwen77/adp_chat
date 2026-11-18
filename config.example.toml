@@ -4,7 +4,7 @@
 
 [adp]
 # 必填：在已发布 ADP 应用 API 接入页复制 AppKey，不是腾讯云 SecretKey。
-app_key = ""
+app_key = "MOCAigqyPybgYhZpiaIFPGQYFtqvfEUXDoJIToMuUjuxmqQvyFHmwtMrijglghhXVGZQgPZUhOAnwynPIxKMtoHBxENfMMlhWECzQyBpgFndotshSNjGApQFMdZRrFHb"
 # 必填：用户的稳定标识；同一用户保持不变，修改后需显式创建新会话。
 user_id = "local_adp_test_user_001"
 # 可选访问者标识：留空自动使用 user_id，通常无需填写。
@@ -38,21 +38,21 @@ session_file = "runtime/session.json"
 [wecom]
 # 企业微信身份作用域；不用网关时可保留空值/0。
 # 配置时三项必须同时填写；仅为派生作用域，不代表真实企微身份已验证。
-corp_id = ""
-agent_id = 0
+corp_id = "ww00e75c888cc993be"
+agent_id = 1000002
 # 固定逻辑应用名，不能用可轮换 AppKey；上线后不要静默修改。
-adp_application = ""
+adp_application = "wecom-local-test"
 # 默认关闭；启用后异步调用ADP，通知由下方模式独立控制。
-gateway_enabled = false
+gateway_enabled = true
 # 企业微信对外回调完整URL；复制同一值到后台，修改后重启应用并同步后台。
 # 启动按URL路径注册GET/POST；主机/端口仍由deployment及网络转发决定，不自动配置后台。
 # 留空兼容/wecom/callback；非空须为HTTP(S)静态路径，不含查询、片段或API保留路径。
-callback_url = ""
+callback_url = "http://115.190.218.12:3000/wecom/callback"
 # 企业微信后台“接收消息”的 Token；英文或数字，不超过32位，须与后台一致。
 # A～E使用独立测试值，F填写正式回调值；它不是应用Secret或access_token。
-callback_token = ""
+callback_token = "AZZbnxwki8x8oK"
 # 企业微信后台生成的43位 EncodingAESKey；须与后台一致，不提交Git。
-encoding_aes_key = ""
+encoding_aes_key = "eXpCsvtZDSo28v1k3TU7DMqP8tt7kBTwrApzfp5olV1"
 # 相对路径基于本配置目录，与旧单用户 session_file 分开；生产使用新的独立目录。
 messages_dir = "runtime/messages"
 # 物理接收保护，不是 ADP 模型业务并发配额；触发时拒绝成功 ACK。
@@ -65,17 +65,17 @@ adp_url = "https://wss.lke.cloud.tencent.com/adp/v2/chat"
 adp_response_max_bytes = 1048576
 # disabled不发送；simulated仅模拟；wecom调用真实企业微信应用消息接口。
 # A～E使用simulated且只能记SEND_SIMULATED；F真实发送另需production与应用Secret。
-notification_mode = "disabled"
+notification_mode = "wecom"
 # test用于本地验证，production用于正式接入；禁止把已有测试状态目录直接切成production。
-gateway_environment = "test"
+gateway_environment = "production"
 # 自建应用详情页的Secret，填在实际配置；A～E保持空值，不提交Git。
 # access_token由发送器用CorpID和本Secret自动获取、缓存，无须手工增加配置项。
-wecom_app_secret = ""
+wecom_app_secret = "-RlZzhajcMOyvj1wXQpRNDMKtQCOz2xjydEk7yPhTIY"
 # 一次通知的发送预算（Token与全部文字/图片消息）；图片准备另计，不影响ADP占用。
 send_timeout_seconds = 15
 # 含图片的整轮回复，每条消息被接口接受后等待的秒数（含末条）；支持非负整数或小数。
 # 0关闭额外等待；纯文字回复始终不额外等待。独立于发送/图片准备预算，修改后重启应用生效。
-mixed_message_delay_seconds = 2
+mixed_message_delay_seconds = 1
 # ["*"]允许所有公网HTTPS图片域名及其跳转；仍拦截内网地址并限制大小、并发和超时。
 # 也可填写完整域名列表收紧来源；[]禁用下载，不支持*.example.com这种部分通配。
 # 仅使用显式域名列表时，才需列出跳转目的域名；每一跳始终校验公网IP并固定连接。
@@ -97,8 +97,8 @@ log_file = "logs/adp_chat.log"
 log_max_bytes = 5242880
 # 轮转备份份数，至少 1；默认保留 3 份旧日志。
 log_backup_count = 3
-# 历史兼容字段：独立JSONL已停用，本字段暂保留以兼容既有配置，不再控制.log轮转。
-# 统一日志使用log_max_bytes/log_backup_count；后续接入Cosmos DB前需设计采集检查点与保留策略。
+# 网关JSONL复用log_enabled/log_level、log_file所在目录和log_max_bytes。
+# 按北京时间日期/大小分段，早于此天数的本地事件自动清理；无外传/采集器。
 events_retention_days = 14
 # true 记录脱敏后的用户问题；false 不记录问题正文。
 log_question = true
@@ -110,7 +110,7 @@ log_answer_chars = 100
 # 更换服务器时在此配置宿主监听IPv4，不需要因IP不同修改源码或脚本。
 # 使用本机网卡IP或0.0.0.0；容器内部仍固定监听0.0.0.0:8000。
 # 它不是企业微信后台的回调URL，也不一定等于调用企业微信时的公网出口IP。
-bind_ip = "10.102.70.82"
+bind_ip = "0.0.0.0"
 # 服务器对外发布的端口，必须为 1 至 65535 的整数。
 # 常规部署只改本节即可；若手工设置ADP_BIND_IP/ADP_HOST_PORT，会覆盖对应字段。
-host_port = 4560
+host_port = 3000
