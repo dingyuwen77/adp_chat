@@ -34,7 +34,8 @@ class ImageWorkflowTests(unittest.TestCase):
                 adp_application="image-workflow", gateway_enabled=True, callback_token="fixturetoken",
                 encoding_aes_key=base64.b64encode(os.urandom(32)).decode()[:-1],
                 wecom_app_secret="fake-secret", notification_mode="wecom", log_enabled=False,
-                messages_dir=str(root / "messages"), session_file=str(root / "session.json"))
+                messages_dir=str(root / "messages"), session_file=str(root / "session.json"),
+                mixed_message_delay_seconds=0.25)
             submitted, sent = [], []
             answer = ('\n\n 步骤一\n\n![截图](https://lke.cloud.tencent.com/a.png)\n\n \t\n'
                       '![截图二](https://lke.cloud.tencent.com/b.png)\n'
@@ -107,7 +108,7 @@ class ImageWorkflowTests(unittest.TestCase):
                     self.assertEqual(record['adp_result']['reply_contents'][0][0]['Text'], answer)
                     self.assertEqual(record["send_result"]["accepted_parts"], 4)
                     self.assertEqual(record['send_result']['total_parts'], 4)
-                    self.assertEqual(pause.await_args_list, [call(2)] * 4)
+                    self.assertEqual(pause.await_args_list, [call(0.25)] * 4)
                     self.assertEqual(record["schema_version"], 3)
                     self.assertEqual(client.post("/wecom/callback", params=query, content=body).status_code, 200)
                     self.assertEqual((len(submitted), len(sent)), (1, 4))

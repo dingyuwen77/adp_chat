@@ -236,6 +236,37 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "config")
         self.assertNotIn("secret-value", str(caught.exception))
 
+    def test_mixed_message_delay_defaults_and_accepts_zero_or_fractional_seconds(self):
+        """旧文件缺省仍等待两秒；TOML 与直接构造均接受零和非负小数。"""
+        identity = '[adp]\napp_key="test-key"\nuser_id="tester"\n'
+        self.config_path.write_text(identity, encoding="utf-8")
+        self.assertEqual(load_config(self.config_path).mixed_message_delay_seconds, 2)
+        for seconds in (0, 0.25, 3):
+            with self.subTest(seconds=seconds):
+                self.config_path.write_text(identity + f'[wecom]\nmixed_message_delay_seconds={seconds}\n', encoding="utf-8")
+                self.assertEqual(load_config(self.config_path).mixed_message_delay_seconds, seconds)
+                self.assertEqual(replace(self.config, mixed_message_delay_seconds=seconds).mixed_message_delay_seconds, seconds)
+
+    def test_mixed_message_delay_rejects_invalid_file_and_constructor_values(self):
+        """边界 Owner 拒绝布尔、字符串、负数、非有限和过大秒数，不回显原值。"""
+        identity = '[adp]\napp_key="test-key"\nuser_id="tester"\n[wecom]\n'
+        for literal, value, code in (("true", True, "invalid_type"),
+                                     ('"private-delay-value"', "private-delay-value", "invalid_type"),
+                                     ("-0.1", -0.1, "invalid_notification"),
+                                     ("nan", float("nan"), "invalid_notification"),
+                                     ("inf", float("inf"), "invalid_notification"),
+                                     ("-inf", float("-inf"), "invalid_notification"),
+                                     ("1e100", 1e100, "invalid_notification")):
+            with self.subTest(literal=literal):
+                self.config_path.write_text(identity + f'mixed_message_delay_seconds={literal}\n', encoding="utf-8")
+                with self.assertRaises(ChatError) as file_error:
+                    load_config(self.config_path)
+                self.assertEqual(file_error.exception.code, code)
+                with self.assertRaises(ChatError) as constructor_error:
+                    replace(self.config, mixed_message_delay_seconds=value)
+                self.assertEqual(constructor_error.exception.code, code)
+                self.assertNotIn("private-delay-value", str(file_error.exception) + str(constructor_error.exception))
+
     def test_config_constructor_rejects_nonboolean_options_and_invalid_timeout(self):
         """Python 构造的配置执行与 TOML 相同的安全和超时校验。"""
         for value in ("false", 1):

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from core.config import ChatConfig
+from core.config import ChatConfig, load_config
 from core.logging import diagnostic_logger, parse_log_line
 from wecom.sender import WeComSender
 from wecom.images import ImageDownloader, ImageError, resolve_public
@@ -79,7 +79,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((outcome.state, outcome.accepted_parts, outcome.total_parts), ("SEND_SIMULATED", 3, 3))
 
     async def test_mixed_reply_paces_each_accepted_message_without_spending_io_budgets(self):
-        """首图前的文字和末条也等待；累计六秒业务等待不耗尽一秒 I/O 预算。"""
+        """首图前的文字和末条也等待；累计自定义业务等待不耗尽一秒 I/O 预算。"""
         pauses, clock = [], [100.0]
 
         async def pause(seconds):
@@ -88,11 +88,37 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
             clock[0] += seconds
 
         self.pause.side_effect = pause
-        self.config = replace(self.config, send_timeout_seconds=1, image_prepare_timeout_seconds=1)
+        self.config = replace(self.config, send_timeout_seconds=1, image_prepare_timeout_seconds=1,
+                              mixed_message_delay_seconds=1.25)
         with patch("wecom.sender.monotonic", side_effect=lambda: clock[0]):
             outcome = await self.send()
-        self.assertEqual(pauses, [(1, "text", 2), (2, "image", 2), (3, "text", 2)])
+        self.assertEqual(pauses, [(1, "text", 1.25), (2, "image", 1.25), (3, "text", 1.25)])
         self.assertEqual((outcome.state, outcome.accepted_parts, outcome.total_parts), ("SEND_SIMULATED", 3, 3))
+
+    async def test_mixed_reply_uses_toml_delay_and_zero_skips_all_waits(self):
+        """正式加载的配置改变每条图文等待，零值不调用等待且仍完整发送。"""
+        for seconds in (0, 0.25, 3):
+            with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.toml"
+                path.write_text('[adp]\napp_key="fixture"\nuser_id="local"\n'
+                    '[wecom]\ncorp_id="wwtest"\nagent_id=1\nadp_application="test"\n'
+                    f'wecom_app_secret="fixture-secret"\nmixed_message_delay_seconds={seconds}\n', encoding="utf-8")
+                self.config = load_config(path)
+                self.sent.clear()
+                self.pause.reset_mock()
+                pauses = []
+
+                async def pause(delay):
+                    """在真实消息提交边界记录等待，避免只检查配置字段存在。"""
+                    pauses.append((len(self.sent), self.sent[-1]["msgtype"], delay))
+
+                self.pause.side_effect = pause
+                outcome = await self.send()
+                self.assertEqual([p["msgtype"] for p in self.sent], ["text", "image", "text"])
+                self.assertEqual((outcome.state, outcome.accepted_parts, outcome.total_parts), ("SEND_SIMULATED", 3, 3))
+                self.assertEqual(pauses, [(1, "text", seconds), (2, "image", seconds), (3, "text", seconds)] if seconds else [])
+                if not seconds:
+                    self.pause.assert_not_awaited()
 
     async def test_mixed_reply_paces_each_utf8_text_part_and_native_image(self):
         """原生图片前的长文字拆成两个气泡，两个气泡都分别等待。"""
@@ -116,17 +142,20 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pure_text_reply_never_waits_even_when_split(self):
         """无图片的短回复与超长多分段回复均保持立即连续提交。"""
-        for text in ("纯文字", "长文字" * 1600):
-            with self.subTest(length=len(text)):
-                self.sent.clear()
-                self.record["adp_result"]["reply_contents"] = [[{"Type": "text", "Text": text}]]
-                outcome = await self.send()
-                self.assertEqual("".join(p["text"]["content"] for p in self.sent), text)
-                self.assertEqual((outcome.state, outcome.accepted_parts), ("SEND_SIMULATED", len(self.sent)))
-                self.pause.assert_not_awaited()
+        for seconds in (0, 0.25, 3):
+            self.config = replace(self.config, mixed_message_delay_seconds=seconds)
+            for text in ("纯文字", "长文字" * 1600):
+                with self.subTest(seconds=seconds, length=len(text)):
+                    self.sent.clear()
+                    self.record["adp_result"]["reply_contents"] = [[{"Type": "text", "Text": text}]]
+                    outcome = await self.send()
+                    self.assertEqual("".join(p["text"]["content"] for p in self.sent), text)
+                    self.assertEqual((outcome.state, outcome.accepted_parts), ("SEND_SIMULATED", len(self.sent)))
+                    self.pause.assert_not_awaited()
 
     async def test_image_fallback_keeps_the_reply_pacing_policy(self):
         """图片准备失败而改发文字链接，仍按整轮含图片对每条实际消息等待。"""
+        self.config = replace(self.config, mixed_message_delay_seconds=0.5)
         for options in ({"download_status": 404}, {"upload_error": 40005}):
             with self.subTest(options=options):
                 self.sent.clear()
@@ -138,7 +167,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
 
                 self.pause.side_effect = pause
                 outcome = await self.send(**options)
-                self.assertEqual(pauses, [(1, 2), (2, 2), (3, 2)])
+                self.assertEqual(pauses, [(1, 0.5), (2, 0.5), (3, 0.5)])
                 self.assertEqual(outcome.code, "accepted_with_image_fallback")
                 self.assertTrue(all(p["msgtype"] == "text" for p in self.sent))
 
