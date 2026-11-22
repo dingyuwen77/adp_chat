@@ -321,12 +321,13 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((outcome.accepted_parts, outcome.total_parts, outcome.code), (2, 2, 'accepted'))
 
     async def test_shared_prepare_slots_bound_upload_lifetime_and_allow_text_progress(self):
-        """两百人共享3GiB预约预算：最多153张准备，其余等待且纯文字可继续。"""
+        """两百人共享有限图片预算，预约在上传结束前仍持有，纯文字可以继续。"""
+        slots = self.config.image_prepare_budget_mib // 20
         active, peak, downloads = 0, 0, 0
         full, release = asyncio.Event(), asyncio.Event()
 
         async def handle(request):
-            """挂起153个素材上传，未获预算者不能先下载图片。"""
+            """占满配置的图片预算，未获预约者不能先下载图片。"""
             nonlocal active, peak, downloads
             if request.url.host == "8.8.8.8":
                 downloads += 1
@@ -336,7 +337,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
             if request.url.path == "/cgi-bin/media/upload":
                 active += 1
                 peak = max(peak, active)
-                if active == 153:
+                if active == slots:
                     full.set()
                 try:
                     await release.wait()
@@ -353,12 +354,12 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(full.wait(), 2)
                     outcome = await sender.send({"user_id": "OTHER", "notification": "纯文字"})
                     self.assertEqual(outcome.state, "SEND_SIMULATED")
-                    self.assertEqual(downloads, 153)
+                    self.assertEqual(downloads, slots)
                 finally:
                     release.set()
                     outcomes = await asyncio.gather(*tasks)
                     await sender.aclose()
-            self.assertEqual((peak, active, downloads), (153, 0, 200))
+            self.assertEqual((peak, active, downloads), (slots, 0, 200))
             self.assertTrue(all(o.state == "SEND_SIMULATED" for o in outcomes))
 
     async def test_full_image_budget_times_out_in_place_and_recovers_capacity(self):
@@ -386,7 +387,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
             held = 0
             try:
                 async with asyncio.timeout(1):
-                    for _ in range(153):
+                    for _ in range(config.image_prepare_budget_mib // 20):
                         await sender.images.slots.acquire()
                         held += 1
                 with patch("wecom.images.resolve_public", return_value="8.8.8.8"):
@@ -488,7 +489,7 @@ class ImageSenderTests(unittest.IsolatedAsyncioTestCase):
                         held = 0
                         try:
                             async with asyncio.timeout(1):
-                                for _ in range(153):
+                                for _ in range(self.config.image_prepare_budget_mib // 20):
                                     await sender.images.slots.acquire()
                                     held += 1
                         finally:

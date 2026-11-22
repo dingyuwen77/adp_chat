@@ -8,12 +8,14 @@ RELEASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 CONFIG_FILE="$RELEASE_DIR/config.toml"
 CONTAINER_NAME="${ADP_CONTAINER_NAME:-adp_channel_api}"
 STATE_FILE="$RELEASE_DIR/.deploy-state.json"
+DB_GUARD="$RELEASE_DIR/.gateway-database"
 VERSION_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 ATTEMPT="$$-$(date +%s)"
 WORK_DIR=""
 ROLLBACK_NEEDED=0
 RECOVERING=0
-OLD_ID="" OLD_IMAGE="" OLD_VERSION="" OLD_BIND="" OLD_PORT=""
+DB_GUARD_CREATED=0
+OLD_ID="" OLD_IMAGE="" OLD_VERSION="" OLD_BIND="" OLD_PORT="" OLD_DB_FILE=""
 VERSION="" IMAGE_ID="" TOOL_IMAGE="" ARCHIVE_SHA="" CONFIG_HASH=""
 BASELINE_CID="" BASELINE_SHA="" NEW_ID="" PREVIOUS_VERSION=""
 INSPECT_JSON=""
@@ -66,6 +68,7 @@ MANAGED={{index .Config.Labels "io.nnit.adp.managed"}}
 ROOT={{index .Config.Labels "io.nnit.adp.release-dir"}}
 VERSION={{index .Config.Labels "io.nnit.adp.version"}}
 SESSION_FILE={{index .Config.Labels "io.nnit.adp.session-file"}}
+DB_FILE={{index .Config.Labels "io.nnit.adp.gateway-database"}}
 CONFIG_HASH={{index .Config.Labels "io.nnit.adp.config-sha256"}}
 ATTEMPT={{index .Config.Labels "io.nnit.adp.attempt"}}
 IMAGE_ID={{.Image}}
@@ -95,7 +98,7 @@ append_bind_groups() {
     local -n command_arguments=$1
     local path group
     local -A seen=([10001]=1)
-    for path in "$CONFIG_FILE" "$STATE_FILE" "${PLAN[SESSION_HOST_DIR]:-}" "${PLAN[LOG_HOST_DIR]:-}"; do
+    for path in "$CONFIG_FILE" "$STATE_FILE" "${PLAN[SESSION_HOST_DIR]:-}" "${PLAN[LOG_HOST_DIR]:-}" "${PLAN[DB_HOST_DIR]:-}"; do
         [[ -n "$path" && -e "$path" ]] || continue
         group=$(stat -c '%g' -- "$path") || return 1
         [[ "$group" =~ ^[0-9]+$ ]] || { fail '无法确定挂载路径的有效属组。'; return 1; }
@@ -110,16 +113,18 @@ python_tool() {
     # 使用已加载镜像的 Python 解析机器数据；宿主不依赖 Python，也不挂载 Docker socket。
     local mode=$1
     local -a arguments
-    local key
+    local key db_guarded=no
+    if [[ -f "$DB_GUARD" ]]; then db_guarded=yes; fi
     local -a environment=(
         "DEPLOY_ROOT=$RELEASE_DIR" "DEPLOY_VERSION=$VERSION" "DEPLOY_IMAGE_ID=$IMAGE_ID"
         "DEPLOY_PLATFORM=$PLATFORM" "DEPLOY_ARCHIVE_SHA=$ARCHIVE_SHA"
         "DEPLOY_CONFIG_HASH=$CONFIG_HASH" "DEPLOY_BASELINE_CID=$BASELINE_CID"
         "DEPLOY_BASELINE_SHA=$BASELINE_SHA" "DEPLOY_PREVIOUS_VERSION=$PREVIOUS_VERSION"
         "DEPLOY_HAS_CONTAINER=${CURRENT[ID]:-}" "DEPLOY_INSPECT=$INSPECT_JSON"
+        "DEPLOY_DB_GUARDED=$db_guarded"
         "ADP_BIND_IP=${ADP_BIND_IP:-}" "ADP_HOST_PORT=${ADP_HOST_PORT:-}"
     )
-    for key in BIND_IP HOST_PORT SESSION_HOST_FILE; do
+    for key in BIND_IP HOST_PORT SESSION_HOST_FILE DB_HOST_FILE; do
         environment+=("DEPLOY_$key=${PLAN[$key]:-}")
     done
     if [[ "$mode" == attest ]]; then
@@ -149,6 +154,7 @@ python_tool() {
             if [[ "${PLAN[LOG_CONTAINER_DIR]}" != "${PLAN[SESSION_CONTAINER_DIR]}" ]]; then
                 arguments+=(--mount "type=bind,src=${PLAN[LOG_HOST_DIR]},dst=${PLAN[LOG_CONTAINER_DIR]}")
             fi
+            append_database_mount arguments
         fi
         for key in "${environment[@]}"; do arguments+=(--env "$key"); done
         arguments+=("$TOOL_IMAGE" - "$mode")
@@ -162,6 +168,7 @@ import json
 import os
 import posixpath
 import re
+import sqlite3
 import stat
 import sys
 import tarfile
@@ -308,18 +315,26 @@ def paths_and_config():
         raise
     result = {}
     mounts = {}
-    for section, field, prefix in (
+    configured_paths = [(raw.get(section, {}).get(field, ChatConfig.__dataclass_fields__[field].default),
+                         getattr(config, field), prefix) for section, field, prefix in (
         ("session", "session_file", "SESSION"),
         ("logging", "log_file", "LOG"),
-    ):
-        original = raw.get(section, {}).get(field, ChatConfig.__dataclass_fields__[field].default)
+    )]
+    prior_database = state.get("gateway_database_file", "")
+    database = getattr(config, "gateway_database_path", None)
+    if database is not None and (config.gateway_enabled or prior_database):
+        configured = raw.get("wecom", {})
+        reference = configured.get("database_file") or configured.get("messages_dir", "runtime/messages")
+        original = str(database) if posixpath.isabs(reference) else posixpath.relpath(database, CONFIG.parent)
+        configured_paths.append((original, str(database), "DB"))
+    for original, target, prefix in configured_paths:
         if any(c in original for c in "\r\n\0,:\\"):
             raise DeploymentError("Linux 挂载路径不能包含换行、逗号、冒号或反斜线。")
         host = posixpath.normpath(original if original.startswith("/") else posixpath.join(ROOT, original))
-        target = posixpath.normpath(getattr(config, field))
+        target = posixpath.normpath(target)
         host_dir, target_dir = posixpath.dirname(host), posixpath.dirname(target)
         if host_dir in ("/", ROOT) or target_dir in ("/", "/app", "/app/release", "/deploy", "/deploy/release"):
-            raise DeploymentError("日志和会话必须使用独立持久目录，不能覆盖配置或容器根目录。")
+            raise DeploymentError("日志、会话和数据库必须位于可挂载的持久目录。")
         if target_dir in mounts and mounts[target_dir] != host_dir:
             raise DeploymentError("两个宿主目录不能绑定到同一个容器目录。")
         mounts[target_dir] = host_dir
@@ -329,6 +344,8 @@ def paths_and_config():
         result[prefix + "_CONTAINER_FILE"] = target
     if state and state["session_file"] != result["SESSION_HOST_FILE"]:
         raise DeploymentError("会话路径与最近成功部署不同；请先按迁移流程处理，不能静默创建新会话。")
+    if prior_database and prior_database != result.get("DB_HOST_FILE"):
+        raise DeploymentError("目标镜像或配置无法保留当前 SQLite 消息库；请使用兼容的镜像和原持久路径。")
     return config, result, state, binding
 
 
@@ -398,6 +415,8 @@ def main():
             "bind_ip": os.environ["DEPLOY_BIND_IP"], "host_port": int(os.environ["DEPLOY_HOST_PORT"]),
             "deployed_at": datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds"),
         }
+        if database_file := os.environ.get("DEPLOY_DB_HOST_FILE"):
+            result["gateway_database_file"] = database_file
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
     config, paths, state, binding = paths_and_config()
@@ -411,12 +430,29 @@ def main():
         emit("STATE_PREVIOUS_VERSION", state.get("previous_version", ""))
         emit("REQUIRE_SESSION", "yes" if state or os.environ["DEPLOY_HAS_CONTAINER"] else "no")
         return
+    database = Path(paths["DB_CONTAINER_FILE"]) if "DB_CONTAINER_FILE" in paths else None
+    if mode == "rollback_check":
+        from storage.maintenance import has_message_history
+
+        if database is None or has_message_history(database):
+            raise DeploymentError("已接收过 SQLite 消息或无法核对数据库，拒绝自动恢复为旧 JSON 镜像。")
+        return
     required = bool(state or os.environ["DEPLOY_HAS_CONTAINER"] or mode == "attest")
     cid, sha = check_session(config, state, required)
     if mode == "preflight":
         directories = {Path(config.session_file).parent}
         if config.log_enabled:
             directories.add(Path(config.log_file).parent)
+        if database is not None:
+            from storage.maintenance import has_message_history
+
+            if sqlite3.sqlite_version_info < (3, 51, 3):
+                raise DeploymentError("SQLite 未达到支持 WAL 持久化的镜像版本要求。")
+            if database.is_symlink() or (database.exists() and not database.is_file()):
+                raise DeploymentError("消息数据库必须是普通文件。")
+            required_db = bool(state.get("gateway_database_file")) or os.environ.get("DEPLOY_DB_GUARDED") == "yes"
+            has_message_history(database, required=required_db)
+            directories.add(database.parent)
         for directory in directories:
             with tempfile.TemporaryFile(dir=directory):
                 pass
@@ -429,6 +465,14 @@ def main():
             paths["SESSION_CONTAINER_DIR"]: (paths["SESSION_HOST_DIR"], True),
             paths["LOG_CONTAINER_DIR"]: (paths["LOG_HOST_DIR"], True),
         }
+        if database is not None:
+            expected[paths["DB_CONTAINER_DIR"]] = (paths["DB_HOST_DIR"], True)
+            if config.gateway_enabled:
+                from storage.maintenance import has_message_history
+
+                if not database.is_file():
+                    raise DeploymentError("运行容器未创建 SQLite 消息库。")
+                has_message_history(database)
         actual = {m["Destination"]: (m["Source"], m["RW"]) for m in inspection["Mounts"]}
         bindings = inspection["HostConfig"]["PortBindings"].get("8000/tcp", [])
         if (inspection["Image"] != os.environ["DEPLOY_IMAGE_ID"]
@@ -494,12 +538,23 @@ prepare_paths() {
     # 仅创建缺失目录；已有目录不递归 chown/chmod，不覆盖原配置和会话。
     python_tool plan > "$WORK_DIR/plan" || return 1
     read_kv PLAN "$WORK_DIR/plan" || return 1
+    if [[ -f "$DB_GUARD" ]]; then
+        local previous_database
+        previous_database=$(cat -- "$DB_GUARD") || return 1
+        if [[ -z "$previous_database" || "$previous_database" != "${PLAN[DB_HOST_FILE]:-}" ]]; then
+            fail '已有 SQLite 切换记录，目标镜像或配置无法保留该消息库。'; return 1
+        fi
+    fi
     log INFO "计划发布 ${PLAN[BIND_IP]}:${PLAN[HOST_PORT]}，容器端口8000。"
     if [[ -n "${CURRENT[SESSION_FILE]:-}" && "${CURRENT[SESSION_FILE]}" != "${PLAN[SESSION_HOST_FILE]}" ]]; then
         fail '当前容器与目标配置的会话路径不同，拒绝切换。'; return 1
     fi
+    if [[ -n "${CURRENT[DB_FILE]:-}" && "${CURRENT[DB_FILE]}" != "${PLAN[DB_HOST_FILE]:-}" ]]; then
+        fail '当前容器与目标未使用同一 SQLite 数据库，拒绝切换。'; return 1
+    fi
     local directory
-    for directory in "${PLAN[SESSION_HOST_DIR]}" "${PLAN[LOG_HOST_DIR]}"; do
+    for directory in "${PLAN[SESSION_HOST_DIR]}" "${PLAN[LOG_HOST_DIR]}" "${PLAN[DB_HOST_DIR]:-}"; do
+        [[ -n "$directory" ]] || continue
         if [[ -e "$directory" ]]; then
             [[ -d "$directory" && ! -L "$directory" ]] || { fail '持久路径不是普通目录。'; return 1; }
         else
@@ -518,10 +573,36 @@ prepare_paths() {
     BASELINE_SHA="${checked[SESSION_SHA]}"
 }
 
+arm_database_guard() {
+    # 启动前记录可能写入的库。即使进程中断或容器被回收，下一次部署仍受此约束。
+    [[ -n "${PLAN[DB_HOST_FILE]:-}" && ! -e "$DB_GUARD" ]] || return 0
+    printf '%s\n' "${PLAN[DB_HOST_FILE]}" > "$WORK_DIR/database.guard" || return 1
+    mv -- "$WORK_DIR/database.guard" "$DB_GUARD" || return 1
+    DB_GUARD_CREATED=1
+}
+
+clear_empty_database_guard() {
+    # 仅当前首次切换建立的标记，且新库已证实从未接收业务，才可撤销。
+    ((DB_GUARD_CREATED)) || return 1
+    python_tool rollback_check || return 1
+    rm -- "$DB_GUARD" || return 1
+    DB_GUARD_CREATED=0
+}
+
+append_database_mount() {
+    # 会话与数据库位于同一目录时沿用已绑定的持久路径。
+    local -n options=$1
+    local destination=${PLAN[DB_CONTAINER_DIR]:-}
+    if [[ -n "$destination" && "$destination" != "${PLAN[SESSION_CONTAINER_DIR]}" && "$destination" != "${PLAN[LOG_CONTAINER_DIR]}" ]]; then
+        options+=(--mount "type=bind,src=${PLAN[DB_HOST_DIR]},dst=$destination")
+    fi
+}
+
 start_container() {
     # 所有入口共用这一套参数，保留现有单 worker、重启、健康和停止策略。
+    arm_database_guard || return 1
     local -a arguments=(run -d --pull never --name "$CONTAINER_NAME" --init --restart unless-stopped
-        --stop-timeout 240
+        --stop-timeout 240 --ulimit nofile=8192:8192
         --label io.nnit.adp.managed=adp_channel_api
         --label "io.nnit.adp.release-dir=$RELEASE_DIR"
         --label "io.nnit.adp.version=$VERSION"
@@ -536,6 +617,10 @@ start_container() {
         --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s)
     if [[ "${PLAN[LOG_CONTAINER_DIR]}" != "${PLAN[SESSION_CONTAINER_DIR]}" ]]; then
         arguments+=(--mount "type=bind,src=${PLAN[LOG_HOST_DIR]},dst=${PLAN[LOG_CONTAINER_DIR]}")
+    fi
+    append_database_mount arguments
+    if [[ -n "${PLAN[DB_HOST_FILE]:-}" ]]; then
+        arguments+=(--label "io.nnit.adp.gateway-database=${PLAN[DB_HOST_FILE]}")
     fi
     append_bind_groups arguments || return 1
     # 使用清单验证过的不可变 ID 启动，避免标签随后变化影响实际运行版本。
@@ -608,6 +693,10 @@ recover_previous() {
     get_current || return 1
     if [[ "${CURRENT[ID]:-}" == "$OLD_ID" && "${CURRENT[RUNNING]:-}" == true ]]; then return 0; fi
     remove_attempt || return 1
+    if [[ -n "${PLAN[DB_HOST_FILE]:-}" && -z "${OLD_DB_FILE:-}" ]]; then
+        clear_empty_database_guard || return 1
+        unset 'PLAN[DB_HOST_DIR]' 'PLAN[DB_CONTAINER_DIR]' 'PLAN[DB_HOST_FILE]' 'PLAN[DB_CONTAINER_FILE]'
+    fi
     get_current || return 1
     if [[ -n "${CURRENT[ID]:-}" ]]; then
         [[ "${CURRENT[ID]}" == "$OLD_ID" ]] || { fail '恢复时发现其他容器占用名称。'; return 1; }
@@ -635,10 +724,12 @@ finish() {
         recover_previous
         if (($? != 0)); then log ERROR '自动恢复未完成，请保留原会话并人工检查。'; fi
     elif ((status != 0)); then
-        remove_attempt
+        if remove_attempt && ((DB_GUARD_CREATED)); then
+            clear_empty_database_guard || log WARNING '保留 SQLite 切换记录；继续使用原消息库。'
+        fi
     fi
     if [[ -n "$WORK_DIR" && "$WORK_DIR" == "$RELEASE_DIR"/.deploy-work.* ]]; then
-        rm -f -- "$WORK_DIR/"{current,manifest,plan,preflight,attest,recovery,state.json,cache}
+        rm -f -- "$WORK_DIR/"{current,manifest,plan,preflight,attest,recovery,state.json,cache,database.guard}
         rmdir -- "$WORK_DIR" || log WARNING "请检查自有临时目录：$WORK_DIR"
     fi
     exit "$status"
@@ -674,6 +765,8 @@ main() {
     [[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" ]] || { fail '请先上传 release/config.toml 普通文件。'; return 1; }
     [[ ! -L "$STATE_FILE" && ( ! -e "$STATE_FILE" || -f "$STATE_FILE" ) ]] ||
         { fail '部署状态必须是普通文件，拒绝符号链接或其他类型。'; return 1; }
+    [[ ! -L "$DB_GUARD" && ( ! -e "$DB_GUARD" || -f "$DB_GUARD" ) ]] ||
+        { fail '数据库切换记录必须是普通文件。'; return 1; }
     if [[ -n "$requested" ]]; then
         VERSION="v${requested#v}"
         [[ "$VERSION" =~ $VERSION_PATTERN && ${#VERSION} -le 128 ]] || { fail '版本必须是 vX.Y.Z 正式版本。'; return 1; }
@@ -700,7 +793,7 @@ main() {
     if [[ -n "${PLAN[STATE_VERSION]}" && "${PLAN[STATE_VERSION]}" != "$VERSION" ]]; then PREVIOUS_VERSION="${PLAN[STATE_VERSION]}"; fi
     if [[ -n "${CURRENT[ID]:-}" ]]; then
         OLD_ID="${CURRENT[ID]}" OLD_IMAGE="${CURRENT[IMAGE_ID]}" OLD_VERSION="${CURRENT[VERSION]}"
-        OLD_BIND="${CURRENT[BIND_IP]}" OLD_PORT="${CURRENT[HOST_PORT]}"
+        OLD_BIND="${CURRENT[BIND_IP]}" OLD_PORT="${CURRENT[HOST_PORT]}" OLD_DB_FILE="${CURRENT[DB_FILE]:-}"
         if [[ "$OLD_VERSION" != "$VERSION" ]]; then PREVIOUS_VERSION=$OLD_VERSION; fi
         if [[ "${CURRENT[RUNNING]}" == true && "$OLD_VERSION" == "$VERSION" && "$OLD_IMAGE" == "$IMAGE_ID" &&
               "${CURRENT[HEALTH]}" == healthy && "${CURRENT[CONFIG_HASH]}" == "$CONFIG_HASH" &&

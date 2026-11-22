@@ -18,7 +18,8 @@ from fastapi.testclient import TestClient
 from adp.async_client import AsyncADPClient
 from api.app import create_app
 from core.config import ChatConfig
-from storage.messages import message_key, read_snapshot
+from storage.messages import message_key
+from storage.sqlite_store import read_messages
 from wecom.crypto import WeComCrypto
 from wecom.sender import WeComSender
 
@@ -109,10 +110,9 @@ class ImageWorkflowTests(unittest.TestCase):
                     self.assertEqual(record["send_result"]["accepted_parts"], 4)
                     self.assertEqual(record['send_result']['total_parts'], 4)
                     self.assertEqual(pause.await_args_list, [call(0.25)] * 4)
-                    self.assertEqual(record["schema_version"], 3)
                     self.assertEqual(client.post("/wecom/callback", params=query, content=body).status_code, 200)
                     self.assertEqual((len(submitted), len(sent)), (1, 4))
-                    self.assertEqual(read_snapshot(root / "messages" / f"{key}.json")["adp_state"], "ADP_SUCCEEDED")
+                    self.assertEqual(read_messages(config, key=key)[0]["adp_state"], "ADP_SUCCEEDED")
                     self.assertNotIn("内部思考", str(sent))
             finally:
                 asyncio.run(http.aclose())

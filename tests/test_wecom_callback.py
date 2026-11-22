@@ -1,19 +1,21 @@
-"""阶段 B：正式加密协议、原子接收和真实文件失败边界。"""
+"""正式加密协议、原子接收和 SQLite 事务失败边界。"""
 
 import base64
 import hashlib
-import json
 import os
 import secrets
+import sqlite3
 import struct
 import tempfile
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from unittest.mock import patch
+from uuid import uuid4
 from xml.sax.saxutils import escape
 
 from fastapi.testclient import TestClient
@@ -21,8 +23,10 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from core.config import ChatConfig
 from core.models import ChatError
-from storage.messages import MessageStore, message_key
+from storage.messages import message_key
+from storage.sqlite_store import MessageStore, read_messages
 from wecom.crypto import WeComCrypto
+from wecom.models import InboundMessage
 from wecom_callback_client import initialize_test_keys
 
 
@@ -99,8 +103,20 @@ class CallbackTests(unittest.TestCase):
         return self.client.post("/wecom/callback", params=params or self.signed(ciphertext),
                                 content=outer.encode(), headers={"Content-Type": "application/xml"})
 
+    def test_ack_is_visible_from_a_separate_wal_reader(self):
+        """回调成功时独立只读连接已能看到完整消息，旧目录中没有新快照。"""
+        self.assertEqual(self.post(self.xml(content="完整问题🙂")).status_code, 200)
+        database = self.root / "gateway.sqlite3"
+        self.assertTrue(database.is_file())
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as reader:
+            self.assertEqual(reader.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            self.assertEqual(reader.execute(
+                "SELECT content, adp_state FROM gateway_messages"
+            ).fetchall(), [("完整问题🙂", "RECEIVED")])
+        self.assertFalse(list((self.root / "messages").glob("*.json")))
+
     def stored(self, msg_id):
-        """通过正式存储读取快照，与磁盘 JSON 事实对照。"""
+        """通过网关的只读连接查验已提交消息。"""
         key = message_key(self.config.corp_id, self.config.agent_id, msg_id)
         return self.app.state.wecom_gateway.store.get(key)
 
@@ -144,7 +160,7 @@ class CallbackTests(unittest.TestCase):
         for user in ("@all", "@ALL", "_member", ".member", "YNND|SIYU"):
             with self.subTest(user=user):
                 self.assertEqual(self.post(self.xml(user=user)).status_code, 403)
-        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
+        self.assertEqual(read_messages(self.config), [])
 
     def test_post_is_durable_before_empty_ack_and_duplicate_has_no_new_intent(self):
         """落盘先于 ACK；相同 MsgId 不变成 BUSY，也不增加通知或 ADP 调用。"""
@@ -155,8 +171,7 @@ class CallbackTests(unittest.TestCase):
             self.assertEqual(saved["adp_state"], "RECEIVED")
             self.assertEqual(saved["send_state"], "NONE")
             key = saved["message_key"]
-            disk = self.root / "messages" / f"{key}.json"
-            self.assertEqual(json.loads(disk.read_text(encoding="utf-8")), saved)
+            self.assertEqual(read_messages(self.config, key=key), [saved])
             self.assertEqual(self.post().status_code, 200)
             self.assertEqual(self.stored("1"), saved)
             network.assert_not_called()
@@ -189,7 +204,7 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual([r["adp_state"] for r in (first, second)], ["RECEIVED"] * 2)
         self.assertNotEqual(first["conversation_id"], second["conversation_id"])
 
-    def test_concurrent_duplicate_callbacks_commit_only_one_snapshot(self):
+    def test_concurrent_duplicate_callbacks_commit_only_one_record(self):
         """相同 MsgId 真正并发时也只产生一次获准状态，没有额外 BUSY 通知。"""
         barrier = Barrier(2)
 
@@ -200,7 +215,7 @@ class CallbackTests(unittest.TestCase):
 
         with ThreadPoolExecutor(2) as pool:
             self.assertEqual(list(pool.map(submit, range(2))), [200, 200])
-        records = list((self.root / "messages").glob("*.json"))
+        records = read_messages(self.config)
         self.assertEqual(len(records), 1)
         saved = self.stored("1")
         self.assertEqual((saved["adp_state"], saved["send_state"], saved["receive_sequence"]), ("RECEIVED", "NONE", 1))
@@ -220,7 +235,7 @@ class CallbackTests(unittest.TestCase):
         for case in cases:
             with self.subTest(case=list(case)):
                 self.assertEqual(self.post(**case).status_code, 403)
-        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
+        self.assertEqual(read_messages(self.config), [])
 
     def test_stale_duplicate_query_and_malicious_xml_are_rejected(self):
         """过期签名、歧义参数、DTD 与巨量请求不能到达状态写入。"""
@@ -231,7 +246,7 @@ class CallbackTests(unittest.TestCase):
         evil = b'<!DOCTYPE xml [<!ENTITY x "expansion">]><xml><Encrypt>&x;</Encrypt></xml>'
         self.assertEqual(self.client.post("/wecom/callback", params=self.signed(ciphertext), content=evil).status_code, 403)
         self.assertEqual(self.client.post("/wecom/callback", content=b"x" * 65537).status_code, 413)
-        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
+        self.assertEqual(read_messages(self.config), [])
 
     def test_nontext_and_events_are_acknowledged_without_adp_or_occupation(self):
         """非文字业务不冒充聊天消息，也不产生忙碌占用。"""
@@ -239,7 +254,7 @@ class CallbackTests(unittest.TestCase):
             for kind in ("image", "event"):
                 self.assertEqual(self.post(self.xml(kind=kind)).status_code, 200)
             network.assert_not_called()
-        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
+        self.assertEqual(read_messages(self.config), [])
 
     def test_cdata_and_comment_literals_are_not_mistaken_for_real_dtd(self):
         """合法文字中的 XML 示例不属于文档声明，仍需原样可靠接收。"""
@@ -253,19 +268,41 @@ class CallbackTests(unittest.TestCase):
                 self.assertEqual(self.stored(str(index))["content"], literal)
                 self.assertEqual(self.stored(str(index))["adp_state"], "RECEIVED")
 
-    def test_replace_failure_never_acks_and_receiver_fails_closed(self):
-        """原子提交失败不能 ACK，后续接收关闭直到重启，避免内存/磁盘分裂。"""
-        with patch("storage.messages.os.replace", side_effect=OSError("disk failure")):
-            self.assertEqual(self.post().status_code, 503)
-        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
+    def test_sqlite_full_failure_never_acks_and_receiver_fails_closed(self):
+        """SQLite 实际触发磁盘配额异常，回调失败且保留之前提交的记录。"""
+        self.assertEqual(self.post().status_code, 200)
+        store = self.app.state.wecom_gateway.store
+        store._writes.submit(store._writer.execute, "PRAGMA wal_checkpoint(TRUNCATE)").result()
+        store._writes.submit(store._writer.execute, "PRAGMA max_page_count = 1").result()
+        for index in range(2, 12):
+            response = self.post(self.xml(str(index), f"EMP{index}", "大" * 10_000))
+            if response.status_code == 503:
+                break
+        self.assertEqual(response.status_code, 503)
+        self.assertIsNone(self.stored(str(index)))
+        self.assertEqual(self.stored("1")["adp_state"], "RECEIVED")
         self.assertEqual(self.post().status_code, 503)
+        self.assertEqual(self.client.get("/healthz").status_code, 503)
 
-    def test_fsync_failure_and_physical_resource_limit_never_fake_reception(self):
-        """文件同步失败不 ACK；物理保护拒绝新消息，已保存重复仍可 ACK。"""
-        with patch("storage.messages.os.fsync", side_effect=OSError("fsync failure")):
+    def test_sqlite_write_lock_wait_never_acks(self):
+        """外部写锁到期只拒绝本轮。锁释放后同一回调可以可靠接收。"""
+        with closing(sqlite3.connect(self.config.gateway_database_path, isolation_level=None)) as lock:
+            lock.execute("BEGIN IMMEDIATE")
             self.assertEqual(self.post().status_code, 503)
-        self.assertEqual(list((self.root / "messages").glob("*.json")), [])
-        self.app.state.wecom_gateway.store.close()
+        self.assertEqual(read_messages(self.config), [])
+        self.assertEqual(self.app.state.wecom_gateway.store.metrics()["write_busy"], 1)
+        self.assertEqual(self.client.get("/healthz").status_code, 200)
+        time.sleep(0.06)
+        self.assertEqual(self.post().status_code, 200)
+        self.assertEqual(self.stored("1")["adp_state"], "RECEIVED")
+
+    def test_failed_commit_and_unfinished_limit_preserve_reception_contract(self):
+        """提交失败不 ACK；物理保护拒绝新消息，已保存重复仍可 ACK。"""
+        store = self.app.state.wecom_gateway.store
+        with patch.object(store, "_commit", side_effect=sqlite3.OperationalError("sync failure")):
+            self.assertEqual(self.post().status_code, 503)
+        self.assertEqual(read_messages(self.config), [])
+        store.close()
         limited = replace(self.config, max_unfinished_messages=1)
         self.app.state.wecom_gateway.store = MessageStore(limited)
         self.assertEqual(self.post().status_code, 200)
@@ -273,18 +310,139 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(self.post().status_code, 200)
         self.assertIsNone(self.stored("2"))
 
-    def test_failure_after_atomic_publication_recovers_without_second_reception(self):
-        """发布已生效但调用报错时关闭接收，重启以落盘事实去重并恢复占用。"""
-        replace_file = os.replace
+    def test_full_writer_queue_rejects_before_durable_ack(self):
+        """暂停真实写事务，待写额度满时新回调返回 503 且没有插入记录。"""
+        self.app.state.wecom_gateway.store.close()
+        store = MessageStore(replace(self.config, database_write_queue=1))
+        self.app.state.wecom_gateway.store = store
+        entered, release = Event(), Event()
+        receive = store._receive
 
-        def publish_then_fail(source, target):
-            """在真实原子发布后注入结果未知，不撤销已生效文件。"""
-            replace_file(source, target)
-            raise OSError("publication outcome uncertain")
+        def held(message):
+            """通过屏障留住首条写操作，正式接收和提交规则不变。"""
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("未释放写队列回归屏障")
+            return receive(message)
 
-        with patch("storage.messages.os.replace", side_effect=publish_then_fail):
+        with patch.object(store, "_receive", side_effect=held), ThreadPoolExecutor(1) as pool:
+            first = pool.submit(self.post)
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(self.post(self.xml("2", "SIYU")).status_code, 503)
+                self.assertFalse(first.done())
+                self.assertEqual(read_messages(self.config), [])
+                self.assertEqual(store.metrics()["write_queue_full"], 1)
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=3).status_code, 200)
+        self.assertIsNone(self.stored("2"))
+
+    def test_queued_callbacks_share_a_commit_and_never_ack_a_failed_batch(self):
+        """两条回调积压时共享一次同步提交。整批写入失败时两条都不能 ACK。"""
+        store = self.app.state.wecom_gateway.store
+        for should_fail in (False, True):
+            entered, release = Event(), Event()
+
+            def hold_writer():
+                """在事务开始前让两个回调都进入实际待写队列。"""
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("未释放批量提交回归屏障")
+
+            blocker = store._writes.submit(hold_writer)
+            with (patch.object(store, "_commit", wraps=store._commit,
+                               side_effect=OSError("fixture") if should_fail else None) as commit,
+                  ThreadPoolExecutor(2) as pool):
+                self.assertTrue(entered.wait(3))
+                start = 3 if should_fail else 1
+                posts = [pool.submit(self.post, self.xml(str(number), f"EMP{number}"))
+                         for number in (start, start + 1)]
+                try:
+                    deadline = time.monotonic() + 3
+                    while store.metrics()["write_pending"] != 2 and time.monotonic() < deadline:
+                        time.sleep(0.005)
+                    self.assertEqual(store.metrics()["write_pending"], 2)
+                    self.assertTrue(all(not post.done() for post in posts))
+                finally:
+                    release.set()
+                blocker.result(timeout=3)
+                self.assertEqual([post.result(timeout=3).status_code for post in posts],
+                                 [503, 503] if should_fail else [200, 200])
+                self.assertEqual(commit.call_count, 1)
+                self.assertEqual(store.metrics()["write_batch_peak"], 2)
+            self.assertEqual(len(read_messages(self.config)), 2)
+
+    def test_receipt_and_versioned_updates_share_one_ordered_transaction(self):
+        """状态更新可与新接收共享提交，版本冲突不影响同批其他写入。"""
+        self.assertEqual(self.post().status_code, 200)
+        store = self.app.state.wecom_gateway.store
+        first = self.stored("1")
+        entered, release = Event(), Event()
+
+        def hold_writer():
+            """等三个操作排好后再由写线程进入正式事务。"""
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("未释放混合写入回归屏障")
+
+        blocker = store._writes.submit(hold_writer)
+        try:
+            self.assertTrue(entered.wait(3))
+            with patch.object(store, "_commit", wraps=store._commit) as commit:
+                key, version = first["message_key"], first["record_version"]
+                changes = {"adp_state": "ADP_SEND_ARMED", "request_id": str(uuid4())}
+                stale = store._enqueue_write(store._update, (key, version - 1, changes))
+                arm = store._enqueue_write(store._update, (key, version, changes))
+                receipt = store.submit_receive(InboundMessage(
+                    self.config.corp_id, self.config.agent_id, first["user_id"], "2", "排队检查", int(time.time())))
+                self.assertFalse(arm.done())
+                self.assertIsNone(self.stored("2"))
+                release.set()
+                blocker.result(timeout=3)
+                with self.assertRaises(ChatError) as conflict:
+                    stale.result(timeout=3)
+                self.assertEqual(conflict.exception.code, "version_conflict")
+                self.assertEqual(arm.result(timeout=3)["adp_state"], "ADP_SEND_ARMED")
+                self.assertEqual(receipt.result(timeout=3)[0]["adp_state"], "REJECTED_USER_BUSY")
+                self.assertEqual(commit.call_count, 1)
+        finally:
+            release.set()
+
+    def test_online_backup_contains_uncheckpointed_ack_and_reopens(self):
+        """在线备份包含还在 WAL 的提交，可用相同网关配置恢复且不覆盖已有副本。"""
+        from storage.maintenance import backup_database, check_database, has_message_history
+
+        self.assertEqual(self.post().status_code, 200)
+        self.assertGreater(self.app.state.wecom_gateway.store.metrics()["wal_bytes"], 0)
+        destination = self.root / "backup" / "gateway.sqlite3"
+        destination.parent.mkdir()
+        self.assertFalse(has_message_history(destination))
+        with self.assertRaises(ChatError) as missing:
+            has_message_history(destination, required=True)
+        self.assertEqual(missing.exception.code, "missing_database")
+        self.assertEqual(backup_database(self.config.gateway_database_path, destination)["integrity"], "ok")
+        self.assertEqual(check_database(destination)["schema_version"], 1)
+        self.assertTrue(has_message_history(destination, required=True))
+        with self.assertRaises(ChatError):
+            backup_database(self.config.gateway_database_path, destination)
+        backup_config = replace(self.config, database_file=str(destination))
+        with MessageStore(backup_config):
+            self.assertEqual(read_messages(backup_config), [self.stored("1")])
+
+    def test_failure_after_commit_recovers_without_second_reception(self):
+        """提交已生效但调用报错时关闭接收，重启以持久事实去重并恢复占用。"""
+        store = self.app.state.wecom_gateway.store
+        commit = store._commit
+
+        def commit_then_fail():
+            """在真实提交后注入结果交接失败，保留 SQLite 中的原记录。"""
+            commit()
+            raise sqlite3.OperationalError("commit outcome uncertain")
+
+        with patch.object(store, "_commit", side_effect=commit_then_fail):
             self.assertEqual(self.post().status_code, 503)
-        self.assertEqual(len(list((self.root / "messages").glob("*.json"))), 1)
+        self.assertEqual(len(read_messages(self.config)), 1)
         self.assertEqual(self.post(self.xml("2")).status_code, 503)
         self.app.state.wecom_gateway.store.close()
         self.app.state.wecom_gateway.store = MessageStore(self.config)
@@ -294,18 +452,22 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(self.post(self.xml("2")).status_code, 200)
         self.assertEqual(self.stored("2")["adp_state"], "REJECTED_USER_BUSY")
 
-    def test_corrupt_or_unsupported_snapshot_is_preserved_and_blocks_restart(self):
-        """版本/结构损坏不能静默当作空目录，避免重复接收已处理消息。"""
+    def test_corrupt_or_unsupported_database_is_preserved_and_blocks_restart(self):
+        """版本或损坏库不能静默当作空库，避免重复接收已处理消息。"""
         self.post()
         self.app.state.wecom_gateway.store.close()
-        path = next((self.root / "messages").glob("*.json"))
-        original = json.loads(path.read_text(encoding="utf-8"))
-        for content in (b"broken json", json.dumps({**original, "schema_version": 999}).encode(),
-                        json.dumps({**original, "request_id": "unexpected"}).encode()):
-            path.write_bytes(content)
-            with self.subTest(content=content[:12]), self.assertRaises(ChatError):
-                MessageStore(self.config)
-            self.assertEqual(path.read_bytes(), content)
+        path = self.config.gateway_database_path
+        with closing(sqlite3.connect(path)) as writer:
+            writer.execute("PRAGMA user_version = 999")
+        with self.assertRaises(ChatError):
+            MessageStore(self.config)
+        self.assertEqual(len(read_messages(self.config)), 1)
+        with closing(sqlite3.connect(path)) as reader:
+            self.assertEqual(reader.execute("PRAGMA user_version").fetchone()[0], 999)
+        path.write_bytes(b"broken database")
+        with self.assertRaises(ChatError):
+            MessageStore(self.config)
+        self.assertEqual(path.read_bytes(), b"broken database")
 
     def test_cryptographic_padding_and_claimed_plaintext_length_are_strict(self):
         """有合法签名的畸形加密包也不能通过认证边界。"""
@@ -318,8 +480,8 @@ class CallbackTests(unittest.TestCase):
             with self.subTest(raw=raw[:4]):
                 self.assertEqual(self.post(ciphertext=ciphertext).status_code, 403)
 
-    def test_directory_is_exclusive_and_restart_restores_busy_from_snapshot(self):
-        """OS 锁拒绝第二实例；同目录重开从唯一消息事实恢复占用。"""
+    def test_database_is_exclusive_and_restart_restores_busy(self):
+        """OS 锁拒绝第二实例，同一库重开后仍按持久状态判断占用。"""
         self.post()
         with self.assertRaises(ChatError):
             MessageStore(self.config)
@@ -329,7 +491,7 @@ class CallbackTests(unittest.TestCase):
             self.app.state.wecom_gateway.store = store
             self.assertEqual(self.post(self.xml("2")).status_code, 200)
             self.assertEqual(self.stored("2")["adp_state"], "REJECTED_USER_BUSY")
-        self.assertTrue((self.root / "messages").is_dir())
+        self.assertTrue(self.config.gateway_database_path.is_file())
 
     def test_crypto_encrypt_interoperates_with_independent_decoder(self):
         """生产加密只用于模拟输入，协议布局由独立 AES 解码断言。"""

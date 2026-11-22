@@ -1,4 +1,4 @@
-"""阶段E显式Docker Compose验收：ARM64正式镜像、Fake ADP、持久目录和恢复。"""
+"""显式 Docker Compose 验收。正式 Linux 镜像、Fake ADP、持久卷和恢复。"""
 
 import argparse
 import hashlib
@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from core.config import load_config
 from core.models import ChatResult
-from storage.messages import MessageStore, read_snapshot
+from storage.sqlite_store import MessageStore
 from wecom.models import InboundMessage
 from wecom.sender import SendOutcome
 from wecom_dispatch_smoke import callback, event_report, free_port, json_http, wait_for
@@ -26,6 +26,25 @@ def command(arguments, *, check=True):
     return subprocess.run(arguments, check=check, capture_output=True, text=True, encoding="utf-8", timeout=60)
 
 
+def seed_recovery():
+    """在停止网关后，同一 Linux 卷中准备未武装、发送武装和待发记录。"""
+    config = load_config()
+    with MessageStore(config) as store:
+        store.put_if_absent(InboundMessage(config.corp_id, config.agent_id, "SIYU", "2002", "本机恢复测试", 1))
+        for msg, armed_send in (("2003", True), ("2004", False)):
+            record, _ = store.put_if_absent(InboundMessage(config.corp_id, config.agent_id, "EMP_SEND" + msg,
+                                                          msg, "通知边界注入夹具", 1))
+            armed = store.update(record["message_key"], expected_version=record["record_version"],
+                                 adp_state="ADP_SEND_ARMED", request_id=str(uuid4()))
+            outcome = ChatResult("仅测试恢复通知", armed["conversation_id"], armed["request_id"])
+            saved = store.update(armed["message_key"], expected_version=armed["record_version"], adp_state="ADP_SUCCEEDED",
+                                 adp_result=asdict(outcome), notification=outcome.text,
+                                 notification_kind="ADP_SUCCEEDED", send_state="PENDING")
+            if armed_send:
+                store.update(saved["message_key"], expected_version=saved["record_version"], send_state="SEND_ARMED",
+                             send_result=asdict(SendOutcome("SEND_ARMED", "simulated", None, None, None, "armed")))
+
+
 def run(image):
     """全程只用Fake专属AppKey，清理本任务容器/网络/临时目录并保留脱敏报告。"""
     project_root = Path(__file__).resolve().parents[1]
@@ -33,28 +52,30 @@ def run(image):
     runtime.mkdir(exist_ok=True)
     project = "wecom-e-" + uuid4().hex[:12]
     platform = json.loads(command(["docker", "image", "inspect", image, "--format", "{{json .}}"] ).stdout)
-    assert platform["Os"] == "linux" and platform["Architecture"] == "arm64"
+    architecture = platform["Architecture"]
+    assert platform["Os"] == "linux" and architecture in {"amd64", "arm64"}
+    machine = {"arm64": "aarch64", "amd64": "x86_64"}[architecture]
+    platform_name = "linux/" + architecture
+    docker_arch = command(["docker", "info", "--format", "{{.Architecture}}"]).stdout.strip()
     base = ["docker", "compose", "--project-directory", str(project_root), "-p", project,
             "-f", str(project_root / "compose.yaml"), "-f", str(project_root / "compose.local.yaml")]
-    result = {"source": "docker_compose_fake_adp", "image_id": platform["Id"], "platform": "linux/arm64",
-              "emulated_on_local_desktop": True, "real_wecom": False, "real_adp": False}
+    result = {"source": "docker_compose_fake_adp", "image_id": platform["Id"], "platform": platform_name,
+              "emulated_on_local_desktop": docker_arch not in {architecture, machine}, "real_wecom": False, "real_adp": False}
     with tempfile.TemporaryDirectory(prefix="docker-wecom-", dir=runtime) as temporary:
         root = Path(temporary).resolve()
         assert root.is_relative_to(runtime) and root.name.startswith("docker-wecom-")
         config_path = create_local_config(root / "config.toml", scope="wecom-local-docker-" + uuid4().hex[:8])
         config = load_config(config_path)
-        for name in ("runtime", "logs"):
-            (root / name).mkdir(exist_ok=True)
+        (root / "logs").mkdir(exist_ok=True)
         port = free_port()
         endpoint = f"http://127.0.0.1:{port}"
         # 临时第三层只覆盖测试资源路径/端口/镜像；业务应用和dev模板保持同一入口。
         override = {"services": {
-            "adp-chat": {"image": image, "volumes": [
+            "adp-chat": {"image": image, "platform": platform_name, "volumes": [
                 {"type": "bind", "source": str(config_path), "target": "/app/config.toml", "read_only": True},
-                {"type": "bind", "source": str(root / "runtime"), "target": "/app/runtime"},
+                {"type": "bind", "source": str(project_root / "tests"), "target": "/fixtures", "read_only": True},
                 {"type": "bind", "source": str(root / "logs"), "target": "/app/logs"}]},
-            "fake-adp": {"image": image, "volumes": [
-                {"type": "bind", "source": str(root / "runtime"), "target": "/app/runtime"}]}}}
+            "fake-adp": {"image": image, "platform": platform_name}}}
         # JSON是合法YAML；端口需要Compose的显式替换标签，避免保留任何额外发布地址。
         override_file = root / "compose.override.yaml"
         text = json.dumps(override, ensure_ascii=False)
@@ -75,10 +96,16 @@ def run(image):
                     "print(r.read().decode('utf-8'))")
             return json.loads(dc("exec", "-T", "fake-adp", "python", "-c", code).stdout)
 
-        def snapshots():
-            """共享读取实际bind快照，Windows读取不阻止文件替换。"""
-            return {record["msg_id"]: record for path in Path(config.messages_dir).glob("*.json")
-                    if (record := read_snapshot(path))}
+        def offline(code):
+            """网关停止后在原 Linux 卷中运行同一版本工具，验证恢复与完整性。"""
+            return dc("run", "--rm", "-T", "--no-deps", "--entrypoint", "python", "adp-chat", "-c", code).stdout
+
+        def snapshots(*, running=True):
+            """在 SQLite 所在 Linux VM 内做 WAL 只读查询。"""
+            code = ("import json;from core.config import load_config;from storage.sqlite_store import read_messages;"
+                    "print(json.dumps(read_messages(load_config())))")
+            output = dc("exec", "-T", "adp-chat", "python", "-c", code).stdout if running else offline(code)
+            return {record["msg_id"]: record for record in json.loads(output)}
 
         def ready():
             """ARM64本地仿真预设30秒启动预算，状态断言不依赖健康日志猜测。"""
@@ -98,15 +125,19 @@ def run(image):
             inspection = json.loads(command(["docker", "inspect", container, "--format", "{{json .}}"] ).stdout)
             assert inspection["Image"] == platform["Id"]
             assert next(m for m in inspection["Mounts"] if m["Destination"] == "/app/config.toml")["RW"] is False
-            expected = hashlib.sha256((project_root / "src/core/events.py").read_bytes()).hexdigest()
-            probe = ("import os,platform,hashlib;from pathlib import Path;import core.events;from core.config import load_config;"
+            assert next(m for m in inspection["Mounts"] if m["Destination"] == "/app/runtime")["Type"] == "volume"
+            expected = hashlib.sha256((project_root / "src/storage/sqlite_store.py").read_bytes()).hexdigest()
+            probe = ("import os,platform,hashlib,sqlite3,resource;from pathlib import Path;import storage.sqlite_store;"
+                     "from core.config import load_config;"
                      "c=load_config();assert os.getuid()==10001 and os.getgid()==10001;"
-                     "assert platform.machine()=='aarch64';assert c.app_key=='fake-local-adp-only';"
+                     f"assert platform.machine()=={machine!r};assert c.app_key=='fake-local-adp-only';"
+                     "assert sqlite3.sqlite_version_info >= (3, 51, 3);"
+                     "assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] >= 8192;"
                      "assert c.notification_mode=='simulated' and c.gateway_environment=='test';"
                      "assert os.environ['ADP_CONFIG_FILE']=='/app/config.toml';"
-                     f"assert hashlib.sha256(Path(core.events.__file__).read_bytes()).hexdigest()=={expected!r};"
-                     "print('ARM64 uid/gid10001/config/source: OK')")
-            assert "OK" in dc("exec", "-T", "adp-chat", "python", "-c", probe).stdout
+                     f"assert hashlib.sha256(Path(storage.sqlite_store.__file__).read_bytes()).hexdigest()=={expected!r};"
+                     "print(sqlite3.sqlite_version)")
+            result["sqlite_version"] = dc("exec", "-T", "adp-chat", "python", "-c", probe).stdout.strip()
             with ThreadPoolExecutor(max_workers=100) as pool:
                 durations = list(pool.map(lambda i: callback(config, endpoint, f"EMP{i}", str(i + 1)), range(100)))
             observed = wait_for(lambda: (s if len((s := fake())["calls"]) == 100 else None), seconds=30)
@@ -140,19 +171,7 @@ def run(image):
             dc("kill", "-s", "SIGKILL", "adp-chat")
             state = json.loads(command(["docker", "inspect", container, "--format", "{{json .State}}"] ).stdout)
             assert state["Status"] == "exited" and state["ExitCode"] == 137
-            with MessageStore(config) as store:
-                store.put_if_absent(InboundMessage(config.corp_id, config.agent_id, "SIYU", "2002", "本机恢复测试", 1))
-                for msg, armed_send in (("2003", True), ("2004", False)):
-                    record, _ = store.put_if_absent(InboundMessage(config.corp_id, config.agent_id, "EMP_SEND" + msg,
-                                                                  msg, "通知边界注入夹具", 1))
-                    armed = store.update(record["message_key"], expected_version=record["record_version"],
-                                         adp_state="ADP_SEND_ARMED", request_id=str(uuid4()))
-                    outcome = ChatResult("仅测试恢复通知", armed["conversation_id"], armed["request_id"])
-                    saved = store.update(armed["message_key"], expected_version=armed["record_version"], adp_state="ADP_SUCCEEDED",
-                        adp_result=asdict(outcome), notification=outcome.text, notification_kind="ADP_SUCCEEDED", send_state="PENDING")
-                    if armed_send:
-                        store.update(saved["message_key"], expected_version=saved["record_version"], send_state="SEND_ARMED",
-                            send_result=asdict(SendOutcome("SEND_ARMED", "simulated", None, None, None, "armed")))
+            offline("import sys;sys.path.insert(0,'/fixtures');from wecom_docker_smoke import seed_recovery;seed_recovery()")
             dc("start", "adp-chat")
             ready()
             wait_for(lambda: snapshots()["2001"]["adp_state"] == "ADP_UNKNOWN" and
@@ -164,7 +183,7 @@ def run(image):
             wait_for(lambda: len(fake()["calls"]) == 103, seconds=30)
             fake("/_test/release", release=True)
             wait_for(lambda: snapshots()["2002"]["send_state"] == snapshots()["2005"]["send_state"] == "SEND_SIMULATED", seconds=30)
-            calls = [json.loads(line) for line in (root / "runtime/fake-calls.jsonl").read_text(encoding="utf-8").splitlines()]
+            calls = fake()["calls"]
             assert len(calls) == 103 and sum(c["RequestId"] == first_id for c in calls) == 1
             assert [c["UserId"] for c in calls[-3:]] == ["YNND", "SIYU", "YNND"]
             assert calls[-3]["ConversationId"] == calls[-1]["ConversationId"] != calls[-2]["ConversationId"]
@@ -185,15 +204,16 @@ def run(image):
             # Uvicorn0.48在完整lifespan关闭后重新抛出SIGTERM，init返回128+15=143。
             # 不把SIGKILL/137、OOM或缺少本次service.stopped当作正常退出。
             assert stopped["ExitCode"] == 143 and stopped["OOMKilled"] is False and not stopped["Error"]
-            result["log_events"] = event_report(config, snapshots(), quota=30, crash=True,
+            saved = snapshots(running=False)
+            result["log_events"] = event_report(config, saved, quota=30, crash=True,
                                            notification_crash=False, notifications=False)
             from core.logging import parse_log_line
             events = [document
                       for path in (root / "logs").glob(Path(config.log_file).name + "*")
-                      for line in path.read_bytes().splitlines(keepends=True) if line.endswith(b"\\n")
+                      for line in path.read_bytes().splitlines(keepends=True) if line.endswith(b"\n")
                       for document in [parse_log_line(line.decode("utf-8"))]
                       if "event" in document]
-            injected = snapshots()["2003"]["message_key"]
+            injected = saved["2003"]["message_key"]
             assert not any(e.get("message_key") == injected and e["event"] in {"adp.started", "wecom.send.started", "wecom.send.simulated"}
                            for e in events)
             latest_start = max(e["timestamp"] for e in events if e["event"] == "service.started")
@@ -204,18 +224,17 @@ def run(image):
         except Exception:
             diagnostics = dc("logs", "--no-color", "--tail", "40", check=False)
             print(json.dumps({"failed_project": project,
-                "states": [{key: record.get(key) for key in ("msg_id", "adp_state", "send_state", "request_id", "adp_error")}
-                           for record in snapshots().values() if int(record["msg_id"]) >= 2000],
                 "service_diagnostics": diagnostics.stdout + diagnostics.stderr}, ensure_ascii=False))
             raise
         finally:
-            # down只删除唯一project的容器/网络，不删镜像、卷或用户数据；临时目录由其Owner回收。
-            cleanup = dc("down", "--timeout", "10", check=False)
+            # 临时卷与当前唯一 Compose project 同生共死。
+            cleanup = dc("down", "--timeout", "10", "--volumes", check=False)
             if cleanup.returncode != 0:
                 raise AssertionError("本任务Compose清理失败：" + cleanup.stderr)
             assert not command(["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=" + project]).stdout.strip()
             assert not command(["docker", "network", "ls", "-q", "--filter", "label=com.docker.compose.project=" + project]).stdout.strip()
-    result["cleanup"] = "owned_containers_network_and_temporary_test_directory_removed"
+            assert not command(["docker", "volume", "ls", "-q", "--filter", "label=com.docker.compose.project=" + project]).stdout.strip()
+    result["cleanup"] = "owned_containers_network_volume_and_temporary_test_directory_removed"
     return result
 
 

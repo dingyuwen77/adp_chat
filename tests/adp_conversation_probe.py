@@ -18,9 +18,10 @@ from core.models import ChatError
 
 
 def gateway_round(config, identity, question, url):
-    """正式加密回调只提交一次，再读同目录终态；不得绕验签或重发未知请求。"""
+    """正式加密回调只提交一次，再读 SQLite 终态；不得重发未知请求。"""
     from core.models import ChatResult
-    from storage.messages import message_key, read_snapshot
+    from storage.messages import message_key
+    from storage.sqlite_store import read_messages
     from wecom_dispatch_smoke import callback
 
     target = urlsplit(url)
@@ -31,7 +32,6 @@ def gateway_round(config, identity, question, url):
         raise ChatError("config", "invalid_probe_target", "真实网关探测须本机HTTP、独立test/simulated配置及正式ADP端点。")
     msg_id = str(time.time_ns()) + str(os.getpid())
     key = message_key(config.corp_id, config.agent_id, msg_id)
-    snapshot = Path(config.messages_dir) / f"{key}.json"
     acknowledgement = "received"
     try:
         callback(config, url.rstrip("/"), identity.user_id, msg_id, question)
@@ -42,14 +42,14 @@ def gateway_round(config, identity, question, url):
         acknowledgement = "unknown"
     deadline = time.monotonic() + config.chat_timeout_seconds + config.send_timeout_seconds + 10
     while time.monotonic() < deadline:
-        try:
-            record = read_snapshot(snapshot)
-        except FileNotFoundError:
+        records = read_messages(config, key=key) if config.gateway_database_path.is_file() else []
+        if not records:
             time.sleep(0.05)
             continue
+        record = records[0]
         if (record.get("message_key") != key or record.get("user_id") != identity.user_id
                 or record.get("conversation_id") != identity.conversation_id or record.get("environment") != "test"):
-            raise ChatError("probe", "invalid_probe_evidence", "快照身份/作用域不匹配，停止探测。")
+            raise ChatError("probe", "invalid_probe_evidence", "持久记录身份/作用域不匹配，停止探测。")
         if record["adp_state"] in {"ADP_SUCCEEDED", "ADP_REJECTED", "ADP_UNKNOWN", "REJECTED_USER_BUSY"}:
             metadata = {"message_key": key, "send_state": record["send_state"], "callback_ack": acknowledgement,
                         "notification_source": (record.get("send_result") or {}).get("source"),
@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.execute_real_adp and not args.output:
         parser.error("真实请求必须指定 --output，保留结果并人工审查语义；不可提交原始正文")
     try:
-        config = replace(load_config(args.config), log_enabled=False, log_question=False, log_answer_chars=0)
+        config = replace(load_config(args.config), log_enabled=False, log_question=False, log_answer=False)
         identity = employee_identity(config, args.user_id)
         if args.execute_real_adp and args.async_client and config.adp_url != ADP_CHAT_URL:
             raise ChatError("config", "invalid_probe_target", "真实探测只允许腾讯正式HTTPS端点。")

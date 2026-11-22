@@ -31,7 +31,7 @@ class LocalSetupTests(unittest.TestCase):
         self.assertEqual(config.gateway_environment, "test")
         self.assertEqual(len(base64.b64decode(config.encoding_aes_key + "=")), 32)
         self.assertFalse(config.log_question)
-        self.assertEqual(config.log_answer_chars, 0)
+        self.assertFalse(config.log_answer)
         original = self.output.read_bytes()
         with self.assertRaises(FileExistsError):
             create_local_config(self.output, scope="wecom-local-e-fixture", project_root=self.root)
@@ -51,7 +51,7 @@ class LocalSetupTests(unittest.TestCase):
         self.assertEqual(config.system_role, "published-test-role")
         self.assertEqual(config.adp_application, "wecom-local-e-real")
         self.assertEqual(config.wecom_app_secret, "")
-        self.assertEqual(config.messages_dir, str(self.output.parent / "runtime" / "messages"))
+        self.assertEqual(config.gateway_database_path, self.output.parent / "runtime" / "gateway.sqlite3")
         self.assertEqual(source.read_text(encoding="utf-8"), text)
 
     def test_output_and_scope_are_bounded_to_ignored_test_area(self):

@@ -98,7 +98,8 @@ class WeComSender:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_default_certs()
             transport = httpx.AsyncHTTPTransport(verify=context, retries=0,
-                limits=httpx.Limits(max_connections=None, max_keepalive_connections=20))
+                limits=httpx.Limits(max_connections=config.max_send_tasks,
+                                    max_keepalive_connections=min(config.max_send_tasks, 32)))
             http_client = httpx.AsyncClient(transport=transport, follow_redirects=False,
                                            trust_env=False, timeout=config.send_timeout_seconds)
         self.http = http_client

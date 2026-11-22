@@ -28,7 +28,8 @@ BASH = find_bash()
 class DeploymentUpgradeTests(unittest.TestCase):
     """保护升级编排、停机前校验与实际失败后的恢复边界。"""
 
-    def invoke_upgrade(self, *, target_valid=True, start_fails=False, old_compatible=False):
+    def invoke_upgrade(self, *, target_valid=True, start_fails=False, old_compatible=False,
+                       sqlite_target=False, sqlite_history=False, attest_fails=False):
         """运行真实 main/finish/recover_previous，以文件观察部署结果和故障恢复。"""
         with tempfile.TemporaryDirectory(prefix="adp-upgrade-test-") as directory:
             root = Path(directory)
@@ -42,7 +43,7 @@ class DeploymentUpgradeTests(unittest.TestCase):
             (release / "config.toml").write_text("[chat]\nstream=false\n", encoding="utf-8")
             fixture = r'''
 source ./functions.sh
-fixture_id=old-container
+fixture_id="$FIXTURE_CONTAINER"
 fixture_image=old-image
 fixture_version=v0.0.7
 fixture_running=true
@@ -85,6 +86,9 @@ python_tool() {
             printf 'BIND_IP=127.0.0.1\nHOST_PORT=4560\nSTATE_VERSION=v0.0.7\nSTATE_PREVIOUS_VERSION=\n'
             printf 'SESSION_HOST_DIR=%s/../runtime\nSESSION_HOST_FILE=%s/../runtime/session.json\n' "$RELEASE_DIR" "$RELEASE_DIR"
             printf 'LOG_HOST_DIR=%s/../log\n' "$RELEASE_DIR"
+            if [[ "$SQLITE_TARGET" == 1 && "$VERSION" == v0.0.8 ]]; then
+                printf 'DB_HOST_DIR=%s/../runtime\nDB_HOST_FILE=%s/../runtime/gateway.sqlite3\n' "$RELEASE_DIR" "$RELEASE_DIR"
+            fi
             ;;
         preflight)
             printf '%s\n' "$TOOL_IMAGE" >> preflights
@@ -98,6 +102,9 @@ python_tool() {
             fi
             printf 'SESSION_CID=fixture-session\nSESSION_SHA=fixture-sha\n'
             ;;
+        rollback_check)
+            [[ "$SQLITE_HISTORY" == 0 ]]
+            ;;
         *) printf 'unexpected fixture helper mode\n' >&2; return 91 ;;
     esac
 }
@@ -109,6 +116,7 @@ stop_current() {
 }
 start_container() {
     # 在启动边界注入失败，确保测试真实走到 finish 的恢复分支。
+    arm_database_guard || return 1
     if [[ "$IMAGE_ID" == target-image && "$START_FAILS" == 1 ]]; then return 44; fi
     NEW_ID="running-$VERSION"
     fixture_id=$NEW_ID
@@ -124,7 +132,7 @@ wait_healthy() {
 }
 attest_container() {
     # 挂载及会话校验由既有部署测试覆盖。
-    return 0
+    [[ "$ATTEST_FAILS" == 0 || "$VERSION" != v0.0.8 ]]
 }
 record_success() {
     # 只有正式主流程确认成功后才写入可观察的成功版本。
@@ -135,20 +143,27 @@ cleanup_old_cache() {
     return 0
 }
 save_current
-main --upgrade v0.0.8
+main --upgrade "$FIXTURE_VERSION"
 '''
             (release / "fixture.sh").write_text(fixture, encoding="utf-8", newline="\n")
+            env = {**os.environ, "TARGET_VALID": str(int(target_valid)), "START_FAILS": str(int(start_fails)),
+                   "OLD_COMPATIBLE": str(int(old_compatible)), "SQLITE_TARGET": str(int(sqlite_target)),
+                   "SQLITE_HISTORY": str(int(sqlite_history)), "ATTEST_FAILS": str(int(attest_fails)),
+                   "FIXTURE_VERSION": "v0.0.8", "FIXTURE_CONTAINER": "old-container"}
             result = subprocess.run(
                 [BASH, "./fixture.sh"], cwd=release, capture_output=True, encoding="utf-8",
-                timeout=20, env={**os.environ, "TARGET_VALID": str(int(target_valid)),
-                                 "START_FAILS": str(int(start_fails)),
-                                 "OLD_COMPATIBLE": str(int(old_compatible))},
+                timeout=20, env=env,
             )
             files = {
                 name: (release / name).read_text(encoding="utf-8").splitlines()
                 if (release / name).exists() else []
-                for name in ("current-state", "successful-version", "preflights", "stopped")
+                for name in ("current-state", "successful-version", "preflights", "stopped", ".gateway-database")
             }
+            if sqlite_history:
+                files["legacy_retry"] = subprocess.run(
+                    [BASH, "./fixture.sh"], cwd=release, capture_output=True, encoding="utf-8",
+                    timeout=20, env={**env, "FIXTURE_VERSION": "v0.0.7", "FIXTURE_CONTAINER": ""},
+                )
             return result, files
 
     def test_new_config_can_upgrade_even_when_old_image_rejects_it(self):
@@ -184,6 +199,26 @@ main --upgrade v0.0.8
         self.assertEqual(files["successful-version"], [])
         self.assertEqual(files["preflights"], ["target-image", "old-image"])
         self.assertIn("自动恢复未完成", result.stderr)
+
+    def test_failed_sqlite_cutover_with_written_messages_blocks_retry_to_legacy(self):
+        """成功状态尚未写入而新库已有业务时，容器回收后也不能回到旧 JSON。"""
+        result, files = self.invoke_upgrade(sqlite_target=True, sqlite_history=True,
+                                            attest_fails=True, old_compatible=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(files["successful-version"], [])
+        self.assertEqual(len(files[".gateway-database"]), 1)
+        self.assertIn("自动恢复未完成", result.stderr)
+        retry = files["legacy_retry"]
+        self.assertNotEqual(retry.returncode, 0)
+        self.assertIn("已有 SQLite 切换记录", retry.stderr)
+
+    def test_failed_empty_sqlite_cutover_can_still_recover_legacy(self):
+        """同一首次切换若已证实新库为空，回滚和配置兼容旧流程可继续。"""
+        result, files = self.invoke_upgrade(sqlite_target=True, attest_fails=True, old_compatible=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(files[".gateway-database"], [])
+        self.assertEqual(files["current-state"], ["v0.0.7", "true", "running-v0.0.7"])
+        self.assertEqual(files["successful-version"], ["v0.0.7"])
 
 
 if __name__ == "__main__":

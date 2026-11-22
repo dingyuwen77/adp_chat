@@ -95,7 +95,7 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 - `POST /api/v1/chat` 请求为 `{"message":"你好"}`，响应包括 `text`、`conversation_id`、`request_id`、`record_id`、`reply_method` 和 `reply_contents`；接口只在 `response.completed` 成功后一次性返回完整 JSON。
 - `[chat].stream` 控制上游 ADP 文本输出及 `Incremental`：默认 `false` 对应 `disable/false`，`true` 对应 `enable/true`。修改后重启对应进程；main、CLI 和 FastAPI 都继续等待完整正式结果。本地入口打印文字和原始内容，不下载或显示图片。
-- `GET /healthz` 是轻量健康检查，不调用腾讯 ADP；FastAPI 的交互文档默认在 `/docs`。
+- `GET /healthz` 检查本机服务状态，包括启用时的企微存储与调度；FastAPI 的交互文档默认在 `/docs`。
 - `runtime/session.json` 维持固定 UserId/AppKey 的单个 ConversationId；容器重建不应丢失该文件。三种模式不能**同时**操作同一份会话数据。
 - 原单用户 API 使用一把进程内互斥锁；单实例单 worker，同一时刻只能处理一个 ADP 请求，忙碌的第二条消息立即返回 HTTP **409**。不支持多用户、多会话、上传、队列或自动重试。
 - **无 X-API-Key 或 HTTPS**。任何能够到达服务端口的内网程序都可以使用该固定 ADP 身份。必须由服务器网络边界限制访问来源，严禁直接暴露公网。
@@ -105,9 +105,9 @@ python examples/http_client.py "你好" --url http://10.102.70.82:4560
 
 ## 企业微信网关（A～E已交付，F客户端已验收）
 
-已有多员工身份、加密回调、可靠接收和真正异步 ADP 转发/状态恢复，操作见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#18-异步-adp与恢复阶段-c)。旧单用户接口保持原行为；启用网关后会调用配置的ADP，默认正式HTTPS，测试请使用文档的隔离Fake配置。通知默认disabled；本地显式simulated后走统一发送/恢复，只产生SEND_SIMULATED。正式企微发送已有真实收发证据，用户已确认既有F客户端验收通过；故障分类仍需区分Fake与真实证据。当前日志共用普通文本文件，本机50/100员工Fake压力、真实ADP跨进程两轮和Docker完整链路有直接证据；E交付状态见 [docs/wecom-integration/02_实施路线图.md](docs/wecom-integration/02_实施路线图.md)。完整Windows/命令行/可选PyCharm与Docker说明见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#110-ae完整本地链路jsonl与docker)；新增图文与公网访问控制的验证边界独立记录。
+企微网关验签后将消息提交到 SQLite WAL，再返回空 ACK。单个员工同一时刻只获准一条 ADP 请求，不同员工可以并发。重复 MsgId 返回 ACK 并复用原记录。容量耗尽返回 503。部署采用一个实例和一个 Uvicorn Worker，消息库放在本机持久盘。第一次切换创建空库，运维流程见 [docs/adp-chat/02_Docker部署与运维.md](docs/adp-chat/02_Docker部署与运维.md#sqlite-消息库切换备份与恢复)。
 
-同员工忙碌立即拒绝、不排队；重复MsgId不重复执行/通知。不同员工不设人为模型并发限额。ADP零自动重试，UNKNOWN可靠保存提示并释放本地占用，旧云端请求可能仍在执行。**A～E的本地协议模拟和ADP测试不代表企业微信真实收发成功。**
+ADP 和通知分别保存出站状态。已武装但结果未知时保留核查信息，ADP 本地会话可继续接收新消息。当前处理链和恢复状态见 [docs/wecom-integration/01_网关架构设计.md](docs/wecom-integration/01_网关架构设计.md)。
 
 企业微信回复按正式答案的原始顺序发送文字与原生图片；长文字按 2048 UTF-8 字节分段并保护链接，不添加技术编号。同员工的完整通知串行发送，图片仅在内存准备，失败在原位置以链接降级；已提交消息后结果未知不自动重发。配置、资源限制和验收边界见 [docs/wecom-integration/01_网关架构设计.md](docs/wecom-integration/01_网关架构设计.md#有序图文回复)。用户于 2026-11-09 确认既有 F 客户端验收通过；本次新增图文显示尚需部署后客户端验收，公网旧 API 访问控制单独核验。
 
@@ -120,6 +120,8 @@ python -B -X utf8 -m unittest discover -s tests -v
 ```
 
 本地和现有 Windows CI 均安装 `requirements-dev.txt`，覆盖 FastAPI TestClient / HTTPX。**检查 skipped 是否为零，并核实每个跳过原因**。Python 回归通过不等于目标服务器的 Docker、ADP 网络及访问控制已验收。
+
+千用户负载通过 [tests/wecom_load.py](tests/wecom_load.py) 执行，使用真实本机 HTTP、Fake ADP 和模拟企微，命令为 `python -B -X utf8 tests/wecom_load.py`。
 
 本机 Docker 镜像可单独验收，测试使用临时配置和会话，不发送 ADP 请求：
 
@@ -134,8 +136,4 @@ python tests/docker_smoke.py --image adp-chat:local
 
 ## 统一日志（当前版本）
 
-网关业务事件与诊断信息共用普通文本日志 `log_file`，不再创建独立 `events-*.jsonl`；历史 JSONL 不自动删除。现有前缀不变，正文采用自由中文说明 + ` | ` + `key=value` 字段，取消冗余 JSON。当前**未接入 Cosmos DB**。格式与后续采集方案见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](docs/logging/01_统一日志与Cosmos_DB接入设计.md)。
-
-普通日志不再追加 `record` JSON；可使用 `core.logging.parse_log_line()` 将每条新格式行解析为字典（包括普通诊断和网关事件），未来再实现 Cosmos DB 采集器。
-
- > **日志格式已实现，Cosmos DB 尚未接入**：保留现有前缀与自由中文说明，以单个 ` | ` 分隔结构化 `key=value` 字段。实现与后续接入方案见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](docs/logging/01_统一日志与Cosmos_DB接入设计.md)；当前日志行为以源码和测试为准。
+诊断和事件与完整脱敏问答共用普通文本日志。`log_question` 和 `log_answer` 可分别控制正文，轮转备份决定保留容量。日志解析、数据权限和后续采集方案见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](docs/logging/01_统一日志与Cosmos_DB接入设计.md)。

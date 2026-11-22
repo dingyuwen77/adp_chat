@@ -8,7 +8,7 @@ from time import monotonic
 from uuid import uuid4
 
 from core.config import ChatConfig
-from core.logging import conversation_text, diagnostic_logger
+from core.logging import diagnostic_logger, log_adp_answer, log_conversation
 from core.models import ChatError, ChatResult
 from .sse import stream_events
 
@@ -172,13 +172,13 @@ def chat(
         started = monotonic()
         logger.info("request_started conversation_id=%s request_id=%s stream=%s", conversation_id, request_id, config.stream)
         if logger.isEnabledFor(INFO) and config.log_question:
-            logger.info("user_question conversation_id=%s request_id=%s question=%s", conversation_id, request_id, conversation_text(config, question))
+            log_conversation(logger, "question", question, conversation_id=conversation_id, request_id=request_id)
         try:
             payload = _payload(config, request_id, conversation_id, [{"Type": "text", "Text": question}])
             record = _completed_record(payload, config, logger)
             result = _result(record, conversation_id, request_id)
-            if logger.isEnabledFor(INFO):
-                logger.info("adp_answer conversation_id=%s request_id=%s answer_length=%d answer_truncated=%s answer_preview=%s", conversation_id, request_id, len(result.text), len(result.text) > config.log_answer_chars, conversation_text(config, result.text, limit=config.log_answer_chars))
+            if config.log_answer:
+                log_adp_answer(logger, result, conversation_id=conversation_id, request_id=request_id)
             logger.info("request_completed conversation_id=%s request_id=%s record_id=%s reply_method=%s elapsed_ms=%.1f", conversation_id, request_id, result.record_id, result.reply_method, (monotonic() - started) * 1000)
             return result
         except ChatError as exc:

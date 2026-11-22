@@ -8,11 +8,11 @@
 
 1. [docs/adp-chat/01_FastAPI服务架构.md](adp-chat/01_FastAPI服务架构.md)：单用户脚本、CLI、HTTP 的职责、单轮 ADP 及错误边界。
 2. [docs/adp-chat/03_代码维护导航.md](adp-chat/03_代码维护导航.md)：按调用链定位源码、配置、状态文件和回归测试。
-3. [docs/wecom-integration/01_网关架构设计.md](wecom-integration/01_网关架构设计.md)：企业微信回调、身份、并发、恢复、发送与安全边界。
+3. [docs/wecom-integration/01_网关架构设计.md](wecom-integration/01_网关架构设计.md)：企业微信回调、身份、SQLite WAL 并发、恢复与发送。
 
 ### 本地运行与服务器运维
 
-1. [docs/adp-chat/02_Docker部署与运维.md](adp-chat/02_Docker部署与运维.md)：本地 Python/PyCharm、模拟联调、服务器部署、跨机调用、升级、回滚及排障。篇幅较长，按文内章节跳转，不必从头顺读。
+1. [docs/adp-chat/02_Docker部署与运维.md](adp-chat/02_Docker部署与运维.md)：本地 Python/PyCharm、模拟联调、服务器部署、消息库切换、在线备份、升级与恢复。篇幅较长，按文内章节跳转，不必从头顺读。
 2. [examples/http_client.py](../examples/http_client.py) 与 [examples/http_client.ps1](../examples/http_client.ps1)：HTTP 调用示例。
 ### 日志架构与未来 Cosmos DB 接入
 
@@ -27,7 +27,7 @@
 ## 文档职责和维护原则
 
 - 单用户 HTTP Contract 的机器事实在 [src/api/schemas.py](../src/api/schemas.py)、[src/api/routes.py](../src/api/routes.py)；配置字段在 [src/core/config.py](../src/core/config.py)、[config.example.toml](../config.example.toml)。
-- 企业微信回调、消息状态、发送及事件日志分别由 [src/api/wecom_routes.py](../src/api/wecom_routes.py)、[src/storage/messages.py](../src/storage/messages.py)、[src/wecom/sender.py](../src/wecom/sender.py)、[src/core/events.py](../src/core/events.py) 负责。
+- 企业微信回调、消息状态、发送及事件日志分别由 [src/api/wecom_routes.py](../src/api/wecom_routes.py)、[src/storage/sqlite_store.py](../src/storage/sqlite_store.py)、[src/wecom/sender.py](../src/wecom/sender.py)、[src/core/events.py](../src/core/events.py) 负责。
 - [docs/logging/01_统一日志与Cosmos_DB接入设计.md](logging/01_统一日志与Cosmos_DB接入设计.md) 是跨模块日志格式与后续采集方案的解释 Owner；当前输出以 [src/core/logging.py](../src/core/logging.py) 为准。
 - [docs/wecom-integration/02_实施路线图.md](wecom-integration/02_实施路线图.md) 记录阶段状态与历史验收，不作为当前机器 Contract 的替代品；历史 Change 证据保留在仓库 `.agents/changes/archive/`。
 - 修改代码后，先确认哪个文档拥有该事实的解释责任，再更新相应章节和索引；不要把同一字段清单或状态机复制到多篇文档。

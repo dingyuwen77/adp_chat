@@ -2,16 +2,18 @@ import contextlib
 import io
 import json
 import logging
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 from adp.client import chat
 from core.config import ChatConfig, load_config
 from core.models import ChatError
-from core.logging import diagnostic_logger, parse_log_line
+from core.logging import diagnostic_logger, log_conversation, log_writer_metrics, parse_log_line
 from test_chat import FakeStream, event, response
 
 
@@ -75,29 +77,28 @@ class LoggingTests(unittest.TestCase):
         self.assertIn("ADP SSE响应完成", content)
         self.assertRegex(content, r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} client\.py L\d+\] \[INFO\]")
         self.assertIn('question="private-question-sentinel"', content)
-        self.assertIn('answer_preview="请提供完整报错。"', content)
+        self.assertIn('answer="请提供完整报错。"', content)
         for value in (self.config.app_key,):
             self.assertNotIn(value, content)
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
         self.assertEqual(handlers, logging.getLogger().handlers)
 
-    def test_full_question_and_first_100_answer_characters(self):
-        """长问题完整保留，中文和emoji按Unicode字符截取，不按字节截断。"""
+    def test_full_question_and_full_answer_despite_legacy_preview_limit(self):
+        """旧预览配置仍可加载，长问答按单行字段完整往返。"""
         question = "完整问题" + "问🙂" * 160 + "问题末尾"
         answer = "答🙂" * 70 + "回答末尾"
         with patch("adp.sse.open_request", return_value=response(answer, 18)):
             chat(question, config=self.config)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
-        self.assertIn("question=" + json.dumps(question, ensure_ascii=False), content)
-        self.assertIn("answer_preview=" + json.dumps(answer[:100], ensure_ascii=False), content)
-        self.assertNotIn("回答末尾", content)
-        self.assertIn("answer_truncated=True", content)
+        records = [parse_log_line(line) for line in content.splitlines()]
+        self.assertEqual([record["question"] for record in records if "question" in record], [question])
+        self.assertEqual([record["answer"] for record in records if "answer" in record], [answer])
 
-    def test_content_redaction_precedes_answer_truncation_and_escapes_newlines(self):
-        """先脱敏再截断，避免跨100字符边界的密钥残片或签名URL泄漏及伪造日志行。"""
+    def test_content_redaction_in_full_answer_and_single_line_escaping(self):
+        """长回答中的凭据和 URL 签名仍脱敏，换行无法伪造下一行。"""
         question = f'排查\n[ERROR] forged\r\n{self.config.app_key}\u2028后续说明'
-        answer = "答" * 95 + self.config.app_key + " https://example.com/file?q-signature=private-signature&token=private-token"
+        answer = "答" * 95 + self.config.app_key + " https://example.com/file?q-signature=private-signature&token=private-token 回答末尾"
         with patch("adp.sse.open_request", return_value=response(answer, 18)):
             chat(question, config=self.config)
         content = Path(self.config.log_file).read_text(encoding="utf-8")
@@ -105,6 +106,7 @@ class LoggingTests(unittest.TestCase):
             self.assertNotIn(value, content)
         self.assertIn("\\n[ERROR] forged\\r\\n", content)
         self.assertIn("\\u2028", content)
+        self.assertIn("回答末尾", content)
         self.assertTrue(all(line.startswith("[") for line in content.splitlines()))
 
     def test_signed_url_in_question_is_redacted_without_losing_question_tail(self):
@@ -119,6 +121,20 @@ class LoggingTests(unittest.TestCase):
         self.assertIn("[REDACTED]", logged)
         self.assertNotIn("private-signature", content)
         self.assertNotIn("private-token", content)
+
+    def test_escaped_json_urls_and_config_secrets_are_redacted_without_losing_fields(self):
+        """json_text 内的转义属于 JSON 正文，先解码敏感子串再写出单行。"""
+        answer = r'{"url":"https:\/\/example.com\/a?label=x\u0026token\u003dencoded-test-token\u3002请保留后文",'
+        answer += r'"value":"\u0066ixture-app-secret","tail":"完整中文🙂"}'
+        with patch("adp.sse.open_request", return_value=response(answer, 18)):
+            chat("读 JSON", config=self.config)
+        content = Path(self.config.log_file).read_text(encoding="utf-8")
+        entries = [parse_log_line(line) for line in content.splitlines()]
+        saved = json.loads(next(entry["answer"] for entry in entries if "answer" in entry))
+        self.assertEqual(saved, {"url": "https://example.com/a?label=x&token=[REDACTED]。请保留后文",
+                                 "value": "[REDACTED]", "tail": "完整中文🙂"})
+        self.assertNotIn("encoded-test-token", content)
+        self.assertNotIn(self.config.app_key, content)
 
     def test_ipv6_signed_url_is_also_redacted(self):
         """URL识别保留IPv6主机的闭合方括号，避免留下未匹配的签名参数。"""
@@ -217,14 +233,15 @@ class LoggingTests(unittest.TestCase):
         self.assertNotIn("fixture-temporary-id", content)
         self.assertIn("，为什么失败？", content)
 
-    def test_answer_preview_limit_is_configurable(self):
-        """配置可调整回答预览长度，零表示不记录回答正文。"""
-        config = replace(self.config, log_answer_chars=0)
+    def test_answer_logging_can_be_disabled(self):
+        """新字段关闭回答正文时仍记录请求完成，无空回答字段。"""
+        config = replace(self.config, log_answer=False)
         with patch("adp.sse.open_request", return_value=response("不应记录的回答正文", 18)):
             chat("完整问题", config=config)
         content = Path(config.log_file).read_text(encoding="utf-8")
         self.assertNotIn("不应记录的回答正文", content)
-        self.assertIn('answer_preview=""', content)
+        self.assertNotIn("answer=", content)
+        self.assertIn("ADP请求完成", content)
 
     def test_rotation_utf8_and_last_defence_secret_redaction(self):
         """日志轮转可重新读取，并在格式化出口再次清除配置中的凭据。"""
@@ -239,6 +256,54 @@ class LoggingTests(unittest.TestCase):
             content = path.read_text(encoding="utf-8")
             self.assertIn("[REDACTED]", content)
             self.assertNotIn(config.app_key, content)
+
+    def test_background_queue_is_bounded_and_drains_kept_records(self):
+        """文件 writer 暂停时，满队列不会阻塞生产者，关闭后已入队的完整行可解析。"""
+        from core.logging import _FileHandler
+
+        entered, release = Event(), Event()
+        emit = _FileHandler.emit
+
+        def held(sink, record):
+            """真实轮转之前挂起写入，固定复现后台积压。"""
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("未释放日志测试屏障")
+            emit(sink, record)
+
+        with (patch("core.logging._QUEUE_MAX_RECORDS", 1),
+              patch.object(_FileHandler, "emit", held),
+              self.assertLogs("adp_chat.event_alert", level="ERROR") as alerts,
+              diagnostic_logger(self.config, background=True) as logger):
+            try:
+                log_conversation(logger, "question", "员工INPUT_EMP 中文🙂\n记录末尾", employee_id="INPUT_EMP")
+                self.assertTrue(entered.wait(3))
+                log_conversation(logger, "answer", "完整回答🙂" * 100)
+                log_conversation(logger, "answer", "超出队列")
+                self.assertEqual(log_writer_metrics(logger)["log_dropped"], 1)
+            finally:
+                release.set()
+        entries = [parse_log_line(line) for line in Path(self.config.log_file).read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(entries[0]["question"], "员工[REDACTED] 中文🙂\n记录末尾")
+        self.assertEqual(entries[1]["answer"], "完整回答🙂" * 100)
+        self.assertIn("diagnostic_log_queue_full", alerts.output[0])
+
+    def test_background_full_text_restricts_legacy_active_log_before_rotation(self):
+        """旧日志曾允许组或其他用户读取，新问答只能进入受限文件及其轮转。"""
+        config = replace(self.config, log_max_bytes=400, log_backup_count=3)
+        path = Path(config.log_file)
+        path.parent.mkdir(parents=True)
+        path.write_text("legacy\n", encoding="utf-8")
+        if os.name != "nt":
+            path.chmod(0o644)
+        with diagnostic_logger(config, background=True) as logger:
+            for _ in range(5):
+                log_conversation(logger, "answer", "完整回答🙂" * 100)
+        files = list(path.parent.glob(path.name + "*"))
+        self.assertGreater(len(files), 1)
+        self.assertTrue(all("完整回答" in output.read_text(encoding="utf-8") for output in files))
+        if os.name != "nt":
+            self.assertTrue(all(output.stat().st_mode & 0o077 == 0 for output in files))
 
     def test_disabled_logging_does_not_create_file(self):
         """调用方可关闭诊断写入，不产生任何日志目录。"""
@@ -291,9 +356,9 @@ class LoggingTests(unittest.TestCase):
         self.assertIn("ADP请求被中断", content)
         self.assertNotIn("private-interruption-body", content)
 
-    def test_default_diagnostics_hide_message_bodies(self):
-        """生产默认不输出问题与回答正文。"""
-        config = replace(self.config, log_question=False, log_answer_chars=0, log_file=str(self.root / "safe.log"))
+    def test_explicit_privacy_configuration_hides_message_bodies(self):
+        """关闭正文后，仍保留普通诊断。"""
+        config = replace(self.config, log_question=False, log_answer=False, log_file=str(self.root / "safe.log"))
         with patch("adp.sse.open_request", return_value=response("保密答案", 18)):
             chat("保密问题", config=config)
         content = Path(config.log_file).read_text(encoding="utf-8")

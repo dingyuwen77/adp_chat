@@ -3,6 +3,7 @@
 import asyncio
 import json
 import ssl
+from collections import deque
 from dataclasses import dataclass
 
 import httpx
@@ -28,11 +29,13 @@ _EXPLANATIONS = {
 # 只有明确的应用入口/鉴权失败可独立证明未进入业务；模型层限额可能发生在工具之后。
 _ENTRANCE_REJECTIONS = {"400", "4505004", "460001", "460004", "460033", "460048", "460026", "460031"}
 _UNKNOWN = "本轮 ADP 执行结果未知，旧请求可能仍在云端执行。若涉及会议等操作，请先核查结果；核查后可手动发送新消息，网关不会自动重试。"
+_CONNECTIONS_PER_POOL = 64
+_MAX_IDLE_CONNECTIONS = 100
 
 
 @dataclass(frozen=True)
 class ADPOutcome:
-    """可在同一快照提交的结果、一次通知和本地释放决定。"""
+    """同一事务提交的结果、一次通知和本地释放决定。"""
 
     state: str
     notification: str
@@ -49,25 +52,38 @@ def unknown_outcome(code="interrupted", *, provider_code=None, **diagnostics) ->
 
 
 class AsyncADPClient:
-    """lifespan共享连接池；任务数受实际状态容量保护，不按模型名额排队。"""
+    """lifespan 持有若干有界连接池，按可用连接位分配，无模型名额排队。"""
 
     def __init__(self, config: ChatConfig, *, http_client=None):
         """正式路径验证证书/禁跳转/零重试；注入HTTP只用于隔离协议测试。"""
         self.config = config
         self._owned = http_client is None
-        if http_client is None:
+        capacity = config.max_active_requests
+        if self._owned:
+            # HTTPX 每次分配都扫描当前连接。限制单池规模并保留原总连接数。
+            count = (capacity + _CONNECTIONS_PER_POOL - 1) // _CONNECTIONS_PER_POOL
+            slots, extra_slots = divmod(capacity, count)
+            idle, extra_idle = divmod(min(capacity, _MAX_IDLE_CONNECTIONS), count)
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_default_certs()
-            transport = httpx.AsyncHTTPTransport(verify=context, retries=0,
-                limits=httpx.Limits(max_connections=None, max_keepalive_connections=20))
-            http_client = httpx.AsyncClient(transport=transport, timeout=config.chat_timeout_seconds,
-                                           follow_redirects=False, trust_env=False)
-        self.http = http_client
+            clients = []
+            for index in range(count):
+                limits = httpx.Limits(max_connections=slots + (index < extra_slots),
+                                      max_keepalive_connections=idle + (index < extra_idle))
+                transport = httpx.AsyncHTTPTransport(verify=context, retries=0, limits=limits)
+                clients.append(httpx.AsyncClient(transport=transport, timeout=config.chat_timeout_seconds,
+                                                 follow_redirects=False, trust_env=False))
+            self._clients = tuple(clients)
+        else:
+            self._clients = (http_client,)
+            slots, extra_slots = capacity, 0
+        # 队列只保存空闲连接位，立即轮转到可用组。没有请求在这里排队。
+        self._available = deque(self._clients * slots + self._clients[:extra_slots])
 
     async def aclose(self):
         """仅关闭本Owner创建的连接，注入测试连接由测试上下文释放。"""
         if self._owned:
-            await self.http.aclose()
+            await asyncio.gather(*(client.aclose() for client in self._clients))
 
     async def request(self, record: dict) -> ADPOutcome:
         """只接受已持久化RequestId的一轮；总超时包含连接、读流及处理。"""
@@ -77,23 +93,28 @@ class AsyncADPClient:
         config = identity.chat_config(self.config)
         payload = _payload(config, record["request_id"], identity.conversation_id,
                            [{"Type": "text", "Text": record["content"]}])
+        if not self._available:
+            return unknown_outcome("client_capacity")
+        client = self._available.popleft()
         try:
             async with asyncio.timeout(config.chat_timeout_seconds):
-                return await self._consume(payload)
+                return await self._consume(client, payload)
         except (TimeoutError, httpx.TimeoutException):
             return unknown_outcome("timeout")
         except (httpx.HTTPError, OSError):
             return unknown_outcome("network_error")
         except (UnicodeError, json.JSONDecodeError, ChatError):
             return unknown_outcome("invalid_response")
+        finally:
+            self._available.append(client)
 
-    async def _consume(self, payload: dict) -> ADPOutcome:
+    async def _consume(self, client: httpx.AsyncClient, payload: dict) -> ADPOutcome:
         """按官方事件消费阶段证据；缺失ACK本身不是未执行证明。"""
         accepted = False
         execution = False
         rejected_ack = False
-        async with self.http.stream("POST", self.config.adp_url, json=payload,
-                                    headers={"Accept": "text/event-stream"}) as response:
+        async with client.stream("POST", self.config.adp_url, json=payload,
+                                 headers={"Accept": "text/event-stream"}) as response:
             if response.status_code != 200:
                 return unknown_outcome("http_error", http_status=response.status_code)
             if response.headers.get("Content-Type", "").partition(";")[0].strip().lower() != "text/event-stream":

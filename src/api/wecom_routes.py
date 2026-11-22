@@ -1,6 +1,5 @@
 """企业应用正式回调路由，本地模拟同样必须验签。"""
 
-import asyncio
 import re
 import time
 
@@ -55,7 +54,7 @@ async def receive_message(request: Request) -> Response:
     timestamp, nonce, signature = _parameters(request)
     message = gateway.decode(bytes(body), timestamp, nonce, signature)
     if message is not None:
-        await asyncio.to_thread(gateway.receive, message)
+        await gateway.receive_async(message)
     return Response(b"", media_type="text/plain")
 
 

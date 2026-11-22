@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     app.state.wecom_gateway = None
     with ExitStack() as resources:
         if config.gateway_enabled:
-            logger = resources.enter_context(diagnostic_logger(config))
+            logger = resources.enter_context(diagnostic_logger(config, background=True))
             gateway = WeComGateway(config, logger)
             resources.callback(gateway.close)
             access = logging.getLogger("uvicorn.access")

@@ -171,7 +171,7 @@ PyCharm 使用项目 `.venv` 运行上述 Probe 脚本；设置相同脚本参�
 
 ### 1.7 加密回调与可靠接收（阶段 B）
 
-这是本机协议模拟，不连接企业微信后台或发送员工消息。B 已实现正式回调、验签解密、企业/应用/员工校验、MsgId 去重和可靠快照；当前main已接入C异步ADP；先按1.8准备隔离Fake配置和Fake服务，再运行下列协议步骤。BUSY提示统一保存并交给D；默认disabled保持PENDING，显式simulated后闭合为SEND_SIMULATED，ADP终态保存后释放占用；只有上一轮仍处理时才BUSY。
+本机协议模拟使用正式回调、验签解密和 SQLite 提交。按 1.8 准备独立 Fake 配置及服务。忙碌提示先保存，启用 `simulated` 后由异步发送任务推进到 `SEND_SIMULATED`。ADP 终态保存后释放占用。
 
 先按1.1安装依赖，在1.8的隔离测试配置中填写身份作用域；下例不修改含真实AppKey的根配置。初始化独立测试密钥：
 
@@ -198,7 +198,7 @@ $env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-fake/config.toml).Path
 .\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --user-id SIYU --msg-id 10003 --message "另一员工独立接收"
 ```
 
-正常输出包含 `source=test_fixture`、`cloud_identity_verified=false`、HTTP 200 和 `expected_ack=true`。GET 原样返回解密 echo；POST 可靠保存后返回空包。相同 MsgId 的第二条只 ACK，原正文/接收决定不改变；新 MsgId 的忙碌拒绝会留下独立快照，SIYU 可独立获准。测试客户端只允许 loopback HTTP 地址，复用正式加密实现，没有跳过签名的服务端接口。
+正常输出包含 `source=test_fixture`、`cloud_identity_verified=false`、HTTP 200 和 `expected_ack=true`。GET 原样返回 echo。POST 提交成功后返回空包。重复 MsgId 保留原正文和接收结论，新 MsgId 的忙碌拒绝保留独立消息记录。客户端通过 loopback 提交真实加密回调。
 
 查看状态（以下只显示必要标识和状态，不展示问答正文）：
 
@@ -206,9 +206,9 @@ $env:ADP_CONFIG_FILE = (Resolve-Path runtime/wecom-fake/config.toml).Path
 .\.venv\Scripts\python.exe -B -X utf8 tests/wecom_callback_client.py --config runtime/wecom-fake/config.toml --inspect-state
 ```
 
-JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文件只负责目录独占，不是第二套员工状态。两个进程不能同时使用同一 `messages_dir`；PyCharm 与 Docker 的目录也应隔离。损坏或未知版本的快照会阻止启动，保留现场排查，不自动删除或当新消息处理。写入失败后不返回成功 ACK，并关闭后续接收直到重启核验快照；现有去重记录正常时，重复回调无需新写盘。
+SQLite WAL 是唯一业务状态。应用在消息库旁持有进程锁，PyCharm 与 Docker 使用独立的本机库。数据库损坏、Schema 版本不明或环境不符时，启动失败并保留原文件。暂时的 SQLite 写锁可令回调返回 503，锁释放后接收可恢复。持续 I/O 故障及提交结果不明时需要重启核对持久记录。
 
-默认入站上限 65536 字节、最多2000条快照（既有字段max_unfinished_messages，包含待通知、未知和去重保留记录）；这是本地内存/文件保护，触发返回非成功状态，**不是 ADP 模型业务并发名额**。回调时间戳与本机 Unix 时间需在 300 秒以内，旧签名重放拒绝；模拟客户端每次生成当前时间戳。应用日志只记哈希和接收状态，启用回调时访问日志不保存查询串中的签名/密文。当前网关事件与诊断共用普通 `.log`，查看方法见 1.10。
+本地接收容量由 `callback_max_bytes`、`max_active_requests`、`max_unfinished_messages` 和 `database_write_queue` 保护。历史去重记录和已结束的未知结果保留在库中，活跃 ADP 及待发、发送中的通知计入未完成容量。回调时间戳与本机 Unix 时间需在 300 秒内，访问日志清洗回调的签名和密文查询串。具体配置见 [config.example.toml](../../config.example.toml)。
 
 稳定回归与不占用现有目录的真实 HTTP 验收：
 
@@ -217,7 +217,7 @@ JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文�
 .\.venv\Scripts\python.exe -B -X utf8 tests/wecom_local_smoke.py --report runtime/wecom-http-result.json
 ```
 
-[tests/test_wecom_callback.py](../../tests/test_wecom_callback.py) 覆盖坏签名、密文/填充/长度、内外身份、恶意 XML/超大包、真实并发、fsync/replace 失败、损坏快照和配置安全初始化。[tests/wecom_local_smoke.py](../../tests/wecom_local_smoke.py) 自动创建临时测试配置和目录，启动/关闭两个正式 Uvicorn 进程，隔离下游worker，仅验证B的HTTP接线、跨进程去重/占用恢复及端口释放，随后删除自有临时数据；不调用ADP。C全链路另用1.8脚本验证。需要反复试验时优先用这个隔离入口，不手改现有消息快照。正式配置及人工测试快照需按本地数据管理要求备份/清理，不能把“ACK 成功”写成 ADP 完成或真实企微送达。
+[tests/test_wecom_callback.py](../../tests/test_wecom_callback.py) 覆盖签名、身份、密文、超限、并发、SQLite 锁和磁盘失败及在线备份。[tests/wecom_local_smoke.py](../../tests/wecom_local_smoke.py) 在两个 Uvicorn 进程间验证加密回调、去重和恢复，测试结束回收自有临时目录。ACK 仅说明回调接收已提交。
 
 ### 1.8 异步 ADP与恢复（阶段 C）
 
@@ -238,7 +238,7 @@ JSON 是唯一业务状态，文件名是企业/应用/MsgId 的哈希；锁文�
 | `[wecom].corp_id` / `agent_id` | `wwf483023b734c570a` / `1000053` |
 | `[wecom].adp_application` | `wecom-local-fake`，与真实测试分开 |
 | `[wecom].adp_url` | `http://127.0.0.1:8765/adp/v2/chat` |
-| `[logging].log_question` / `log_answer_chars` | `false` / `0` |
+| `[logging].log_question` / `log_answer` | `false` / `false`（此处为隔离测试配置） |
 
 相对session/messages/log路径都基于该测试配置目录，与根运行数据隔离。然后按1.7的`--config`初始化空测试密钥并启动正式网关；先在另一个终端启动Fake：
 
@@ -250,15 +250,15 @@ Invoke-RestMethod http://127.0.0.1:8765/_test/status
 Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/release
 ```
 
-Fake还支持`--mode reject --code 460031`、`disconnect`、`timeout`、`model-error --code 460701`和`reply7`。不加`--hold`时立即结束；只在Fake做高并发/故障。正式网关没有模型限额信号量、配额队列或ADP自动重试；仅有快照容量、1MiB SSE总字节等物理保护。`[wecom].adp_url`只允许腾讯正式HTTPS端点或本机Fake地址，避免凭据跟随重定向或流向任意端点。
+Fake 支持 `reject`、`disconnect`、`timeout`、`model-error` 和 `reply7`。正式网关以本机在途容量保护网络和内存，ADP SSE 总字节上限为 1 MiB。`[wecom].adp_url` 只接受正式 HTTPS 或 loopback Fake 地址。
 
 真实ADP受控探测沿1.6执行，加`--async-client --config config.toml`即可验证C正式异步HTTPS/SSE；仍需显式`--execute-real-adp`和新输出路径，每个进程最多一次。先停Fake调试网关并移除其环境变量（`Remove-Item Env:ADP_CONFIG_FILE`），使用已发布测试应用、原真实逻辑作用域；不把Fake配置改成真实凭据。C已对SIYU一次安全文字探测取得正式completed，E再做完整跨进程两轮语义验收；不压力测试实际ADP、不改平台提示词。
 
-状态v3（兼容B/C历史快照）在首次网络调用前保存`ADP_SEND_ARMED`和UUID RequestId；终态、一次PENDING提示和本地释放同一原子快照。明确应用入口拒绝保留真实Code并提示手动重试；模型层QPM/TPM/余额/并发错误可能发生在工具之后，缺乏执行前证据时保守UNKNOWN。ReplyMethod7解释并发含义，但不编造Code或宣称未执行。UNKNOWN不是业务失败，也不保证旧云端请求停止；涉及会议须先核查。当前通知模式默认disabled，显式simulated由D处理；发送状态不持续占用员工。
+出站前，网关在 SQLite 提交 `ADP_SEND_ARMED` 和 RequestId。提交 ADP 结果时，同一事务保存结果、待发通知并释放员工占用。明确执行前拒绝保留真实错误码，执行结果未知时保留核查信息。发送状态有自己的恢复流程。
 
-Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共享删除读取；避免用持有普通文件句柄的编辑器/Get-Content持续轮询活动文件，Windows会阻止替换。更新使用保留ACL的ReplaceFileW，初次发布/Posix使用os.replace，均先flush/fsync；不是绕过写入失败。目录独占/版本/CAS检查，v1先全部校验再兼容升级；未知版本/损坏/原快照缺失但留暂存证据均保留现场并拒绝启动。此类发布故障需核查恢复，不能删除目录后盲重投。正常退出读回取消期间磁盘提交；已保存成功不会改写UNKNOWN，armed不确定结果不重投。
+运行中可用 `--inspect-state` 只读查询已提交记录。网关关停时读取取消期间提交的最终状态。仍武装而无确定结果的记录在恢复时标记为未知，数据库文件及其 WAL 应保留供核查。
 
-启动及60秒维护执行安全清理：已接受通知7天后清正文、接收30天后删闭合去重记录；待处理、待通知及UNKNOWN不按年龄简单删除，未核查状态与敏感正文需按企业数据策略处理。默认disabled时PENDING不会因时间清除；D模拟发送可闭合，E 阶段历史版本曾使用 JSONL，当前版本已统一普通日志；待通知/UNKNOWN正文仍需按企业策略核查处置，不宣称已自动脱敏。回退旧版先停网关、备份全部状态并恢复兼容配置，不能让旧版继续处理v3的新状态。不要同时运行两个worker或让PyCharm/Docker共享状态目录。
+应用启动及每分钟维护一次。已接受或模拟发送的正文在 7 天后清理，闭合的去重记录从接收起保留 30 天。待处理、待发送及未知记录用于恢复和核查。部署切换、备份和恢复见 [docs/adp-chat/02_Docker部署与运维.md](#sqlite-消息库切换备份与恢复)。
 
 ### 1.9 统一通知与正式发送协议隔离测试（阶段 D）
 
@@ -275,17 +275,17 @@ Windows查看活动快照使用上面的`--inspect-state`，它用同Owner的共
 
 通知状态和ADP状态独立。PENDING可恢复首次发送；SEND_ARMED后的崩溃、断线或响应丢失不能盲重发。明确发送失败或发送未知不再问ADP、不持续锁员工、不生成失败通知的失败通知；磁盘失败仍保留现场并停止不可靠接收。长文字只有全部分片确认才闭合，部分发送失败不重发已接受前片。API接受不表示员工在线、已读或客户端已展示。
 
-**图文回复配置与排障**：正式答案中的图片现在按原始顺序发送为原生图片气泡，本地 main/CLI 保持文字及原始内容输出。`[wecom].image_allowed_hosts` 默认 `["*"]`，允许任意公网 HTTPS 来源及其 CDN 跳转；显式完整域名列表继续收紧来源，空列表继续禁用下载。已有配置若仍为 `["lke.cloud.tencent.com"]`，需改成 `["*"]` 才能放开跨域跳转；省略该字段则使用新默认。内网地址、非 HTTPS 和异常资源仍拒绝。本地单图下载最多20MiB，整条回复不再限制图片张数或累计下载字节；共享图片准备名额按3GiB/20MiB计算为153，临时副本及HTTP等开销另计，不代表服务实际RSS硬上限。满额等待计入准备时限，超时原位以链接降级，纯文字不占图片名额。`image_prepare_timeout_seconds` 为整回复累计下载/上传/等候名额的时间预算，发送时间仍由 `send_timeout_seconds` 独立控制；精确默认值和资源说明见 [config.example.toml](../../config.example.toml)。图片不落盘、不永久缓存；`accepted_with_image_fallback` 表示已接受的消息含降级。排查时按 `message_key` 查逐图WARNING，以 `image_index`、`error_stage`、`reason` 和可用的HTTP/平台错误码定位容量等待、下载、上传或发送失败。已提交的消息响应未知仍停止发送，不能因图片没看到就自动重发整条答案。本地20MiB下载上限不保证平台接受同等大小的素材；真实上传大小和并发内存峰值须另行验证。升级需重新打包并重启对应服务；回滚不识别 `*` 的旧代码时，应同时恢复旧的完整域名列表。行为和生命周期 Owner 见 [docs/wecom-integration/01_网关架构设计.md](../wecom-integration/01_网关架构设计.md#有序图文回复)。
+**图文回复配置与排障**：正式答案中的图片现在按原始顺序发送为原生图片气泡，本地 main/CLI 保持文字及原始内容输出。`[wecom].image_allowed_hosts` 默认 `["*"]`，允许任意公网 HTTPS 来源及其 CDN 跳转；显式完整域名列表继续收紧来源，空列表继续禁用下载。已有配置若仍为 `["lke.cloud.tencent.com"]`，需改成 `["*"]` 才能放开跨域跳转；省略该字段则使用新默认。内网地址、非 HTTPS 和异常资源仍拒绝。本地单图下载最多20MiB，整条回复不再限制图片张数或累计下载字节；图片准备名额按 `image_prepare_budget_mib` ÷ 20 MiB 计算，临时副本和 HTTP 等内存开销另计。满额等待计入准备时限，超时原位以链接降级，纯文字不占图片名额。`image_prepare_timeout_seconds` 为整回复累计下载/上传/等候名额的时间预算，发送时间仍由 `send_timeout_seconds` 独立控制；精确默认值和资源说明见 [config.example.toml](../../config.example.toml)。图片不落盘、不永久缓存；`accepted_with_image_fallback` 表示已接受的消息含降级。排查时按 `message_key` 查逐图WARNING，以 `image_index`、`error_stage`、`reason` 和可用的HTTP/平台错误码定位容量等待、下载、上传或发送失败。已提交的消息响应未知仍停止发送，不能因图片没看到就自动重发整条答案。本地20MiB下载上限不保证平台接受同等大小的素材；真实上传大小和并发内存峰值须另行验证。升级需重新打包并重启对应服务；回滚不识别 `*` 的旧代码时，应同时恢复旧的完整域名列表。行为和生命周期 Owner 见 [docs/wecom-integration/01_网关架构设计.md](../wecom-integration/01_网关架构设计.md#有序图文回复)。
 
-升级时在实际配置补充上述两个可选字段，保留已有凭据/身份/路径和取值；不补也使用安全缺省值。回滚旧代码前移除它不认识的新增键，保留 v3 消息目录和 UNKNOWN 证据。既有 F 客户端已由用户于2026-11-09确认通过，本次新图文真实终端显示尚需部署后验收。
+升级时保留实际凭据、身份和配置路径。数据库格式切换和回退见 [docs/adp-chat/02_Docker部署与运维.md](#sqlite-消息库切换备份与恢复)。既有 F 客户端于 2026-11-09 通过现场验收，图文实际显示仍由现场独立核验。
 
-v1/v2先校验后兼容升级到v3，保存环境和发送证据源。测试目录不能切成production直接复用；旧记录若已有无法证明的发送终态，拒绝启动而非补造真实接受。已模拟完成的数据用独立测试目录按7/30天策略清理，不能计作真实SEND_ACCEPTED；UNKNOWN保留核查证据且不锁用户。回退必须停网关并备份全部状态，恢复兼容配置，禁止旧代码继续处理新格式。
+通知状态在 SQLite 中按环境保存。已模拟完成的记录按同一保留策略清理，未知状态保留核查证据。正式环境使用独立数据库。
 
 真实模式 `wecom` 要求 `gateway_environment="production"` 及未提交仓库的应用 Secret。该模式已在阶段 F 的单员工真实联调中使用，**不等于阶段 F 全部验收完成**。新环境接入仍须确认回调归属、可达地址、应用可见范围/权限、可信出口 IP、独立生产状态目录及至少两名真实员工的端到端验收；本机 Fake 成功不能替代这些检查。
 
 ### 1.10 A～E完整本地链路、统一日志与Docker
 
-本节复用前述正式应用、配置和状态，不连接真实企业微信。快速自动验收使用临时独立目录；手动调试、容器和真实ADP分别使用不同目录。旧单用户会话与员工消息快照亦分开。
+本节复用前述正式应用、配置和状态，不连接真实企业微信。快速自动验收使用临时独立目录；手动调试、容器和真实ADP分别使用不同目录。旧单用户会话与网关消息库各用独立文件。
 
 **本机手动启动**（项目根目录、Python3.14及依赖按1.1）：
 
@@ -335,7 +335,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8765/_test/hold
 
 本次两轮之间退出并重新启动网关进程：YNND从“我想改密码”到“windows”，实际回答从追问系统转为Windows密码修改指引；同时SIYU的“windows”被独立理解为一般Windows问题，后续BitLocker问题亦得到对应回复。已逐条阅读实际回答并核对两用户身份及会话标识，未以关键词匹配代替语义验证。完整回复、请求标识、状态和报告仅保留在本机忽略的`runtime/real-adp-validation-20261108-105520-95364d/`，共享样本只保留协议投影和请求标识哈希。出现专属模型余额错误460702后停止100用户批次，因此100用户真实容量未验证；需先由应用管理员核查模型余额和配置，不能靠重试解决。未修改平台提示词或模型配置，通知全部SEND_SIMULATED，未向真实员工发送消息。
 
-**查看消息状态与统一普通日志**：消息事实源仍是配置目录下 `runtime/messages/*.json`，可使用 `--inspect-state` 共享读取。业务事件与诊断现在都写到配置指定的 `[logging].log_file`（例如 `logs/adp_chat.log`），**不再生成独立 `events-*.jsonl`**。旧版本遗留的 JSONL 不自动删除。
+**查看消息状态与统一普通日志**。使用 `--inspect-state` 读取 SQLite 消息状态。诊断、网关事件和完整脱敏问答写入 `[logging].log_file`。历史日志需要按独立保留策略管理。
 
 ```powershell
 # 人工排障：查看完整诊断和事件记录（路径以实际测试配置为准）。
@@ -346,9 +346,9 @@ Get-Content runtime/wecom-local/logs/adp_chat.log -Tail 100 -Encoding utf8
 
 ```
 
-轮转文件也可能包含历史事件，查询完整时间范围需同时读取 `adp_chat.log.1` 等备份。统一日志仍由 `log_max_bytes` 和 `log_backup_count` 控制；原 `events_retention_days` 暂保留为兼容配置，但不再控制文本日志轮转或清理。普通日志保留原前缀，使用中文说明与 ` | ` 键值字段，不再追加 `record` JSON；未来采集器使用 `core.logging.parse_log_line()` 解析**全部新格式日志**，包括普通诊断与网关事件。未来 Cosmos DB 采集器必须处理轮转、未完成尾行、断点、幂等和积压保留；当前没有采集器。日志写失败仅作安全告警/计数，不改变业务 ACK 或重试判断，消息快照写入失败则仍必须阻止成功 ACK。已实现的方案 B 与未来 Cosmos DB 设计见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](../logging/01_统一日志与Cosmos_DB接入设计.md)。
+查询时间范围时一起读取 `adp_chat.log.1` 等轮转备份。普通日志保留北京时间前缀及 `key=value` 字段，由 `parse_log_line()` 解析。日志队列溢出和写失败分别计数，业务提交故障返回回调错误。日志设计见 [docs/logging/01_统一日志与Cosmos_DB接入设计.md](../logging/01_统一日志与Cosmos_DB接入设计.md)。
 
-**命令行与PyCharm**：命令行使用上述同一模块/解释器即可启动和排障。本轮未操作PyCharm GUI，不把配置说明当作GUI实测证据。需要用户自行调试时，新建Python运行配置：解释器`.venv/Scripts/python.exe`，模块`uvicorn`，参数`api.app:app --host 127.0.0.1 --port 8000 --workers 1`，工作目录为仓库根，环境变量`ADP_CONFIG_FILE`填上述测试TOML的绝对路径。先在另一终端启动Fake。可在[src/api/wecom_routes.py](../../src/api/wecom_routes.py)、[src/application/wecom_worker.py](../../src/application/wecom_worker.py)和[src/wecom/sender.py](../../src/wecom/sender.py)设置断点。暂停事件循环可能超过回调ACK窗口，使用独立MsgId并读快照核查；断点恢复后不盲重发未知请求。不启多worker或同时用Docker读写该目录。
+**命令行与PyCharm**：命令行使用上述同一模块/解释器即可启动和排障。本轮未操作PyCharm GUI，不把配置说明当作GUI实测证据。需要用户自行调试时，新建Python运行配置：解释器`.venv/Scripts/python.exe`，模块`uvicorn`，参数`api.app:app --host 127.0.0.1 --port 8000 --workers 1`，工作目录为仓库根，环境变量`ADP_CONFIG_FILE`填上述测试TOML的绝对路径。先在另一终端启动Fake。可在[src/api/wecom_routes.py](../../src/api/wecom_routes.py)、[src/application/wecom_worker.py](../../src/application/wecom_worker.py)和[src/wecom/sender.py](../../src/wecom/sender.py)设置断点。暂停事件循环可能超过回调 ACK 窗口，使用独立 MsgId 并查询数据库；断点恢复后不盲重发未知请求。不启多worker或同时用Docker读写该目录。
 
 **真实ADP跨进程两轮**：先停止Fake网关，生成另一份独立测试TOML，只有这个明确操作复制根实际ADP凭据及chat选项；真实企微Secret始终留空、发送仍simulated，文件只在忽略目录本机保存：
 
@@ -379,13 +379,13 @@ Probe默认仍离线；有真实flag和未存在输出文件后才提交，ACK�
 .\.venv\Scripts\python.exe -B -X utf8 tests/docker_smoke.py --image adp_channel_api:v0.0.9
 ```
 
-[tests/wecom_docker_smoke.py](../../tests/wecom_docker_smoke.py)检查实际linux/arm64、UID/GID10001、安装源码、只读TOML和可写bind目录；100员工/Fake30、BUSY/去重、正常重启保留闭合记录；实际SIGKILL后的旧ADP仅一次、RECEIVED首次恢复、UNKNOWN后新消息可进入。另在容器停止后以正式Store注入PENDING/SEND_ARMED边界，验证首次模拟通知/只记SEND_UNKNOWN；通知实际进入出口后强杀的证据由本机HTTP脚本提供，二者不冒充同一实验。JSONL按同一快照检查，退出需lifespan完成/无OOM/无错误；当前Uvicorn0.48会在正常关闭后重抛SIGTERM，容器exit143属此信号退出，不能用日志一句话把SIGKILL/137当正常。
+[tests/wecom_docker_smoke.py](../../tests/wecom_docker_smoke.py) 按所选镜像验证 Linux 架构（AMD64 或 ARM64）、UID/GID 10001、SQLite 版本、正式存储源码、只读配置和数据库卷。100 名员工访问 Fake 的 30 个名额，验证忙碌与去重、正常重启保留闭合记录、SIGKILL 后原 ADP 请求只出现一次。停止容器后注入 `PENDING` 和 `SEND_ARMED`，验证首次模拟通知和未知状态恢复。实际通知出站后强杀由本机 HTTP 脚本另行验证。容器正常关闭须完成 lifespan 且无 OOM 或运行时错误。Uvicorn 0.48 正常关闭后重新抛出 SIGTERM，退出码为 143。
 
 需要保留容器手动测试时：
 
 ```powershell
 .\.venv\Scripts\python.exe -B -X utf8 tests/wecom_local_setup.py --output runtime/wecom-docker/config.toml --scope wecom-local-docker-001
-New-Item -ItemType Directory -Force runtime/wecom-docker/runtime,runtime/wecom-docker/logs | Out-Null
+New-Item -ItemType Directory -Force runtime/wecom-docker/logs | Out-Null
 docker tag adp_channel_api:v0.0.9 adp-chat:wecom-local
 docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml config
 docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml up -d --no-build
@@ -399,9 +399,19 @@ docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml logs --t
 docker compose -p adp-wecom-local -f compose.yaml -f compose.local.yaml down
 ```
 
-生成前确认目录/文件不存在；docker tag前确认目标开发标签属于本任务，避免覆盖他人镜像。手动down保留本机配置/日志/消息；不会清理全局Docker资源，不运行prune。命令在项目根执行。[compose.local.yaml](../../compose.local.yaml)作为[compose.yaml](../../compose.yaml)的本机覆盖，按 [Compose官方合并规则](https://github.com/compose-spec/compose-spec/blob/main/13-merge.md)依赖支持`!override`的Compose（≥2.24.4），显式只发布loopback的18000。Fake持有稳定网络命名空间，网关加入其loopback；网关重启不遗留在旧命名空间的Fake，启动先等Fake健康。Fake自身重建时须一起重建该测试项目；不把这种测试拓扑用到F。配置只读映射/app/config.toml，runtime/logs映射各自测试目录。默认ARM64本地仿真不替代目标Linux/ARM服务器、网络/权限和正式企微真实验收；本节不执行上传或部署。
+生成前确认目录/文件不存在；docker tag前确认目标开发标签属于本任务，避免覆盖他人镜像。手动down保留本机配置/日志/消息；不会清理全局Docker资源，不运行prune。命令在项目根执行。[compose.local.yaml](../../compose.local.yaml)作为[compose.yaml](../../compose.yaml)的本机覆盖，按 [Compose官方合并规则](https://github.com/compose-spec/compose-spec/blob/main/13-merge.md)依赖支持`!override`的Compose（≥2.24.4），显式只发布loopback的18000。Fake持有稳定网络命名空间，网关加入其loopback；网关重启不遗留在旧命名空间的Fake，启动先等Fake健康。Fake自身重建时须一起重建该测试项目；不把这种测试拓扑用到F。配置只读映射 `/app/config.toml`，普通日志保存在宿主测试目录，SQLite 保存在 Linux 命名卷。默认ARM64本地仿真不替代目标Linux/ARM服务器、网络/权限和正式企微真实验收；本节不执行上传或部署。
 
 **阶段 F 检查**（单员工已真实接入，完整验收未关闭）：具体配置、后台操作和当前限制见1.11；保留独立生产状态目录、正式凭据、应用权限、目标机网络/架构及两员工真实验收边界。SEND_ACCEPTED仅能由正式API明确接受产生，不追踪已读；不得将测试目录改为production复用。
+
+### 本机千用户负载
+
+安装开发依赖后，可按以下命令在本机运行真实 HTTP 回调与 SSE。测试脚本生成独立配置，只启动 loopback Fake ADP 和模拟企微通知。
+
+~~~bash
+python -B -X utf8 tests/wecom_load.py
+~~~
+
+脚本在同一数据库上运行 100、300、500、1000 人阶梯和多轮 1000 人负载。每轮分别检查每条空 ACK 在 5 秒内返回、同时保持在途的 SSE、持久化与通知完成。还检查同员工竞争、相同 MsgId、容量拒绝、快慢混合和日志轮转。结果含 ACK 百分位、SQLite 提交与锁等待、WAL、日志队列及事件循环延时。Linux 另外记录 RSS、文件描述符及块 I/O。部署环境的磁盘、内存与网络容量由该环境单独测量。
 
 ### 1.11 阶段F：公网IP与HTTP接入配置
 
@@ -463,9 +473,9 @@ docker info --format '{{.OSType}}/{{.Architecture}}'
 | `gateway_environment` | `"production"` |
 | `notification_mode` | `"wecom"` |
 | `wecom_app_secret` | 目标自建应用的实际Secret |
-| `messages_dir` | 新的独立生产目录；本机可用`runtime/wecom-production/messages`，服务器按2.1的`session_file="../runtime/session.json"`布局应使用`../runtime/wecom-production/messages`，确保落在正式runtime持久化挂载内 |
+| `database_file` | 本机持久路径。源码 Compose 使用 `runtime/gateway.sqlite3`，离线版建议按 `../runtime/gateway.sqlite3` 配置，与 `session_file` 使用各自文件 |
 
-ADP继续使用已有`adp.app_key`和正式`wecom.adp_url`；先核查真实测试中出现的460702模型余额错误是否已处理。旧`adp.user_id/visitor_id`服务于原单用户入口，网关会从通过验签的员工消息派生各自身份，不需要给两名员工维护两份配置。发送器自动获取和缓存access_token，无须手动填新字段。正式日志建议`log_level="INFO"`、`log_question=false`、`log_answer_chars=0`。
+正式网关使用实际 `adp.app_key` 和正式 `wecom.adp_url`。ADP 员工身份来自验签后的回调，发送器按应用获取并缓存 access_token。部署时为日志和备份分配受限权限及留存容量。`log_question` 和 `log_answer` 可分别关闭正文。
 
 **第四步：保存回调并完成真实验收。**
 
@@ -493,6 +503,26 @@ ADP继续使用已有`adp.app_key`和正式`wecom.adp_url`；先核查真实测�
 **后续迁移Ubuntu。** 停止旧实例并取得一致的配置/runtime快照后，迁移实际配置、完整生产消息状态和必要日志；保持企业/应用标识、固定`adp_application`及目录映射语义。核对Ubuntu的CPU架构、Docker、目录权限和网络，再启动唯一新实例。入口或出口改变时分别更新回调URL和可信IP并重新验收；旧新实例不能同时处理同一应用。回退同样先停新实例，保留UNKNOWN与发送状态，不能盲目重投已武装请求。
 
 ## 二、Linux 服务器部署
+
+### SQLite 消息库切换、备份与恢复
+
+1. 选择本机持久盘，配置 `[wecom].database_file` 和可写目录。离线脚本挂载解析后的目录。初次启动创建消息库；默认 Compose 预留 8192 个文件描述符，正式容器保持一个 Uvicorn Worker。
+2. 停止旧网关，核查尚在执行的请求以及 `ADP_UNKNOWN`、`SEND_UNKNOWN`。明确处理后退役旧 `runtime/messages` 下的 JSON、临时文件和旧锁。保留 `runtime/session.json` 及实际配置。新库从空状态开始。
+3. 使用构建产物验证容器中的实际 SQLite 版本。
+
+~~~bash
+docker exec adp_channel_api python -c 'import sqlite3; print(sqlite3.sqlite_version)'
+~~~
+
+4. 启动并检查数据库和日志路径、所有权、完整性及回调 ACK，再按现场流程接收消息。首次切换前保留原配置和旧版产物。SQLite 产生业务记录后采用前向修复。离线脚本保留数据库切换标记及成功部署路径，库存在业务历史时阻止旧版回切。已切换后若库缺失，先恢复原数据卷或备份再启动。
+5. 备份安排在独立受限目录，使用 SQLite 在线备份 API 并定期演练恢复。下面用部署主机上可访问消息库的同版本 Python 演示。先准备可写的目标目录。
+
+~~~bash
+python -m storage.maintenance backup /srv/adp/runtime/gateway.sqlite3 /srv/adp-backup/gateway-20261122.sqlite3
+python -m storage.maintenance check /srv/adp-backup/gateway-20261122.sqlite3
+~~~
+
+恢复时先停止网关，保全原数据库及其 WAL、SHM 和排障日志。将校验后的备份作为一套独立文件恢复到原路径，核对文件权限、数据库版本、企业/应用和环境后再启动。备份是单文件一致副本，原主库活跃时应通过在线备份取得同样的快照语义。[SQLite 在线备份说明](https://sqlite.org/backup.html)
 
 ### 2.1 本机打包与手动上传
 
@@ -622,13 +652,13 @@ docker container port adp_channel_api 8000
 curl -i http://10.102.70.82:4560/healthz
 ```
 
-脚本在真实运行容器中检查健康、镜像 ID、固定配置只读挂载、数据目录、UID/GID 和原会话一致性，通过后才原子记录成功。Docker 设置单 worker、`--init`、`unless-stopped` 和健康检查；健康窗口为75秒。`GET /healthz` 只检查应用初始化，不调用 ADP。业务 POST、服务器出网、跨机调用及网络 ACL 仍由部署环境验收。
+脚本核对真实运行容器的健康、镜像、只读配置、持久挂载、UID/GID 和原会话。`GET /healthz` 检查本地网关写入和调度健康。锁竞争期间的临时回调拒绝可在释放后恢复。部署主机出网与业务 POST 由现场验证。
 
 本服务无 API 身份认证，使用明文 HTTP；应沿用可信内网访问边界，限制可访问端口的来源。容器常驻或重启不会恢复已经中断的 ADP 请求，也不能据此判断外部写入是否发生。
 
 ### 2.5 保留的源码 Compose 入口
 
-已有 [compose.yaml](../../compose.yaml) 仍可用于本机/源码部署：项目根 `config.toml` 绑定 `/app/config.toml`，项目根 `runtime/`、`logs/` 持久化。使用者自行准备10001身份的可写目录，再执行 `docker compose up -d --build`。本节的离线版本流程不使用 Compose；请对同一会话选择一个运行入口。
+已有 [compose.yaml](../../compose.yaml) 仍可用于本机/源码部署：项目根 `config.toml` 绑定 `/app/config.toml`，项目根 `runtime/`、`logs/` 持久化。使用者自行准备10001身份的可写目录，再执行 `docker compose up -d --build`。本节的离线版本流程不使用 Compose；请对同一会话选择一个运行入口。Windows Docker Desktop 的本地企微覆盖使用 Linux 命名卷保存 SQLite，状态查询在 Linux 容器内执行。
 
 ## 三、其他电脑如何调用
 
@@ -704,7 +734,7 @@ python examples/http_client.py "继续刚才的话题" --url http://10.102.70.82
 
 [config.example.toml](../../config.example.toml) 是可提交的配置模板，AppKey留空；本机config.toml保存真实配置并被Git/Docker忽略。两份配置的分组、配置项、顺序及注释保持一致，凭据、身份、回调URL、部署地址等实际值按环境填写；服务器release配置还需保留该环境的../runtime、../log等路径，不能用本机根配置整份覆盖。
 
-配置模板显式设置 `[logging].log_question=true`，启用后记录后续用户问题；`log_answer_chars` 独立限制回答正文长度。若不记录正文，设置 `log_question=false`、`log_answer_chars=0`。代码在省略这两项时仍默认关闭正文记录；DEBUG级别本身不会开启问题记录。已有日志不回填。AppKey及已知凭据URL保持脱敏，其他业务系统可能还有独立日志。
+`log_question=true` 和 `log_answer=true` 启用完整脱敏问答。旧配置 `log_answer_chars=0` 在缺少新回答开关时保留关闭意图，正值启用完整回答。新增开关优先。已知配置凭据、员工标识和签名 URL 在输出时清洗，日志目录仍需按业务数据权限管理。
 
 修改服务器现有release/config.toml的对应项后，执行 `bash ./upgrade.sh 当前版本号` 重新加载配置；保持原AppKey、身份和持久路径。
 

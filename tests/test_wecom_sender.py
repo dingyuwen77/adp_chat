@@ -461,16 +461,15 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
             """把独立模拟发送作为可观察副作用边界。"""
 
             async def send(inner, current):
-                """调用瞬间重读真实文件，必须已经可靠武装。"""
-                from storage.messages import read_snapshot
+                """调用瞬间重读持久状态，必须已经可靠武装。"""
+                from storage.sqlite_store import read_messages
 
-                path = Path(self.config.messages_dir) / f"{current['message_key']}.json"
-                self.assertEqual(read_snapshot(path)["send_state"], "SEND_ARMED")
+                self.assertEqual(read_messages(self.config, key=current["message_key"])[0]["send_state"], "SEND_ARMED")
                 calls.append(current["message_key"])
                 return await super().send(current)
 
         worker = GatewayWorker(self.gateway, None, sender=Sender(self.config))
-        with patch("storage.messages._publish", side_effect=OSError("disk failure")):
+        with patch.object(self.gateway.store, "_commit", side_effect=OSError("disk failure")):
             await worker._execute_notification(pending)
         self.assertEqual(calls, [])
         self.assertIsNotNone(worker.failure)
@@ -479,17 +478,16 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.gateway.close)
         pending = self.gateway.store.get(pending["message_key"])
         self.assertEqual(pending["send_state"], "PENDING")
-        original = self.gateway.store._write
+        commit = self.gateway.store._commit
 
-        def fail_result(value):
-            """武装发布正常，只破坏模拟发送完成后的终态发布。"""
-            if value["send_state"] == "SEND_SIMULATED":
-                with patch("storage.messages._publish", side_effect=OSError("disk failure")):
-                    return original(value)
-            return original(value)
+        def fail_result():
+            """武装提交正常，只破坏模拟发送完成后的终态提交。"""
+            if calls:
+                raise OSError("disk failure")
+            commit()
 
         worker = GatewayWorker(self.gateway, None, sender=Sender(self.config))
-        with patch.object(self.gateway.store, "_write", side_effect=fail_result):
+        with patch.object(self.gateway.store, "_commit", side_effect=fail_result):
             await worker._execute_notification(pending)
         self.assertEqual(calls, [pending["message_key"]])
         self.assertEqual(self.gateway.store.get(pending["message_key"])["send_state"], "SEND_ARMED")
@@ -519,16 +517,17 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
             self.receive(f"EMP{index}", str(index * 10))
             notice = self.receive(f"EMP{index}", str(index * 10 + 1))
             entered, release = Event(), Event()
-            original = self.gateway.store._write
+            original = self.gateway.store._update
             sends = []
 
-            def publish(value):
-                """真实原子发布后暂停，让取消发生在await结果返回之前。"""
-                original(value)
+            def publish(key, version, changes):
+                """真实事务提交后暂停，让取消发生在 await 返回之前。"""
+                value = original(key, version, changes)
                 if value["message_key"] == notice["message_key"] and value["send_state"] == boundary:
                     entered.set()
                     if not release.wait(8):
                         raise AssertionError("未释放测试磁盘屏障")
+                return value
 
             class Sender(SimulatedSender):
                 """只记录是否越过发送边界。"""
@@ -539,7 +538,7 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
                     return await super().send(current)
 
             worker = GatewayWorker(self.gateway, None, sender=Sender(self.config))
-            with patch.object(self.gateway.store, "_write", side_effect=publish):
+            with patch.object(self.gateway.store, "_update", side_effect=publish):
                 task = asyncio.create_task(worker._execute_notification(notice))
                 try:
                     await self.wait_for(entered.is_set)
@@ -600,24 +599,20 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(20 <= len(posts) <= 40)
         self.assertTrue(all(x.state == "SEND_SIMULATED" and x.accepted_parts == 1 for x in outcomes))
 
-    async def test_v2_upgrade_and_environment_guard_keep_pending_evidence(self):
-        """C的PENDING兼容升级，但测试状态目录不能在production下静默发送。"""
-        from storage.messages import MessageStore, read_snapshot
+    async def test_database_environment_guard_keeps_pending_evidence(self):
+        """已有的测试通知状态不能由正式进程接管，重启仍保留原意图。"""
+        from storage.sqlite_store import MessageStore, read_messages
 
         pending = self.busy_notice()
         self.gateway.close()
-        path = Path(self.config.messages_dir) / f"{pending['message_key']}.json"
-        old = {k: v for k, v in read_snapshot(path).items() if k not in {"environment", "send_result"}}
-        old["schema_version"] = 2
-        path.write_text(json.dumps(old), encoding="utf-8")
         production = replace(self.config, gateway_environment="production", notification_mode="disabled")
         with self.assertRaises(ChatError):
             MessageStore(production)
-        self.assertEqual(read_snapshot(path)["schema_version"], 2)
+        self.assertEqual(read_messages(self.config, key=pending["message_key"]), [pending])
         self.gateway = WeComGateway(self.config, logging.getLogger("wecom-d-test"))
         self.addCleanup(self.gateway.close)
         upgraded = self.gateway.store.get(pending["message_key"])
-        self.assertEqual((upgraded["schema_version"], upgraded["environment"], upgraded["send_state"]), (3, "test", "PENDING"))
+        self.assertEqual((upgraded["environment"], upgraded["send_state"]), ("test", "PENDING"))
         self.assertEqual(upgraded["notification"], pending["notification"])
         self.gateway.close()
         with self.assertRaises(ChatError):
@@ -633,7 +628,7 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(options["verify"].check_hostname)
             self.assertIsNone(options["verify"].keylog_filename)
             self.assertEqual(options["retries"], 0)
-            self.assertEqual(options["limits"].max_connections, 153)
+            self.assertEqual(options["limits"].max_connections, config.image_prepare_budget_mib // 20)
             self.assertEqual(options["limits"].max_keepalive_connections, 0)
             self.assertFalse(sender.http.follow_redirects)
             self.assertFalse(sender.http.trust_env)

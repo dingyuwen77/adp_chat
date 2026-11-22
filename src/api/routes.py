@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Request
 
 from application.chat_service import ChatService
+from core.models import ChatError
 from .schemas import ChatRequest, ChatResponse, ErrorResponse
 
 router = APIRouter()
@@ -14,8 +15,11 @@ def _service(request: Request) -> ChatService:
 
 
 @router.get("/healthz")
-def healthz() -> dict[str, str]:
-    """只探测本地进程，不向 ADP 产生计费请求。"""
+def healthz(request: Request) -> dict[str, str]:
+    """探测本机进程和网关持久状态，保持上游调用为零。"""
+    gateway = getattr(request.app.state, "wecom_gateway", None)
+    if gateway is not None and not gateway.healthy:
+        raise ChatError("gateway_storage", "unavailable", "企业微信状态处理不可用。")
     return {"status": "ok"}
 
 
