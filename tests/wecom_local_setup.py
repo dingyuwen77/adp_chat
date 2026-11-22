@@ -34,11 +34,11 @@ def create_local_config(output, *, scope, real_adp_source=None, project_root=Non
     data["session"]["session_file"] = "runtime/session.json"
     data["wecom"].update(corp_id="wwf483023b734c570a", agent_id=1000053, adp_application=scope,
         gateway_enabled=True, callback_token=secrets.token_hex(12),
-        encoding_aes_key=base64.b64encode(os.urandom(32)).decode()[:-1], messages_dir="runtime/messages",
+        encoding_aes_key=base64.b64encode(os.urandom(32)).decode()[:-1], database_file="runtime/gateway.sqlite3",
         adp_url=ADP_CHAT_URL if real_adp_source is not None else "http://127.0.0.1:8765/adp/v2/chat",
         notification_mode="simulated", gateway_environment="test", wecom_app_secret="")
     data["logging"].update(log_enabled=True, log_level="INFO", log_file="logs/adp_chat.log",
-                           log_question=False, log_answer_chars=0)
+                           log_question=False, log_answer=False)
     lines = []
     for section, values in data.items():
         lines.append(f"[{section}]")

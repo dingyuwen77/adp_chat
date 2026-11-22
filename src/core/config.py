@@ -36,7 +36,8 @@ class ChatConfig:
     log_max_bytes: int = 5_242_880
     log_backup_count: int = 3
     log_answer_chars: int = 0
-    log_question: bool = False
+    log_question: bool = True
+    log_answer: bool = True
     events_retention_days: int = 14
     session_file: str = "runtime/session.json"
     corp_id: str = ""
@@ -46,8 +47,12 @@ class ChatConfig:
     callback_token: str = field(default="", repr=False)
     encoding_aes_key: str = field(default="", repr=False)
     messages_dir: str = "runtime/messages"
+    database_file: str = ""
     callback_max_bytes: int = 65536
     max_unfinished_messages: int = 2000
+    max_active_requests: int = 1000
+    max_send_tasks: int = 128
+    database_write_queue: int = 2048
     adp_url: str = ADP_CHAT_URL
     adp_response_max_bytes: int = 1_048_576
     notification_mode: str = "disabled"
@@ -56,6 +61,7 @@ class ChatConfig:
     send_timeout_seconds: float = 15
     image_allowed_hosts: list[str] = field(default_factory=lambda: ["*"])
     image_prepare_timeout_seconds: float = 30
+    image_prepare_budget_mib: int = 256
     callback_url: str = ""
     mixed_message_delay_seconds: float = 2
 
@@ -81,7 +87,7 @@ class ChatConfig:
         if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
             raise ChatError("config", "invalid_option", "日志级别必须是 DEBUG、INFO、WARNING、ERROR 或 CRITICAL。")
         if not self.log_file.strip() or self.log_max_bytes <= 0 or self.log_backup_count < 1 or self.log_answer_chars < 0:
-            raise ChatError("config", "invalid_logging", "日志路径、轮转参数和回答预览长度必须有效。")
+            raise ChatError("config", "invalid_logging", "日志路径、轮转参数和旧日志配置必须有效。")
         if not 1 <= self.events_retention_days <= 3650:
             raise ChatError("config", "invalid_logging", "网关事件保留天数必须在1至3650之间。")
         if not self.session_file.strip() or "\0" in self.session_file:
@@ -93,9 +99,18 @@ class ChatConfig:
                    for value in (self.corp_id, self.adp_application))
         ):
             raise ChatError("config", "invalid_wecom_scope", "[wecom] 的企业、应用 ID 和固定 ADP 逻辑应用名必须完整有效。")
-        if not self.messages_dir.strip() or "\0" in self.messages_dir or not 1024 <= self.callback_max_bytes <= 1_048_576 or self.max_unfinished_messages < 1:
-            raise ChatError("config", "invalid_gateway_resources", "网关目录或物理资源保护配置无效。")
+        if (not self.messages_dir.strip() or "\0" in self.messages_dir
+                or self.database_file and (not self.database_file.strip() or "\0" in self.database_file)
+                or not 1024 <= self.callback_max_bytes <= 1_048_576 or self.max_unfinished_messages < 1
+                or not 1 <= self.max_active_requests <= 10_000 or not 1 <= self.max_send_tasks <= 1000
+                or not 1 <= self.database_write_queue <= 20_000):
+            raise ChatError("config", "invalid_gateway_resources", "网关数据库路径或资源保护配置无效。")
         if self.gateway_enabled:
+            database = self.gateway_database_path.resolve()
+            database_paths = {database, *(database.with_name(database.name + suffix)
+                                           for suffix in ("-wal", "-shm", ".lock"))}
+            if database_paths & {Path(self.session_file).resolve(), Path(self.log_file).resolve()}:
+                raise ChatError("config", "invalid_gateway_resources", "消息数据库、会话文件及日志必须使用独立路径。")
             try:
                 valid_key = len(self.encoding_aes_key) == 43 and len(base64.b64decode(self.encoding_aes_key + "=", validate=True)) == 32
             except (ValueError, binascii.Error):
@@ -143,12 +158,21 @@ class ChatConfig:
             raise ChatError("config", "invalid_notification", "通知模式、环境或超时配置无效。")
         if not 0 <= self.mixed_message_delay_seconds <= TIMEOUT_MAX:
             raise ChatError("config", "invalid_notification", "图文消息间隔必须在0至系统支持的秒数范围之间。")
-        if (not 0 < self.image_prepare_timeout_seconds <= 300
+        if (not 0 < self.image_prepare_timeout_seconds <= 300 or not 20 <= self.image_prepare_budget_mib <= 3072
                 or len(self.image_allowed_hosts) > 32
                 or any(not isinstance(host, str) or len(host) > 253
                        or (host != "*" and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", host) is None)
                        for host in self.image_allowed_hosts)):
-            raise ChatError("config", "invalid_image_limits", "图片来源须为完整域名或 *，并配置有效准备超时；空列表禁用下载。")
+            raise ChatError("config", "invalid_image_limits", "图片来源、准备超时或内存预算无效；空列表禁用下载。")
+
+    @property
+    def gateway_database_path(self) -> Path:
+        """旧目录配置只定位旁边的新库。默认 messages 对应同级 gateway.sqlite3。"""
+        if self.database_file:
+            return Path(self.database_file)
+        legacy = Path(self.messages_dir)
+        name = "gateway" if legacy.name == "messages" else legacy.name or "gateway"
+        return legacy.parent / f"{name}.sqlite3"
 
     @property
     def callback_path(self) -> str:
@@ -169,17 +193,18 @@ _SECTIONS = {
     "wecom": {
         "corp_id": str, "agent_id": int, "adp_application": str, "gateway_enabled": bool,
         "callback_url": str, "callback_token": str, "encoding_aes_key": str, "messages_dir": str,
-        "callback_max_bytes": int, "max_unfinished_messages": int,
+        "database_file": str, "database_write_queue": int,
+        "callback_max_bytes": int, "max_unfinished_messages": int, "max_active_requests": int, "max_send_tasks": int,
         "adp_url": str, "adp_response_max_bytes": int,
         "notification_mode": str, "gateway_environment": str, "wecom_app_secret": str,
         "send_timeout_seconds": (int, float),
         "mixed_message_delay_seconds": (int, float),
-        "image_allowed_hosts": list, "image_prepare_timeout_seconds": (int, float),
+        "image_allowed_hosts": list, "image_prepare_timeout_seconds": (int, float), "image_prepare_budget_mib": int,
     },
     "logging": {
         "log_enabled": bool, "log_level": str, "log_file": str,
         "log_max_bytes": int, "log_backup_count": int,
-        "log_answer_chars": int, "log_question": bool,
+        "log_answer_chars": int, "log_question": bool, "log_answer": bool,
         "events_retention_days": int,
     },
 }
@@ -216,6 +241,9 @@ def load_config(path: str | Path | None = None) -> ChatConfig:
 
     values.setdefault("app_key", "")
     values.setdefault("user_id", "")
+    if "log_answer_chars" in values:
+        # 显式旧零值保留关正文的意图，正值开启完整回答。新字段优先。
+        values.setdefault("log_answer", values["log_answer_chars"] != 0)
     config = ChatConfig(**values)
     log_path = Path(config.log_file)
     if not log_path.is_absolute():
@@ -226,4 +254,6 @@ def load_config(path: str | Path | None = None) -> ChatConfig:
     messages_path = Path(config.messages_dir)
     if not messages_path.is_absolute():
         config = replace(config, messages_dir=str(Path(path).absolute().parent / messages_path))
+    if config.database_file and not Path(config.database_file).is_absolute():
+        config = replace(config, database_file=str(Path(path).absolute().parent / config.database_file))
     return config

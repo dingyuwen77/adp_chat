@@ -45,13 +45,18 @@ def main(argv=None) -> int:
     if args.serve:
         serve(args.port)
         return 0
+    from core.config import load_config
+    from storage.sqlite_store import read_messages
+
     with tempfile.TemporaryDirectory(prefix="wecom-http-") as directory:
         root = Path(directory)
         config = root / "config.toml"
         config.write_text('[adp]\napp_key="isolated-fake-adp-key"\nuser_id="legacy-test"\n'
                           '[logging]\nlog_enabled=false\n[wecom]\ncorp_id="wwf483023b734c570a"\n'
-                          'agent_id=1000053\nadp_application="wecom-http-fixture"\n', encoding="utf-8")
+                          'agent_id=1000053\nadp_application="wecom-http-fixture"\n'
+                          'adp_url="http://127.0.0.1:1/adp/v2/chat"\n', encoding="utf-8")
         initialize_test_keys(config)
+        settings = load_config(config)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", args.port))
             port = probe.getsockname()[1]
@@ -96,7 +101,7 @@ def main(argv=None) -> int:
                     if cycle == 1:
                         invoke("--user-id", "YNND", "--msg-id", "2")
                         invoke("--user-id", "SIYU", "--msg-id", "3")
-                    snapshots = [json.loads(p.read_text(encoding="utf-8")) for p in (root / "runtime/messages").glob("*.json")]
+                    snapshots = read_messages(settings)
                     assert len(snapshots) == 3
                     assert sorted(r["adp_state"] for r in snapshots) == ["RECEIVED", "RECEIVED", "REJECTED_USER_BUSY"]
                     assert {r["user_id"] for r in snapshots} == {"YNND", "SIYU"}
@@ -125,7 +130,7 @@ def main(argv=None) -> int:
             probe.settimeout(0.2)
             assert probe.connect_ex(("127.0.0.1", port)) != 0, "测试监听未释放"
         report = {"status": "passed", "environment": "test", "real_wecom": False, "adp_called": False,
-                  "server_processes": processes, "restart_cycles": 2, "snapshots": 3,
+                  "server_processes": processes, "restart_cycles": 2, "records": 3,
                   "max_client_duration_ms": round(max(durations), 1), "cleanup": "processes_exited_and_port_released"}
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)

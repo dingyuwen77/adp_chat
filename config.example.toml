@@ -4,13 +4,13 @@
 
 [adp]
 # 必填：在已发布 ADP 应用 API 接入页复制 AppKey，不是腾讯云 SecretKey。
-app_key = "MOCAigqyPybgYhZpiaIFPGQYFtqvfEUXDoJIToMuUjuxmqQvyFHmwtMrijglghhXVGZQgPZUhOAnwynPIxKMtoHBxENfMMlhWECzQyBpgFndotshSNjGApQFMdZRrFHb"
+app_key = ""
 # 必填：用户的稳定标识；同一用户保持不变，修改后需显式创建新会话。
-user_id = "local_adp_test_user_001"
+user_id = "local-user"
 # 可选访问者标识：留空自动使用 user_id，通常无需填写。
 visitor_id = ""
 # 可选用户名称：留空不发送 UserName。
-user_name = "本地API测试"
+user_name = ""
 
 [chat]
 # ADP 文本输出开关：false 非流式（默认），true 流式；两种模式都使用 SSE。
@@ -38,26 +38,31 @@ session_file = "runtime/session.json"
 [wecom]
 # 企业微信身份作用域；不用网关时可保留空值/0。
 # 配置时三项必须同时填写；仅为派生作用域，不代表真实企微身份已验证。
-corp_id = "ww00e75c888cc993be"
-agent_id = 1000002
+corp_id = ""
+agent_id = 0
 # 固定逻辑应用名，不能用可轮换 AppKey；上线后不要静默修改。
-adp_application = "wecom-local-test"
+adp_application = ""
 # 默认关闭；启用后异步调用ADP，通知由下方模式独立控制。
-gateway_enabled = true
+gateway_enabled = false
 # 企业微信对外回调完整URL；复制同一值到后台，修改后重启应用并同步后台。
 # 启动按URL路径注册GET/POST；主机/端口仍由deployment及网络转发决定，不自动配置后台。
 # 留空兼容/wecom/callback；非空须为HTTP(S)静态路径，不含查询、片段或API保留路径。
-callback_url = "http://115.190.218.12:3000/wecom/callback"
+callback_url = ""
 # 企业微信后台“接收消息”的 Token；英文或数字，不超过32位，须与后台一致。
 # A～E使用独立测试值，F填写正式回调值；它不是应用Secret或access_token。
-callback_token = "AZZbnxwki8x8oK"
+callback_token = ""
 # 企业微信后台生成的43位 EncodingAESKey；须与后台一致，不提交Git。
-encoding_aes_key = "eXpCsvtZDSo28v1k3TU7DMqP8tt7kBTwrApzfp5olV1"
-# 相对路径基于本配置目录，与旧单用户 session_file 分开；生产使用新的独立目录。
-messages_dir = "runtime/messages"
-# 物理接收保护，不是 ADP 模型业务并发配额；触发时拒绝成功 ACK。
+encoding_aes_key = ""
+# SQLite WAL 消息库。相对路径基于本配置目录，放在本机持久盘上。
+database_file = "runtime/gateway.sqlite3"
+# 单次加密回调的最大字节数。未完成容量涵盖 ADP 活跃及尚在发送的通知。
 callback_max_bytes = 65536
 max_unfinished_messages = 2000
+# 本机 ADP 在途上限和企微发送执行位。新会话超出在途容量时返回非成功 ACK。
+max_active_requests = 1000
+max_send_tasks = 128
+# 达到此数量的待写操作时拒绝新回调，已接收消息的状态提交继续。
+database_write_queue = 2048
 # Python调用ADP的出站地址，与企业微信入站回调选择HTTP/HTTPS无关。
 # 正式ADP固定使用HTTPS；仅本机Fake可覆盖为 http://127.0.0.1:8765/adp/v2/chat。
 adp_url = "https://wss.lke.cloud.tencent.com/adp/v2/chat"
@@ -65,12 +70,12 @@ adp_url = "https://wss.lke.cloud.tencent.com/adp/v2/chat"
 adp_response_max_bytes = 1048576
 # disabled不发送；simulated仅模拟；wecom调用真实企业微信应用消息接口。
 # A～E使用simulated且只能记SEND_SIMULATED；F真实发送另需production与应用Secret。
-notification_mode = "wecom"
-# test用于本地验证，production用于正式接入；禁止把已有测试状态目录直接切成production。
-gateway_environment = "production"
+notification_mode = "disabled"
+# test 用于本地验证，production 用于正式接入。不同环境使用独立数据库。
+gateway_environment = "test"
 # 自建应用详情页的Secret，填在实际配置；A～E保持空值，不提交Git。
 # access_token由发送器用CorpID和本Secret自动获取、缓存，无须手工增加配置项。
-wecom_app_secret = "-RlZzhajcMOyvj1wXQpRNDMKtQCOz2xjydEk7yPhTIY"
+wecom_app_secret = ""
 # 一次通知的发送预算（Token与全部文字/图片消息）；图片准备另计，不影响ADP占用。
 send_timeout_seconds = 15
 # 含图片的整轮回复，每条消息被接口接受后等待的秒数（含末条）；支持非负整数或小数。
@@ -82,7 +87,8 @@ mixed_message_delay_seconds = 1
 image_allowed_hosts = ["*"]
 # 整条回复累计图片准备预算（下载、上传、等候共享名额），秒；每张至多10秒。
 # 单张下载上限20MiB，不限制每回复图片张数或累计下载字节；全程内存处理。
-# 图片准备名额按3GiB/20MiB计算为153；临时副本/HTTP开销另计，不是进程RSS硬上限。
+# 图片准备按 20MiB/张预留内存。临时副本和 HTTP 开销另计。
+image_prepare_budget_mib = 256
 # 预算满时等待也计入准备时限；超时原位降级为链接，纯文字不占图片预算。
 image_prepare_timeout_seconds = 30
 
@@ -90,27 +96,23 @@ image_prepare_timeout_seconds = 30
 # true 写本地日志；false 不创建日志。问答可能含业务信息，请按需关闭。
 log_enabled = true
 # 级别：DEBUG/INFO/WARNING/ERROR/CRITICAL；一般用 INFO，排障用 DEBUG。
-log_level = "DEBUG"
+log_level = "INFO"
 # 日志路径：相对路径基于本配置目录；不输出到控制台。
 log_file = "logs/adp_chat.log"
 # 单份日志轮转阈值，单位字节，必须为正数；默认约 5 MiB。
 log_max_bytes = 5242880
 # 轮转备份份数，至少 1；默认保留 3 份旧日志。
 log_backup_count = 3
-# 网关JSONL复用log_enabled/log_level、log_file所在目录和log_max_bytes。
-# 按北京时间日期/大小分段，早于此天数的本地事件自动清理；无外传/采集器。
-events_retention_days = 14
-# true 记录脱敏后的用户问题；false 不记录问题正文。
+# 两个开关各自控制完整脱敏正文。关闭正文后仍保留请求结果及关联诊断。
 log_question = true
-# 回答脱敏后最多记录的 Unicode 字符数；0 不记录回答正文，与问题开关独立。
-log_answer_chars = 100
+log_answer = true
 
 [deployment]
 # 仅服务器 run.sh/upgrade.sh 读取；本地 CLI、直接 Uvicorn 和源码 Compose 忽略。
 # 更换服务器时在此配置宿主监听IPv4，不需要因IP不同修改源码或脚本。
 # 使用本机网卡IP或0.0.0.0；容器内部仍固定监听0.0.0.0:8000。
 # 它不是企业微信后台的回调URL，也不一定等于调用企业微信时的公网出口IP。
-bind_ip = "0.0.0.0"
+bind_ip = "127.0.0.1"
 # 服务器对外发布的端口，必须为 1 至 65535 的整数。
 # 常规部署只改本节即可；若手工设置ADP_BIND_IP/ADP_HOST_PORT，会覆盖对应字段。
 host_port = 3000

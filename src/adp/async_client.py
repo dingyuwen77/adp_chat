@@ -32,7 +32,7 @@ _UNKNOWN = "本轮 ADP 执行结果未知，旧请求可能仍在云端执行。
 
 @dataclass(frozen=True)
 class ADPOutcome:
-    """可在同一快照提交的结果、一次通知和本地释放决定。"""
+    """同一事务提交的结果、一次通知和本地释放决定。"""
 
     state: str
     notification: str
@@ -59,7 +59,8 @@ class AsyncADPClient:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_default_certs()
             transport = httpx.AsyncHTTPTransport(verify=context, retries=0,
-                limits=httpx.Limits(max_connections=None, max_keepalive_connections=20))
+                limits=httpx.Limits(max_connections=config.max_active_requests,
+                                    max_keepalive_connections=min(config.max_active_requests, 100)))
             http_client = httpx.AsyncClient(transport=transport, timeout=config.chat_timeout_seconds,
                                            follow_redirects=False, trust_env=False)
         self.http = http_client

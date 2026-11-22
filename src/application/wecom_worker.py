@@ -1,18 +1,25 @@
 """单实例后台转发：获准消息首次执行，armed恢复一律未知，不按ADP配额排队。"""
 
 import asyncio
+from logging import DEBUG
 from time import perf_counter
 from dataclasses import asdict
+from functools import partial
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from adp.async_client import unknown_outcome
+from core.logging import log_adp_answer, log_writer_metrics
 from core.models import ChatError
 from wecom.sender import SendOutcome, unknown_send
 
 
+_DISPATCH_BATCH = 64
+_MAINTENANCE_SECONDS = 60
+
+
 class GatewayWorker:
-    """任务注册表只去重进程内调度；唯一事实仍是MessageStore快照。"""
+    """按 SQLite 状态索引和当前执行位调度，出站前以版本事务认领。"""
 
     def __init__(self, gateway, adp, *, sender=None):
         """依赖由lifespan持有，测试与真实出站使用同一状态机制。"""
@@ -21,6 +28,7 @@ class GatewayWorker:
         self.events = gateway.events
         self.tasks = {}
         self.send_tasks = {}
+        self._sending_users = set()
         # 等待者持有强引用；员工无在途通知后自动释放锁，避免长期员工字典增长。
         self._send_locks = WeakValueDictionary()
         self.sender = sender
@@ -40,67 +48,129 @@ class GatewayWorker:
         """先可靠解决上进程armed记录，之后才允许未武装消息首次执行。"""
         self._loop = asyncio.get_running_loop()
         await self._purge()
-        records = await asyncio.to_thread(self.store.list_unfinished)
-        for record in records:
-            if record["adp_state"] == "ADP_SEND_ARMED":
-                await self._finish(record, unknown_outcome("process_recovery"))
-                self.events.emit("message.recovered", record, outcome_uncertain=True,
-                    attributes={"source": "recovery", "event_type": "adp", "recovery_action": "mark_unknown"})
-                self.logger.warning("adp_recovered_unknown message_key=%s request_id=%s",
-                                    record["message_key"], record["request_id"])
-            if record["send_state"] == "SEND_ARMED":
-                await self._finish_notification(record, unknown_send(code="process_recovery"))
-                self.events.emit("message.recovered", record, outcome_uncertain=True,
-                    attributes={"source": "recovery", "event_type": "notification", "recovery_action": "mark_unknown"})
-            elif record["send_state"] == "PENDING":
-                self.events.emit("message.recovered", record,
-                    attributes={"source": "recovery", "event_type": "notification", "recovery_action": "first_notification"})
-            if record["adp_state"] == "RECEIVED":
-                self.events.emit("message.recovered", record,
-                    attributes={"source": "recovery", "event_type": "adp", "recovery_action": "first_submission"})
+        for column, state in (("send_state", "SEND_ARMED"), ("send_state", "PENDING"),
+                              ("adp_state", "ADP_SEND_ARMED"), ("adp_state", "RECEIVED")):
+            await self._recover(column, state)
         self._runner = asyncio.create_task(self._dispatch(), name="wecom-dispatch")
         self.wake()
 
+    async def _recover(self, column, state):
+        """只读需要恢复的状态。已出站证据先转未知，待提交和待发意图仍可首次执行。"""
+        after = 0
+        while records := await self.store.recovery_page(column, state, after=after):
+            for record in records:
+                event_type = "adp" if column == "adp_state" else "notification"
+                uncertain = state in {"ADP_SEND_ARMED", "SEND_ARMED"}
+                action = "mark_unknown" if uncertain else (
+                    "first_submission" if state == "RECEIVED" else "first_notification")
+                if state == "ADP_SEND_ARMED":
+                    await self._finish(record, unknown_outcome("process_recovery"))
+                    self.logger.warning("adp_recovered_unknown message_key=%s request_id=%s",
+                                        record["message_key"], record["request_id"])
+                elif state == "SEND_ARMED":
+                    await self._finish_notification(record, unknown_send(code="process_recovery"))
+                self.events.emit("message.recovered", record, outcome_uncertain=uncertain,
+                                 attributes={"source": "recovery", "event_type": event_type,
+                                             "recovery_action": action})
+            after = records[-1]["receive_sequence"]
+
     async def _dispatch(self):
-        """从可靠快照发现首次工作；每条任务立即异步发起，不加模型并发信号量。"""
+        """及时发现已获准任务，维护时钟独立于回调唤醒频率。"""
         try:
-            while not self._stopping:
+            maintenance_at = self._loop.time() + _MAINTENANCE_SECONDS
+            while not self._stopping and self.failure is None:
                 try:
-                    await asyncio.wait_for(self._event.wait(), timeout=60)
+                    async with asyncio.timeout_at(maintenance_at):
+                        await self._event.wait()
                 except TimeoutError:
-                    await self._purge()
+                    pass
                 self._event.clear()
-                records = await asyncio.to_thread(self.store.list_unfinished)
-                for record in records:
-                    key = record["message_key"]
-                    if record["adp_state"] == "RECEIVED" and key not in self.tasks:
-                        self.tasks[key] = asyncio.create_task(self._execute(record), name=f"adp-{key[:12]}")
-                        self.tasks[key].add_done_callback(lambda _done, key=key: self.tasks.pop(key, None))
-                    if self.sender is not None and record["send_state"] == "PENDING" and key not in self.send_tasks:
-                        self.send_tasks[key] = asyncio.create_task(self._execute_notification(record), name=f"notify-{key[:12]}")
-                        self.send_tasks[key].add_done_callback(lambda _done, key=key: self.send_tasks.pop(key, None))
+                if self.failure is not None:
+                    return
+                await self._schedule_adp()
+                await self._schedule_notifications()
+                if self._loop.time() >= maintenance_at:
+                    more = await self._purge()
+                    maintenance_at = self._loop.time() + (1 if more else _MAINTENANCE_SECONDS)
+                    if self.logger.isEnabledFor(DEBUG) and not more:
+                        checkpoint = await self.store.checkpoint()
+                        store_stats = await asyncio.to_thread(self.store.metrics)
+                        log_stats = await asyncio.to_thread(log_writer_metrics, self.logger)
+                        self.logger.debug("网关存储及日志资源", extra={"log_fields": {
+                            **store_stats, **log_stats, **checkpoint, "adp_tasks": len(self.tasks),
+                            "send_tasks": len(self.send_tasks),
+                        }})
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self.failure = type(exc).__name__
             self.logger.error("gateway_dispatch_failed code=%s", self.failure)
 
+    async def _schedule_adp(self):
+        """分页填充剩余执行位，跳过同进程中已经开始认领的记录。"""
+        remaining = self.gateway.config.max_active_requests - len(self.tasks)
+        cursor = 0
+        while remaining > 0 and self.failure is None:
+            limit = min(_DISPATCH_BATCH, remaining)
+            records = await self.store.received(limit, after=cursor)
+            for record in records:
+                key = record["message_key"]
+                if key not in self.tasks:
+                    task = asyncio.create_task(self._execute(record), name=f"adp-{key[:12]}")
+                    self.tasks[key] = task
+                    task.add_done_callback(partial(self._adp_done, key))
+                    remaining -= 1
+            if len(records) < limit:
+                return
+            cursor = records[-1]["receive_sequence"]
+
+    def _adp_done(self, key, _task):
+        """归还执行位，使恢复或同时到达的 RECEIVED 记录继续被发现。"""
+        self.tasks.pop(key, None)
+        self.wake()
+
+    async def _schedule_notifications(self):
+        """空闲发送位只接收每位员工的一条通知，避免同用户阻塞其他员工。"""
+        remaining = self.gateway.config.max_send_tasks - len(self.send_tasks)
+        if not remaining or self.sender is None or self.failure is not None:
+            return
+        records = await self.store.pending_sends(remaining, tuple(self._sending_users))
+        for record in records:
+            key, user = record["message_key"], record["user_id"].casefold()
+            self._sending_users.add(user)
+            task = asyncio.create_task(self._execute_notification(record), name=f"notify-{key[:12]}")
+            self.send_tasks[key] = task
+            task.add_done_callback(partial(self._notification_done, key, user))
+
+    def _notification_done(self, key, user, _task):
+        """通知结束才归还员工发送位，使下一条可按可靠接收顺序出站。"""
+        self.send_tasks.pop(key, None)
+        self._sending_users.discard(user)
+        self.wake()
+
     async def _purge(self):
         """清理结果仅诊断，失败仍按既有存储Owner失败关闭，不靠日志恢复。"""
         try:
-            removed = await asyncio.to_thread(self.store.purge)
+            removed, more = await self.store.purge_async()
         except ChatError as exc:
             self.events.emit("message.cleanup.failed", error_stage="storage", error_code=exc.code)
+            if exc.code == "storage_busy":
+                return True
             raise
         self.events.emit("message.cleanup.completed", attributes={"removed": removed})
+        return more
 
     async def _finish(self, record, outcome, *, duration_ms=None):
         """处理结果、一次待发送提示、本地释放同一原子提交，发送层后续独立处理。"""
-        saved = await asyncio.to_thread(self.store.update, record["message_key"],
+        return await self.store.update_async(record["message_key"],
             expected_version=record["record_version"], adp_state=outcome.state,
             adp_result=asdict(outcome.result) if outcome.result is not None else None,
             adp_error=outcome.error, notification=outcome.notification,
-            notification_kind=outcome.state, send_state="PENDING")
+            notification_kind=outcome.state, send_state="PENDING",
+            on_commit=partial(self._after_result, outcome, duration_ms))
+
+    def _after_result(self, outcome, duration_ms, saved):
+        """以已提交 ADP 结果发出诊断，即便等待者在提交期间取消。"""
         error = outcome.error or {}
         result = outcome.result
         self.events.emit({"ADP_SUCCEEDED": "adp.completed", "ADP_REJECTED": "adp.rejected"}.get(outcome.state, "adp.unknown"),
@@ -111,16 +181,19 @@ class GatewayWorker:
             attributes={"reply_method": result.reply_method if result else None})
         if outcome.state == "ADP_SUCCEEDED":
             self.events.emit("reply.persisted", saved, attributes={"reply_chars": len(outcome.notification)})
+            if self.gateway.config.log_answer:
+                log_adp_answer(self.logger, result, conversation_id=saved["conversation_id"],
+                               message_key=saved["message_key"], request_id=saved["request_id"],
+                               employee_id=saved["user_id"])
         self.events.emit("message.session.released", saved, outcome_uncertain=outcome.state == "ADP_UNKNOWN",
                          attributes={"release_reason": outcome.state})
         self.logger.info("adp_result_saved message_key=%s request_id=%s adp_state=%s local_session_released=true",
                          saved["message_key"], saved["request_id"], saved["adp_state"])
         self.wake()
-        return saved
 
     async def _finish_notification(self, record, outcome):
         """只提交独立发送维度，绝不修改ADP结果或重新占用员工。"""
-        saved = await asyncio.to_thread(self.store.update, record["message_key"],
+        saved = await self.store.update_async(record["message_key"],
             expected_version=record["record_version"], send_state=outcome.state, send_result=asdict(outcome))
         event = {"SEND_ACCEPTED": "wecom.send.accepted", "SEND_SIMULATED": "wecom.send.simulated",
                  "SEND_FAILED": "wecom.send.failed", "SEND_UNKNOWN": "wecom.send.unknown"}[outcome.state]
@@ -146,7 +219,7 @@ class GatewayWorker:
         armed = None
         try:
             plan = SendOutcome("SEND_ARMED", self.sender.source, None, None, None, "armed")
-            armed = await asyncio.to_thread(self.store.update, record["message_key"],
+            armed = await self.store.update_async(record["message_key"],
                 expected_version=record["record_version"], send_state="SEND_ARMED", send_result=asdict(plan))
             self.logger.info("wecom_send_armed message_key=%s source=%s", armed["message_key"], self.sender.source)
             self.events.emit("wecom.send.started", armed, attempt=1, attributes={"source": self.sender.source})
@@ -154,7 +227,7 @@ class GatewayWorker:
             await self._finish_notification(armed, outcome)
         except asyncio.CancelledError:
             try:
-                current = await asyncio.to_thread(self.store.get, record["message_key"])
+                current = await self.store.get_async(record["message_key"])
                 if current is not None and current["send_state"] == "SEND_ARMED":
                     await self._finish_notification(current, unknown_send(code="shutdown"))
             except ChatError:
@@ -179,7 +252,7 @@ class GatewayWorker:
         """武装先落盘，取消/异常也保存UNKNOWN；任何路径都不再次调用ADP。"""
         armed = None
         try:
-            armed = await asyncio.to_thread(self.store.update, record["message_key"],
+            armed = await self.store.update_async(record["message_key"],
                 expected_version=record["record_version"], adp_state="ADP_SEND_ARMED", request_id=str(uuid4()))
             self.logger.info("adp_send_armed message_key=%s request_id=%s", armed["message_key"], armed["request_id"])
             self.events.emit("adp.submit_armed", armed, attempt=1)
@@ -188,9 +261,9 @@ class GatewayWorker:
             outcome = await self.adp.request(armed)
             await self._finish(armed, outcome, duration_ms=round((perf_counter() - started) * 1000, 3))
         except asyncio.CancelledError:
-            # to_thread取消不会停止提交；先等同一锁读回落盘结果，再决定是否仍需UNKNOWN。
+            # 异步写入已等待事务结束。读回落盘状态，再决定是否仍需 UNKNOWN。
             try:
-                current = await asyncio.to_thread(self.store.get, record["message_key"])
+                current = await self.store.get_async(record["message_key"])
                 if current is not None and current["adp_state"] == "ADP_SEND_ARMED":
                     await self._finish(current, unknown_outcome("shutdown"))
             except ChatError:
@@ -198,7 +271,7 @@ class GatewayWorker:
             raise
         except ChatError as exc:
             if armed is None and exc.code == "version_conflict":
-                current = await asyncio.to_thread(self.store.get, record["message_key"])
+                current = await self.store.get_async(record["message_key"])
                 if current is not None and current["adp_state"] != "RECEIVED":
                     return
             self.failure = exc.code

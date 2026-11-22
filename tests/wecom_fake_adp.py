@@ -15,7 +15,8 @@ def event(kind, **fields):
     return (f"event: {kind}\ndata: " + json.dumps({"Type": kind, **fields}, ensure_ascii=False) + "\n\n").encode()
 
 
-def create_fake_app(*, quota=0, hold=False, calls_file=None, mode="success", code=460031):
+def create_fake_app(*, quota=0, hold=False, calls_file=None, mode="success", code=460031,
+                    answer_text=None, hold_user_prefix=""):
     """0名额表示不设平台业务额度；只存脱敏测试关联，不保存AppKey或正文。"""
     app = FastAPI(title="本机 Fake ADP，非生产接口")
     release = asyncio.Event()
@@ -69,7 +70,8 @@ def create_fake_app(*, quota=0, hold=False, calls_file=None, mode="success", cod
             """保留名额直到完成/取消，支持不完整流、超时和执行后限额。"""
             try:
                 yield event("request_ack", RequestAck={"Status": "success", "ConversationId": call["ConversationId"]})
-                await release.wait()
+                if call["UserId"].startswith(hold_user_prefix):
+                    await release.wait()
                 if mode == "disconnect":
                     return
                 if mode == "timeout":
@@ -80,7 +82,7 @@ def create_fake_app(*, quota=0, hold=False, calls_file=None, mode="success", cod
                     return
                 yield event("response.completed", Response={"Status": "success", "ConversationId": call["ConversationId"],
                     "ExtraInfo": {"ReplyMethod": 7 if mode == "reply7" else 18}, "Messages": [{"Type": "reply", "Contents": [
-                        {"Type": "text", "Text": f"Fake 回复 {call['UserId']}"}]}]})
+                        {"Type": "text", "Text": answer_text if answer_text is not None else f"Fake 回复 {call['UserId']}"}]}]})
             finally:
                 state["active"] -= 1
 

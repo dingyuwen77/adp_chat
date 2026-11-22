@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 from xml.sax.saxutils import escape
 
 from core.config import load_config
-from storage.messages import MessageStore, read_snapshot
+from storage.sqlite_store import MessageStore, read_messages
 from wecom.crypto import WeComCrypto
 from wecom.models import InboundMessage
 from wecom_fake_adp import create_fake_app
@@ -52,8 +52,8 @@ def wait_for(predicate, *, seconds=12):
     raise AssertionError("未在限定时间观察到预期本机测试状态")
 
 
-def callback(config, base, user, msg_id, text="本机确定性测试"):
-    """生产Crypto生成协议输入，正式HTTP仍校验全部签名/身份/存储。"""
+def signed_callback(config, user, msg_id, text):
+    """生产加密组件生成模拟输入，真实回调仍校验签名与身份。"""
     crypto = WeComCrypto(config.callback_token, config.encoding_aes_key, config.corp_id)
     timestamp, nonce = str(int(time.time())), secrets.token_hex(8)
     inner = (f"<xml><ToUserName>{config.corp_id}</ToUserName><AgentID>{config.agent_id}</AgentID>"
@@ -62,6 +62,12 @@ def callback(config, base, user, msg_id, text="本机确定性测试"):
     encrypted = crypto.encrypt(inner)
     params = {"timestamp": timestamp, "nonce": nonce, "msg_signature": crypto.signature(encrypted, timestamp, nonce)}
     body = f"<xml><ToUserName>{config.corp_id}</ToUserName><AgentID>{config.agent_id}</AgentID><Encrypt>{encrypted}</Encrypt></xml>".encode()
+    return params, body
+
+
+def callback(config, base, user, msg_id, text="本机确定性测试"):
+    """通过真实 HTTP 提交加密输入并测量空 ACK。"""
+    params, body = signed_callback(config, user, msg_id, text)
     started = time.monotonic()
     with urlopen(Request(base + config.callback_path + "?" + urlencode(params), data=body), timeout=5) as response:
         assert response.status == 200 and response.read() == b""
@@ -97,7 +103,7 @@ def event_report(config, records, *, quota, crash, notification_crash, notificat
     events, incomplete = [], 0
     for path in sorted(Path(config.log_file).parent.glob(Path(config.log_file).name + "*")):
         for line in path.read_bytes().splitlines(keepends=True):
-            if not line.endswith(b"\\n"):
+            if not line.endswith(b"\n"):
                 incomplete += 1
                 continue
             from core.logging import parse_log_line
@@ -111,8 +117,9 @@ def event_report(config, records, *, quota, crash, notification_crash, notificat
             assert event["schema_version"] == "adp_chat.log.v1" and event["environment"] == "test"
             events.append(event)
     assert len({e["id"] for e in events}) == len(events)
-    assert {"service.started", "service.stopped", "adp.submit_armed", "adp.started", "adp.completed",
-            "message.session.released", "reply.persisted"} <= {e["event"] for e in events}
+    missing = {"service.started", "service.stopped", "adp.submit_armed", "adp.started", "adp.completed",
+               "message.session.released", "reply.persisted"} - {e["event"] for e in events}
+    assert not missing, f"缺少网关事件：{sorted(missing)}"
     assert not any(e["event"] == "wecom.send.accepted" for e in events)
     for record in records.values():
         linked = [event for event in events if event.get("message_key") == record["message_key"]]
@@ -176,7 +183,7 @@ def run_case(root, *, quota=0, crash=False, notifications=False, notification_cr
     key = base64.b64encode(os.urandom(32)).decode()[:-1]
     config_file = root / "config.toml"
     config_file.write_text('[adp]\napp_key="fake-local-adp-only"\nuser_id="legacy-test"\n'
-        '[logging]\nlog_enabled=true\nlog_question=false\nlog_answer_chars=0\n[wecom]\ncorp_id="wwf483023b734c570a"\nagent_id=1000053\n'
+        '[logging]\nlog_enabled=true\nlog_question=false\nlog_answer=false\n[wecom]\ncorp_id="wwf483023b734c570a"\nagent_id=1000053\n'
         f'adp_application="wecom-c-smoke"\ngateway_enabled=true\ncallback_token="{secrets.token_hex(12)}"\n'
         f'encoding_aes_key="{key}"\nadp_url="{fake}/adp/v2/chat"\n'
         f'notification_mode="{"simulated" if notifications else "disabled"}"\ngateway_environment="test"\n', encoding="utf-8")
@@ -200,9 +207,8 @@ def run_case(root, *, quota=0, crash=False, notifications=False, notification_cr
         return process
 
     def snapshots():
-        """原子JSON快照直接重读，状态不靠日志猜测。"""
-        return {r["msg_id"]: r for p in Path(config.messages_dir).glob("*.json")
-                if (r := read_snapshot(p))}
+        """由只读 SQLite 连接直接检查提交状态。"""
+        return {r["msg_id"]: r for r in read_messages(config)}
 
     try:
         launch("fake", fake_port)
@@ -284,15 +290,17 @@ def run_case(root, *, quota=0, crash=False, notifications=False, notification_cr
         result["notifications"] = "simulated" if notifications else "disabled"
         result["processes"] = [p.pid for p in processes]
         stop(gateway)
-        result["jsonl"] = event_report(config, snapshots(), quota=quota, crash=crash,
+        result["log_events"] = event_report(config, snapshots(), quota=quota, crash=crash,
                                       notification_crash=notification_crash, notifications=notifications)
         return result
     except Exception:
         # 失败也保留安全的状态诊断；临时目录随后清理，不能吞掉根因只留下超时。
+        fake_status = json_http(fake + "/_test/status")
         print(json.dumps({"failed_case": str(root.name), "states": [
             {k: r.get(k) for k in ("msg_id", "adp_state", "send_state", "adp_error", "request_id")}
             for r in snapshots().values() if r["adp_state"] in {"ADP_SEND_ARMED", "RECEIVED", "ADP_UNKNOWN"}],
-            "fake_status": json_http(fake + "/_test/status"), "service_diagnostics": [
+            "fake_status": {"peak": fake_status["peak"], "calls": len(fake_status["calls"]),
+                            "rejected": len(fake_status["rejected"])}, "service_diagnostics": [
                 line for path in root.rglob("*.log") for line in path.read_text(encoding="utf-8").splitlines()
                 if "failed" in line or "unknown" in line]}, ensure_ascii=False))
         raise

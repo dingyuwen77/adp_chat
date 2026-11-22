@@ -1,19 +1,22 @@
-"""企业微信可靠接收编排，沿同一快照通知后台首次转发。"""
+"""企业微信可靠接收，提交消息后通知后台首次转发。"""
 
+import asyncio
 import re
 
 from core.config import ChatConfig
 from core.events import GatewayEvents
-from storage.messages import MessageStore
+from core.logging import log_conversation
+from core.models import ChatError
+from storage.sqlite_store import MessageStore
 from wecom.crypto import WeComCrypto, invalid_callback, parse_xml, xml_field
 from wecom.models import InboundMessage, is_employee_id
 
 
 class WeComGateway:
-    """复用已验签身份与单一快照 Owner，后续调度沿同一消息扩展。"""
+    """复用已验签身份与 SQLite 消息状态，后续调度沿同一消息执行。"""
 
     def __init__(self, config: ChatConfig, logger):
-        """创建加解密和目录独占资源，由 FastAPI lifespan 持有。"""
+        """创建加解密和数据库资源，由 FastAPI lifespan 持有。"""
         self.config = config
         self.logger = logger
         self.crypto = WeComCrypto(config.callback_token, config.encoding_aes_key, config.corp_id)
@@ -45,28 +48,62 @@ class WeComGateway:
             raise invalid_callback()
         return InboundMessage(self.config.corp_id, self.config.agent_id, user_id, msg_id, content, int(created))
 
-    def receive(self, message: InboundMessage) -> dict:
-        """持久化成功才交回 ACK 决策，不记录员工身份、正文或密文。"""
+    def _submit(self, message: InboundMessage):
+        """调度器失效时关闭新接收，后续由已提交状态恢复。"""
         if self.worker is not None and self.worker.failure is not None:
-            from core.models import ChatError
             raise ChatError("gateway_storage", "dispatcher_unavailable", "后台状态处理不可用。")
-        record, created = self.store.put_if_absent(message)
+        pending = self.store.submit_receive(message)
+        pending.add_done_callback(self._after_commit)
+        return pending
+
+    def receive(self, message: InboundMessage) -> dict:
+        """隔离测试可同步调用，使用相同提交和唤醒路径。"""
+        record, _ = self._submit(message).result()
+        return record
+
+    async def receive_async(self, message: InboundMessage) -> dict:
+        """生产回调等待 SQLite 提交，取消已开始的写入时保留提交后的唤醒。"""
+        pending = asyncio.wrap_future(self._submit(message))
+        pending.add_done_callback(self._consume_detached)
+        # 请求取消不提前释放待写名额，线程队列仍持有这条消息。
+        record, _ = await asyncio.shield(pending)
+        return record
+
+    @staticmethod
+    def _consume_detached(pending) -> None:
+        """读取已取消请求遗留的本地提交异常，正常等待方仍能收到同一异常。"""
+        if not pending.cancelled():
+            pending.exception()
+
+    @property
+    def healthy(self) -> bool:
+        """只使用本机状态判断能否继续可靠处理，健康探针无需调用上游。"""
+        return self.store.available and (self.worker is None or self.worker.failure is None)
+
+    def _after_commit(self, pending) -> None:
+        """可靠接收之后记录新问题。即使客户端断开，已提交消息仍触发调度。"""
+        if pending.cancelled() or pending.exception() is not None:
+            return
+        record, created = pending.result()
         source = "test_fixture" if self.config.gateway_environment == "test" else "wecom_callback"
         if created:
+            if self.worker is not None:
+                self.worker.wake()
             self.events.emit("wecom.message.received", record, attributes={"source": source})
             self.events.emit("wecom.message.persisted", record,
                              attributes={"source": source, "admission_decision": record["admission_decision"]})
+            if self.config.log_question:
+                log_conversation(self.logger, "question", record["content"],
+                                 conversation_id=record["conversation_id"], message_key=record["message_key"],
+                                 employee_id=record["user_id"], admission_decision=record["admission_decision"])
             if record["adp_state"] == "REJECTED_USER_BUSY":
                 self.events.emit("wecom.message.busy_rejected", record, attributes={"source": source})
         else:
             self.events.emit("wecom.message.duplicate", record, attributes={"source": source})
         self.logger.info("wecom_callback_received message_key=%s decision=%s duplicate=%s",
                          record["message_key"], record["adp_state"], not created)
-        if created and self.worker is not None:
-            self.worker.wake()
-        return record
 
     def close(self) -> None:
-        """等待磁盘提交后释放目录，不把关闭变成任务已处理的证据。"""
+        """等待磁盘提交后释放 SQLite 连接与单实例锁。"""
         self.store.close()
         self.events.close()

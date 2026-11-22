@@ -10,11 +10,9 @@ import httpx
 
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
-# 按用户指定的原始图片预算分配名额；临时副本和HTTP/TLS开销不包含在3GiB中。
+# 下载与上传全程持有原始图片名额，临时副本和 HTTP/TLS 开销另计。
 # 下载前取得名额，直到上传结束才释放；等待者只持有URL，不先分配图片二进制。
-IMAGE_MEMORY_BUDGET_BYTES = 3 * 1024 * 1024 * 1024
 IMAGE_PREPARE_RESERVATION_BYTES = MAX_IMAGE_BYTES
-MAX_IMAGE_PREPARATIONS = IMAGE_MEMORY_BUDGET_BYTES // IMAGE_PREPARE_RESERVATION_BYTES
 
 
 class ImageError(ValueError):
@@ -43,18 +41,19 @@ async def resolve_public(host: str) -> str:
 
 
 class ImageDownloader:
-    """独立无凭据连接池；按3GiB/20MiB限制同时准备数量，不承诺实际RSS上限。"""
+    """独立无凭据连接池，按原始图片内存预算限制同时准备数量。"""
 
     def __init__(self, config, *, http_client=None):
         """正式连接关闭代理、自动跳转、重试和连接复用，避免跨 SNI 共用 IP 连接。"""
         self.config = config
-        self.slots = asyncio.Semaphore(MAX_IMAGE_PREPARATIONS)
+        slots = config.image_prepare_budget_mib * 1024 * 1024 // IMAGE_PREPARE_RESERVATION_BYTES
+        self.slots = asyncio.Semaphore(slots)
         self._owned = http_client is None
         if http_client is None:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_default_certs()
             transport = httpx.AsyncHTTPTransport(verify=context, retries=0,
-                limits=httpx.Limits(max_connections=MAX_IMAGE_PREPARATIONS, max_keepalive_connections=0))
+                limits=httpx.Limits(max_connections=slots, max_keepalive_connections=0))
             http_client = httpx.AsyncClient(transport=transport, follow_redirects=False,
                                            trust_env=False, timeout=10)
         self.http = http_client

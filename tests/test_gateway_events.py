@@ -110,7 +110,7 @@ class EventFileTests(unittest.TestCase):
         """统一日志写失败只告警计数，不改变业务结果。"""
         events = GatewayEvents(self.config)
         self.addCleanup(events.close)
-        with patch("logging.FileHandler._open", side_effect=OSError("private-secret-path")):
+        with patch("core.logging._FileHandler._open", side_effect=OSError("private-secret-path")):
             with self.assertLogs("adp_chat.event_alert", level="ERROR") as alert:
                 events.emit("service.started")
         self.assertEqual(events.failed_writes, 1)
@@ -242,7 +242,7 @@ class EventWorkflowTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
             worker = GatewayWorker(self.gateway, AsyncADPClient(self.config, http_client=http),
                                    sender=SimulatedSender(self.config))
-            with patch("logging.FileHandler._open", side_effect=PermissionError("private")):
+            with patch("core.logging._FileHandler._open", side_effect=PermissionError("private")):
                 with self.assertLogs("adp_chat.event_alert", level="ERROR"):
                     await worker.start()
                     try:

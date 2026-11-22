@@ -13,7 +13,7 @@ from adp_conversation_probe import gateway_round
 from core.config import ChatConfig
 from core.identity import employee_identity
 from core.models import ChatError, ChatResult
-from storage.messages import MessageStore
+from storage.sqlite_store import MessageStore
 from wecom.models import InboundMessage
 from wecom.sender import SendOutcome
 
