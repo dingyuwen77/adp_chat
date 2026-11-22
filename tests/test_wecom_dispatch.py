@@ -596,19 +596,41 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("private", outcome.notification)
 
     async def test_factory_sets_gateway_connection_limit_without_tls_keylog_redirects_or_retry(self):
-        """真正HTTP工厂的参数有安全/并发意义，不能只靠注入Mock证明。"""
+        """每组扫描有界，全部连接组的容量仍等于网关上限。"""
         fake = FakeADP()
-        transport = httpx.MockTransport(fake.handle)
-        with patch("adp.async_client.httpx.AsyncHTTPTransport", return_value=transport) as factory:
-            client = AsyncADPClient(self.config)
-            options = factory.call_args.kwargs
-            self.assertEqual(options["retries"], 0)
-            self.assertEqual(options["limits"].max_connections, self.config.max_active_requests)
-            self.assertTrue(options["verify"].check_hostname)
-            self.assertIsNone(options["verify"].keylog_filename)
-            self.assertFalse(client.http.follow_redirects)
-            self.assertFalse(client.http.trust_env)
-            await client.aclose()
+        for capacity in (1, 129, 1000):
+            with (self.subTest(capacity=capacity),
+                  patch("adp.async_client.httpx.AsyncHTTPTransport",
+                        side_effect=lambda **_options: httpx.MockTransport(fake.handle)) as factory):
+                client = AsyncADPClient(replace(self.config, max_active_requests=capacity))
+                self.addAsyncCleanup(client.aclose)
+                options = [call.kwargs for call in factory.call_args_list]
+                limits = [option["limits"] for option in options]
+                self.assertTrue(all(1 <= limit.max_connections <= 64 for limit in limits))
+                self.assertEqual(sum(limit.max_connections for limit in limits), capacity)
+                self.assertEqual(sum(limit.max_keepalive_connections for limit in limits), min(capacity, 100))
+                self.assertTrue(all(option["retries"] == 0 and option["verify"].check_hostname
+                                    and option["verify"].keylog_filename is None for option in options))
+                self.assertTrue(all(not http.follow_redirects and not http.trust_env for http in client._clients))
+
+    async def test_adp_connection_slot_is_returned_on_cancellation(self):
+        """连接已满时不等待。取消旧连接后同一客户端能立即承接一个新请求。"""
+        record = {**self.receive(), "request_id": str(uuid4())}
+        fake = FakeADP()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(fake.handle)) as http:
+            client = AsyncADPClient(replace(self.config, max_active_requests=1), http_client=http)
+            first = asyncio.create_task(client.request(record))
+            try:
+                await self.wait_for(lambda: fake.active == 1)
+                surplus = await client.request(record)
+                self.assertEqual(surplus.error["code"], "client_capacity")
+                self.assertEqual(len(fake.calls), 1)
+            finally:
+                first.cancel()
+                await asyncio.gather(first, return_exceptions=True)
+            fake.release.set()
+            self.assertEqual((await client.request(record)).state, "ADP_SUCCEEDED")
+            self.assertEqual(len(fake.calls), 2)
 
     async def test_start_from_empty_database_ignores_legacy_json_and_lock(self):
         """旧消息、临时文件和目录锁均不参与初始化，新的消息去重由 SQLite 开始。"""
