@@ -17,12 +17,13 @@ RUN python -c "import hashlib, pathlib; expected='b6ced585c750916b1052667239a12c
 
 FROM python:3.14-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 ADP_CONFIG_FILE=/app/config.toml
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 ADP_CONFIG_FILE=/app/config.toml \
+    LD_LIBRARY_PATH=/opt/adp-sqlite
 WORKDIR /app
 
-COPY --from=sqlite-build /opt/sqlite/libsqlite3.so.0 /usr/local/lib/
-RUN ldconfig \
-    && python -c "import sqlite3; print('SQLite', sqlite3.sqlite_version); assert sqlite3.sqlite_version_info >= (3, 51, 3)"
+# Debian 各架构的 ldconfig 顺序不同。专用目录优先加载打包的 SQLite。
+COPY --from=sqlite-build /opt/sqlite/libsqlite3.so.0 /opt/adp-sqlite/
+RUN python -c "import sqlite3; print('SQLite', sqlite3.sqlite_version); assert sqlite3.sqlite_version_info == (3, 54, 1)"
 
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt \

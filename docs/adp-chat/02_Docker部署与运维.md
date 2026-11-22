@@ -379,7 +379,7 @@ Probe默认仍离线；有真实flag和未存在输出文件后才提交，ACK�
 .\.venv\Scripts\python.exe -B -X utf8 tests/docker_smoke.py --image adp_channel_api:v0.0.9
 ```
 
-[tests/wecom_docker_smoke.py](../../tests/wecom_docker_smoke.py) 按所选镜像验证 Linux 架构（AMD64 或 ARM64）、UID/GID 10001、SQLite 版本、正式存储源码、只读配置和数据库卷。100 名员工访问 Fake 的 30 个名额，验证忙碌与去重、正常重启保留闭合记录、SIGKILL 后原 ADP 请求只出现一次。停止容器后注入 `PENDING` 和 `SEND_ARMED`，验证首次模拟通知和未知状态恢复。实际通知出站后强杀由本机 HTTP 脚本另行验证。容器正常关闭须完成 lifespan 且无 OOM 或运行时错误。Uvicorn 0.48 正常关闭后重新抛出 SIGTERM，退出码为 143。
+[tests/wecom_docker_smoke.py](../../tests/wecom_docker_smoke.py) 按所选镜像验证 Linux 架构（AMD64 或 ARM64）、UID/GID 10001、实际加载的 SQLite 3.54.1、正式存储源码、只读配置和数据库卷。镜像通过专用库目录 `/opt/adp-sqlite` 固定两个架构的动态加载顺序。100 名员工访问 Fake 的 30 个名额，验证忙碌与去重、正常重启保留闭合记录、SIGKILL 后原 ADP 请求只出现一次。停止容器后注入 `PENDING` 和 `SEND_ARMED`，验证首次模拟通知和未知状态恢复。实际通知出站后强杀由本机 HTTP 脚本另行验证。容器正常关闭须完成 lifespan 且无 OOM 或运行时错误。Uvicorn 0.48 正常关闭后重新抛出 SIGTERM，退出码为 143。
 
 需要保留容器手动测试时：
 
