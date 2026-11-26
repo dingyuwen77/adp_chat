@@ -64,7 +64,7 @@ class ChatConfig:
     image_prepare_budget_mib: int = 256
     callback_url: str = ""
     mixed_message_delay_seconds: float = 2
-    diagnostic_token: str = field(default="", repr=False)
+    diagnostics_enabled: bool = False
     diagnostic_adp_app_key: str = field(default="", repr=False)
     diagnostic_adp_user_id: str = ""
     diagnostic_wecom_user_id: str = ""
@@ -81,8 +81,6 @@ class ChatConfig:
                     raise ChatError("config", "invalid_type", f"配置字段 [{section}].{key} 类型错误。")
         if not self.app_key.strip() or not self.user_id.strip():
             raise ChatError("config", "missing_identity", "请填写 [adp] 的 app_key 和 user_id。")
-        if self.diagnostic_token and not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", self.diagnostic_token):
-            raise ChatError("config", "invalid_diagnostic_token", "诊断 Token 必须是 32 至 128 个 URL 安全字符。")
         if not 0 < self.chat_timeout_seconds <= TIMEOUT_MAX:
             raise ChatError("config", "invalid_timeout", "配置字段 chat_timeout_seconds 超出系统支持的超时范围。")
         if self.streaming_throttle < 0:
@@ -197,7 +195,7 @@ _SECTIONS = {
     },
     "session": {"session_file": str},
     "diagnostics": {
-        "diagnostic_token": str, "diagnostic_adp_app_key": str,
+        "diagnostics_enabled": bool, "diagnostic_adp_app_key": str,
         "diagnostic_adp_user_id": str, "diagnostic_wecom_user_id": str,
     },
     "wecom": {
@@ -245,6 +243,9 @@ def load_config(path: str | Path | None = None) -> ChatConfig:
         if name not in _SECTIONS or not isinstance(group, dict):
             raise ChatError("config", "unknown_section", "配置包含未知分组或分组格式错误。")
         for key, value in group.items():
+            if name == "diagnostics" and key == "diagnostic_token":
+                # 旧版本凭据可保留在升级前的配置中，启用只由新开关决定。
+                continue
             if key not in _SECTIONS[name]:
                 raise ChatError("config", "unknown_key", f"配置分组 [{name}] 包含未知字段。")
             values[key] = value

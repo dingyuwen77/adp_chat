@@ -475,7 +475,7 @@ def diagnostic_logger(config: ChatConfig, *, background=False):
         yield logger
         return
     secret_values = (config.app_key, config.callback_token, config.encoding_aes_key, config.wecom_app_secret,
-                     config.diagnostic_token, config.diagnostic_adp_app_key)
+                     config.diagnostic_adp_app_key)
     owns_writer = False
     try:
         path = Path(config.log_file).resolve()
