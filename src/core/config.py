@@ -65,9 +65,7 @@ class ChatConfig:
     callback_url: str = ""
     mixed_message_delay_seconds: float = 2
     diagnostics_enabled: bool = False
-    diagnostic_adp_app_key: str = field(default="", repr=False)
     diagnostic_adp_user_id: str = ""
-    diagnostic_wecom_user_id: str = ""
 
     def __post_init__(self) -> None:
         """统一校验文件加载和 Python 直接构造的配置。"""
@@ -195,8 +193,7 @@ _SECTIONS = {
     },
     "session": {"session_file": str},
     "diagnostics": {
-        "diagnostics_enabled": bool, "diagnostic_adp_app_key": str,
-        "diagnostic_adp_user_id": str, "diagnostic_wecom_user_id": str,
+        "diagnostics_enabled": bool, "diagnostic_adp_user_id": str,
     },
     "wecom": {
         "corp_id": str, "agent_id": int, "adp_application": str, "gateway_enabled": bool,
@@ -243,8 +240,10 @@ def load_config(path: str | Path | None = None) -> ChatConfig:
         if name not in _SECTIONS or not isinstance(group, dict):
             raise ChatError("config", "unknown_section", "配置包含未知分组或分组格式错误。")
         for key, value in group.items():
-            if name == "diagnostics" and key == "diagnostic_token":
-                # 旧版本凭据可保留在升级前的配置中，启用只由新开关决定。
+            if name == "diagnostics" and key in (
+                "diagnostic_token", "diagnostic_adp_app_key", "diagnostic_wecom_user_id",
+            ):
+                # 兼容升级前的配置。旧选项不参与启用、AppKey 选择或收件人选择。
                 continue
             if key not in _SECTIONS[name]:
                 raise ChatError("config", "unknown_key", f"配置分组 [{name}] 包含未知字段。")

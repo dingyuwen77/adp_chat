@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from core.outbound import OutboundProgress
-from wecom.models import InboundMessage, is_employee_id
+from wecom.models import InboundMessage
 
 
 _PREFIX = "ADP-DIAG-"
@@ -21,7 +21,7 @@ _NETWORK_HINTS = {
     "tls_error": "检查容器系统时间、CA 证书和出口 TLS 代理。",
 }
 _STAGE_HINTS = {
-    "configuration": "核对服务配置中的诊断应用、测试账号和企微发送模式。",
+    "configuration": "核对正式 ADP 应用、独立测试 UserId 或企微网关及真实发送模式。",
     "adp_connect_or_response": "检查容器出网、代理、防火墙和上游 HTTP 响应。",
     "adp_http": "检查上游 HTTP 状态、网关和 ADP 应用配置。",
     "adp_sse": "用请求 ID 查 ADP 处理及 SSE 回程。若有上游错误码，先核对应用权限、发布状态或配额。",
@@ -62,33 +62,31 @@ class Diagnostics:
     def __init__(self, config, logger, *, adp=None, sender=None):
         """借用 lifespan 管理的客户端，不占用正式 ADP 会话。"""
         self.enabled = config.diagnostics_enabled
-        self.wecom_user = config.diagnostic_wecom_user_id
         self.logger = logger
         self.adp = adp
         self.sender = sender
         self.lock = asyncio.Lock()
-        self._expected: tuple[str, asyncio.Event] | None = None
+        self._expected: tuple[str, str, asyncio.Event] | None = None
 
     def receive(self, message: InboundMessage) -> bool:
-        """只消费专用账号发回的完整探测码，旧探测码也不会进入正式 ADP。"""
-        if not self.wecom_user or message.user_id.casefold() != self.wecom_user.casefold():
-            return False
+        """消费保留格式的探测码，仅当前指定成员的正确回发可以完成检查。"""
         content = message.content.strip()
         if not _TEST_CODE.fullmatch(content):
             return False
         if self._expected is not None:
-            expected, received = self._expected
-            if content == expected:
+            user_id, expected_code, received = self._expected
+            if content == expected_code and message.user_id.casefold() == user_id:
                 received.set()
+        # 迟到、重复和其他成员误发的测试码也不进入业务处理。
         return True
 
-    async def check(self, target: str) -> DiagnosticReport:
+    async def check(self, target: str, user_id: str | None) -> DiagnosticReport:
         """运行一轮已启用、已限并发的检查并记录可关联结果。"""
         report = DiagnosticReport(uuid4().hex, target, "passed", "request_received")
         if target == "adp":
             await self._check_adp(report)
         else:
-            await self._check_wecom(report)
+            await self._check_wecom(report, user_id)
         if self.logger is not None:
             self.logger.info(
                 "diagnostic_completed diagnostic_id=%s target=%s status=%s last_ok=%s failed_stage=%s "
@@ -121,21 +119,21 @@ class Diagnostics:
         report.fail(error.get("failed_stage", "adp_prepare"), error.get("reason", error.get("code", "unknown")),
                     status="unknown" if outcome.state == "ADP_UNKNOWN" else "failed")
 
-    async def _check_wecom(self, report: DiagnosticReport) -> None:
+    async def _check_wecom(self, report: DiagnosticReport, user_id: str | None) -> None:
         """先登记唯一回发，再发企微短文字，保留两个方向各自的证据。"""
         report.send_status = report.receive_status = "unverified"
-        if getattr(self.sender, "source", None) != "wecom_api" or not is_employee_id(self.wecom_user):
+        if user_id is None or getattr(self.sender, "source", None) != "wecom_api":
             report.fail("configuration", "wecom_unconfigured")
             return
         code = _PREFIX + report.diagnostic_id
         received = asyncio.Event()
-        self._expected = code, received
+        self._expected = user_id.casefold(), code, received
         progress = OutboundProgress("wecom_prepare")
         try:
             try:
                 async with asyncio.timeout(_WECOM_SEND_SECONDS):
                     sent = await self.sender.send(
-                        {"user_id": self.wecom_user, "notification": code},
+                        {"user_id": user_id, "notification": code},
                         progress=progress,
                     )
             except TimeoutError:
