@@ -79,15 +79,16 @@ def stream_events(payload: dict, timeout: float) -> Iterator[tuple[str, dict]]:
         with open_request(request, timeout=timeout, stage="chat") as response:
             content_type = response.headers.get("Content-Type", "").partition(";")[0].strip().lower()
             if content_type != "text/event-stream":
-                raise ChatError("chat", "invalid_response", "对话服务没有返回 SSE 流。")
+                raise ChatError("chat", "invalid_response", "对话服务没有返回 SSE 流。", failed_stage="adp_sse")
             for name, data in _frames(response):
                 decoded = decode_event(name, data)
                 if decoded is None:
                     return
                 yield decoded
     except (UnicodeError, json.JSONDecodeError):
-        raise ChatError("chat", "invalid_event", "SSE 事件不是有效的 UTF-8 JSON。") from None
+        raise ChatError("chat", "invalid_event", "SSE 事件不是有效的 UTF-8 JSON。", failed_stage="adp_sse") from None
     except TimeoutError:
-        raise ChatError("chat", "timeout", "读取对话流超时，服务端可能已接收该轮。") from None
+        raise ChatError("chat", "timeout", "读取对话流超时，服务端可能已接收该轮。",
+                        failed_stage="adp_sse", reason="read_timeout") from None
     except (OSError, http.client.HTTPException):
-        raise ChatError("chat", "network_error", "读取对话流时连接中断。") from None
+        raise ChatError("chat", "network_error", "读取对话流时连接中断。", failed_stage="adp_sse") from None

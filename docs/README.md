@@ -14,6 +14,7 @@
 
 1. [docs/adp-chat/02_Docker部署与运维.md](adp-chat/02_Docker部署与运维.md)：本地 Python/PyCharm、模拟联调、服务器部署、消息库切换、在线备份、升级与恢复。篇幅较长，按文内章节跳转，不必从头顺读。
 2. [examples/http_client.py](../examples/http_client.py) 与 [examples/http_client.ps1](../examples/http_client.ps1)：HTTP 调用示例。
+3. 从外网验证发布入口，分开检查 ADP 和企微收发，再按请求日志定位失败阶段。 [docs/adp-chat/04_服务器收发排障.md](adp-chat/04_服务器收发排障.md)
 ### 日志架构与未来 Cosmos DB 接入
 
 1. [docs/logging/01_统一日志与Cosmos_DB接入设计.md](logging/01_统一日志与Cosmos_DB接入设计.md)：统一日志的已实现格式、解析契约与未来 Cosmos DB 采集方案。

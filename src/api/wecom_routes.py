@@ -53,7 +53,7 @@ async def receive_message(request: Request) -> Response:
         body.extend(chunk)
     timestamp, nonce, signature = _parameters(request)
     message = gateway.decode(bytes(body), timestamp, nonce, signature)
-    if message is not None:
+    if message is not None and not request.app.state.diagnostics.receive(message):
         await gateway.receive_async(message)
     return Response(b"", media_type="text/plain")
 

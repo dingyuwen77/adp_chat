@@ -10,6 +10,8 @@ from time import monotonic
 
 import httpx
 
+from core.outbound import OutboundProgress, network_reason
+
 from core.config import ChatConfig
 from core.logging import HTTPQueryFilter
 from core.models import ChatError
@@ -68,6 +70,7 @@ class _ProtocolError(Exception):
 
     def __init__(self, code, *, http_status=None):
         """保留HTTP状态供逐图诊断使用，不附带响应正文。"""
+        self.code = code
         self.http_status = http_status
         super().__init__(code)
 
@@ -215,7 +218,15 @@ class WeComSender:
                 # 不缓存二进制或 media_id；上传请求退出后释放本图片内存引用。
                 del body
 
-    async def send(self, record: dict) -> SendOutcome:
+    async def send(self, record: dict, *, progress: OutboundProgress | None = None) -> SendOutcome:
+        """复用正式发送结果，并提供故障发生在取 Token 还是发送消息。"""
+        progress = progress or OutboundProgress("wecom_prepare", "wecom_notification_ready")
+        result = await self._send(record, progress)
+        if result.state in {"SEND_FAILED", "SEND_UNKNOWN"}:
+            progress.reason = progress.reason or result.code
+        return result
+
+    async def _send(self, record: dict, progress: OutboundProgress) -> SendOutcome:
         """仅Token明确失效允许一次纠正；其他发送失败/未知没有自动重发。"""
         accepted, total, uncertain, last_code = 0, None, False, None
         attempt = None
@@ -259,27 +270,35 @@ class WeComSender:
                     async with asyncio.timeout(send_remaining):
                         if attempt is not None:
                             attempt.stage = "send_token"
+                        progress.stage = "wecom_token"
                         token = await self._access_token()
                         if isinstance(token, tuple):
+                            progress.last_ok = "wecom_token_http_response"
                             self._log_image_failure(record, attempt, ImageError("image_token_rejected", provider_code=token[1]))
                             return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
+                        progress.last_ok = "wecom_token_ready"
                         for correction in range(2):
                             uncertain, last_code = True, None
                             if attempt is not None:
                                 attempt.stage = "send"
+                            progress.stage = "wecom_send"
                             data = await self._json("POST", "/cgi-bin/message/send", params={"access_token": token},
                                 payload={"touser": record["user_id"], "msgtype": msgtype, "agentid": self.config.agent_id,
                                          msgtype: content, "safe": 0, "enable_id_trans": 0, "enable_duplicate_check": 0})
+                            progress.last_ok = "wecom_send_http_response"
                             code = data["errcode"]
                             if code != 0:
                                 uncertain, last_code = False, code
                             if code in {40014, 42001} and correction == 0:
                                 if attempt is not None:
                                     attempt.stage = "send_token"
+                                progress.stage = "wecom_token"
                                 token = await self._access_token(rejected_token=token)
                                 if isinstance(token, tuple):
+                                    progress.last_ok = "wecom_token_http_response"
                                     self._log_image_failure(record, attempt, ImageError("image_token_rejected", provider_code=token[1]))
                                     return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "token_rejected", token[1])
+                                progress.last_ok = "wecom_token_ready"
                                 continue
                             if code != 0:
                                 self._log_image_failure(record, attempt, ImageError("image_send_rejected", provider_code=code))
@@ -294,6 +313,7 @@ class WeComSender:
                                     self._log_image_failure(record, attempt, ImageError("image_target_rejected", provider_code=0))
                                     return SendOutcome("SEND_FAILED", self.source, False, accepted, total, "invalid_user", 0)
                             accepted += 1
+                            progress.last_ok = "wecom_send_accepted"
                             uncertain = False
                             break
                     send_remaining -= monotonic() - started
@@ -310,6 +330,16 @@ class WeComSender:
             raise
         except (TimeoutError, httpx.HTTPError, OSError, _ProtocolError, ValueError) as exc:
             self._log_image_failure(record, attempt, exc, uncertain=uncertain)
+            if isinstance(exc, _ProtocolError):
+                progress.reason, progress.http_status = exc.code, exc.http_status
+            elif isinstance(exc, httpx.ConnectTimeout):
+                progress.reason = "connect_timeout"
+            elif isinstance(exc, httpx.ReadTimeout):
+                progress.reason = "read_timeout"
+            elif isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                progress.reason = "timeout"
+            else:
+                progress.reason = network_reason(exc, "transport_or_protocol_error")
             # Token阶段从未提交消息时可证明没有发送；提交后的传输/协议问题均保守未知。
             return SendOutcome("SEND_UNKNOWN" if uncertain else "SEND_FAILED", self.source, None,
                                accepted, total, "transport_or_protocol_error", last_code)

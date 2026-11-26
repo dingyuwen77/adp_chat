@@ -4,13 +4,14 @@ import asyncio
 import json
 import ssl
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 
 from core.config import ChatConfig
 from core.identity import employee_identity
 from core.models import ChatError, ChatResult
+from core.outbound import OutboundProgress, network_reason
 from .client import _check_conversation, _object, _payload, _result, _safe_diagnostic
 from .sse import SSEDecoder, decode_event
 
@@ -54,12 +55,14 @@ def unknown_outcome(code="interrupted", *, provider_code=None, **diagnostics) ->
 class AsyncADPClient:
     """lifespan 持有若干有界连接池，按可用连接位分配，无模型名额排队。"""
 
-    def __init__(self, config: ChatConfig, *, http_client=None):
+    def __init__(self, config: ChatConfig, *, http_client=None, connect_timeout: float | None = None):
         """正式路径验证证书/禁跳转/零重试；注入HTTP只用于隔离协议测试。"""
         self.config = config
         self._owned = http_client is None
         capacity = config.max_active_requests
         if self._owned:
+            timeout = (httpx.Timeout(config.chat_timeout_seconds, connect=connect_timeout)
+                       if connect_timeout is not None else config.chat_timeout_seconds)
             # HTTPX 每次分配都扫描当前连接。限制单池规模并保留原总连接数。
             count = (capacity + _CONNECTIONS_PER_POOL - 1) // _CONNECTIONS_PER_POOL
             slots, extra_slots = divmod(capacity, count)
@@ -71,7 +74,7 @@ class AsyncADPClient:
                 limits = httpx.Limits(max_connections=slots + (index < extra_slots),
                                       max_keepalive_connections=idle + (index < extra_idle))
                 transport = httpx.AsyncHTTPTransport(verify=context, retries=0, limits=limits)
-                clients.append(httpx.AsyncClient(transport=transport, timeout=config.chat_timeout_seconds,
+                clients.append(httpx.AsyncClient(transport=transport, timeout=timeout,
                                                  follow_redirects=False, trust_env=False))
             self._clients = tuple(clients)
         else:
@@ -93,30 +96,52 @@ class AsyncADPClient:
         config = identity.chat_config(self.config)
         payload = _payload(config, record["request_id"], identity.conversation_id,
                            [{"Type": "text", "Text": record["content"]}])
+        return await self._request_payload(payload)
+
+    async def probe(self, request_id: str, conversation_id: str, text: str) -> ADPOutcome:
+        """使用调用方隔离的配置和会话，复用正式 HTTPS 和 SSE 路径。"""
+        payload = _payload(self.config, request_id, conversation_id, [{"Type": "text", "Text": text}])
+        return await self._request_payload(payload)
+
+    async def _request_payload(self, payload: dict) -> ADPOutcome:
+        """保持既有结果分类，并附上已观察到的传输和协议阶段。"""
         if not self._available:
             return unknown_outcome("client_capacity")
         client = self._available.popleft()
+        progress = OutboundProgress("adp_connect_or_response", "adp_request_prepared")
         try:
-            async with asyncio.timeout(config.chat_timeout_seconds):
-                return await self._consume(client, payload)
-        except (TimeoutError, httpx.TimeoutException):
-            return unknown_outcome("timeout")
-        except (httpx.HTTPError, OSError):
-            return unknown_outcome("network_error")
+            async with asyncio.timeout(self.config.chat_timeout_seconds):
+                outcome = await self._consume(client, payload, progress)
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            if isinstance(exc, httpx.ConnectTimeout):
+                progress.reason = "connect_timeout"
+            elif isinstance(exc, httpx.ReadTimeout):
+                progress.reason = "read_timeout"
+            outcome = unknown_outcome("timeout")
+        except (httpx.HTTPError, OSError) as exc:
+            progress.reason = network_reason(exc, "network_error")
+            outcome = unknown_outcome("network_error")
         except (UnicodeError, json.JSONDecodeError, ChatError):
-            return unknown_outcome("invalid_response")
+            outcome = unknown_outcome("invalid_response")
         finally:
             self._available.append(client)
+        if outcome.error is not None:
+            error = {**outcome.error, "last_ok": progress.last_ok, "failed_stage": progress.stage,
+                     "reason": progress.reason or outcome.error["code"]}
+            return replace(outcome, error=error)
+        return outcome
 
-    async def _consume(self, client: httpx.AsyncClient, payload: dict) -> ADPOutcome:
+    async def _consume(self, client: httpx.AsyncClient, payload: dict, progress: OutboundProgress) -> ADPOutcome:
         """按官方事件消费阶段证据；缺失ACK本身不是未执行证明。"""
         accepted = False
         execution = False
         rejected_ack = False
         async with client.stream("POST", self.config.adp_url, json=payload,
                                  headers={"Accept": "text/event-stream"}) as response:
+            progress.last_ok, progress.stage = "adp_http_response", "adp_http"
             if response.status_code != 200:
                 return unknown_outcome("http_error", http_status=response.status_code)
+            progress.stage = "adp_sse"
             if response.headers.get("Content-Type", "").partition(";")[0].strip().lower() != "text/event-stream":
                 return unknown_outcome("invalid_response")
             decoder, received = SSEDecoder(), 0
@@ -134,6 +159,7 @@ class AsyncADPClient:
                         _check_conversation(ack, payload["ConversationId"])
                         if ack.get("Status") == "success":
                             accepted = True
+                            progress.last_ok = "adp_ack"
                         elif ack.get("Status") == "failed":
                             rejected_ack = True
                         else:
@@ -154,6 +180,7 @@ class AsyncADPClient:
                         _check_conversation(value, payload["ConversationId"])
                         if rejected_ack or value.get("Status") != "success":
                             return unknown_outcome("response_failed")
+                        progress.last_ok, progress.stage = "adp_completed", "adp_reply"
                         result = _result(value, payload["ConversationId"], payload["RequestId"])
                         if result.reply_method == 7:
                             return ADPOutcome("ADP_UNKNOWN", "ADP 返回并发数超限回复。" + _UNKNOWN,

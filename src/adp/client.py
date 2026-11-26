@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from core.config import ChatConfig
 from core.logging import diagnostic_logger, log_adp_answer, log_conversation
+from core.outbound import OutboundProgress
 from core.models import ChatError, ChatResult
 from .sse import stream_events
 
@@ -111,11 +112,14 @@ def _result(record: dict, conversation_id: str, request_id: str) -> ChatResult:
     )
 
 
-def _completed_record(payload: dict, config: ChatConfig, logger) -> dict:
+def _completed_record(payload: dict, config: ChatConfig, logger, progress: OutboundProgress) -> dict:
     """消费两种文本输出模式的 SSE，仅返回已确认成功的正式终态。"""
     counts = Counter()
     with closing(stream_events(payload, config.chat_timeout_seconds)) as events:
         for kind, event in events:
+            if progress.last_ok == "adp_request_prepared":
+                progress.last_ok = "adp_http_response"
+            progress.stage = "adp_sse"
             known = kind if kind in {
                 "error", "request_ack", "response.created", "response.processing", "response.completed",
                 "message.added", "message.processing", "message.done", "text.delta", "text.replace",
@@ -135,6 +139,7 @@ def _completed_record(payload: dict, config: ChatConfig, logger) -> dict:
                 _check_conversation(acknowledgement, payload["ConversationId"])
                 if acknowledgement.get("Status") != "success":
                     raise ChatError("chat", "request_rejected", "ADP 未接受本轮请求。")
+                progress.last_ok = "adp_ack"
             if kind == "response.completed":
                 record = _object(event.get("Response"))
                 _check_conversation(record, payload["ConversationId"])
@@ -170,12 +175,15 @@ def chat(
     request_id = str(uuid4())
     with diagnostic_logger(config) as logger:
         started = monotonic()
+        progress = OutboundProgress("adp_prepare")
         logger.info("request_started conversation_id=%s request_id=%s stream=%s", conversation_id, request_id, config.stream)
         if logger.isEnabledFor(INFO) and config.log_question:
             log_conversation(logger, "question", question, conversation_id=conversation_id, request_id=request_id)
         try:
             payload = _payload(config, request_id, conversation_id, [{"Type": "text", "Text": question}])
-            record = _completed_record(payload, config, logger)
+            progress.stage, progress.last_ok = "adp_sse", "adp_request_prepared"
+            record = _completed_record(payload, config, logger, progress)
+            progress.stage, progress.last_ok = "adp_reply", "adp_completed"
             result = _result(record, conversation_id, request_id)
             if config.log_answer:
                 log_adp_answer(logger, result, conversation_id=conversation_id, request_id=request_id)
@@ -184,7 +192,16 @@ def chat(
         except ChatError as exc:
             exc.conversation_id = conversation_id
             exc.request_id = request_id
-            logger.error("request_failed conversation_id=%s request_id=%s stage=%s code=%s http_status=%s provider_code=%s provider_request_id=%s provider_trace_id=%s elapsed_ms=%.1f", conversation_id, request_id, exc.stage, exc.code, exc.http_status, exc.provider_code, exc.provider_request_id, exc.provider_trace_id, (monotonic() - started) * 1000)
+            last_ok = progress.last_ok
+            if last_ok == "adp_request_prepared" and exc.failed_stage in {"adp_http", "adp_sse"}:
+                last_ok = "adp_http_response"
+            logger.error(
+                "request_failed conversation_id=%s request_id=%s stage=%s code=%s http_status=%s provider_code=%s "
+                "provider_request_id=%s provider_trace_id=%s last_ok=%s failed_stage=%s reason=%s elapsed_ms=%.1f",
+                conversation_id, request_id, exc.stage, exc.code, exc.http_status, exc.provider_code,
+                exc.provider_request_id, exc.provider_trace_id, last_ok, exc.failed_stage or progress.stage,
+                exc.reason or exc.code, (monotonic() - started) * 1000,
+            )
             raise
         except Exception:
             logger.warning("request_interrupted conversation_id=%s request_id=%s", conversation_id, request_id)
