@@ -1,6 +1,7 @@
 """FastAPI 常驻服务及统一异常边界。"""
 
 from contextlib import asynccontextmanager, ExitStack, AsyncExitStack
+from dataclasses import replace
 import logging
 
 from fastapi import FastAPI, Request
@@ -8,14 +9,16 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from application.chat_service import ChatService
+from application.diagnostics import Diagnostics
 from application.wecom_gateway import WeComGateway
 from application.wecom_worker import GatewayWorker
 from adp.async_client import AsyncADPClient
 from wecom.sender import create_sender
-from core.config import DEFAULT_CALLBACK_PATH, load_config
+from core.config import ADP_CHAT_URL, DEFAULT_CALLBACK_PATH, load_config
 from core.logging import CallbackAccessFilter, diagnostic_logger
 from core.models import ChatError
 from .routes import router
+from .diagnostic_routes import DIAGNOSTIC_CHECK_PATH, router as diagnostic_router
 from .wecom_routes import create_router as create_wecom_router
 
 
@@ -44,16 +47,18 @@ async def lifespan(app: FastAPI):
     app.state.chat_service = service
     app.state.wecom_gateway = None
     with ExitStack() as resources:
-        if config.gateway_enabled:
-            logger = resources.enter_context(diagnostic_logger(config, background=True))
-            gateway = WeComGateway(config, logger)
-            resources.callback(gateway.close)
-            access = logging.getLogger("uvicorn.access")
-            access_filter = CallbackAccessFilter()
-            access.addFilter(access_filter)
-            resources.callback(access.removeFilter, access_filter)
-            app.state.wecom_gateway = gateway
-            async with AsyncExitStack() as outgoing:
+        gateway = sender = diagnostic_adp = None
+        logger = (resources.enter_context(diagnostic_logger(config, background=True))
+                  if config.gateway_enabled or config.diagnostic_token else None)
+        async with AsyncExitStack() as outgoing:
+            if config.gateway_enabled:
+                gateway = WeComGateway(config, logger)
+                resources.callback(gateway.close)
+                access = logging.getLogger("uvicorn.access")
+                access_filter = CallbackAccessFilter()
+                access.addFilter(access_filter)
+                resources.callback(access.removeFilter, access_filter)
+                app.state.wecom_gateway = gateway
                 adp = AsyncADPClient(config)
                 outgoing.push_async_callback(adp.aclose)
                 sender = create_sender(config, logger=logger)
@@ -63,10 +68,23 @@ async def lifespan(app: FastAPI):
                 outgoing.push_async_callback(worker.stop)
                 await worker.start()
                 gateway.events.emit("service.started")
-                yield
-            gateway.events.emit("service.stopped")
-        else:
+            diagnostic_key = config.diagnostic_adp_app_key.strip()
+            if (config.diagnostic_token and diagnostic_key and diagnostic_key != config.app_key.strip()
+                    and config.diagnostic_adp_user_id.strip()):
+                diagnostic_config = replace(
+                    config, app_key=diagnostic_key, user_id=config.diagnostic_adp_user_id.strip(), visitor_id="",
+                    user_name="", system_role="", search_network="", workflow_status="", enable_multi_intent=None,
+                    adp_url=ADP_CHAT_URL, max_active_requests=1,
+                    chat_timeout_seconds=min(config.chat_timeout_seconds, 30),
+                )
+                diagnostic_adp = AsyncADPClient(
+                    diagnostic_config, connect_timeout=min(diagnostic_config.chat_timeout_seconds, 5),
+                )
+                outgoing.push_async_callback(diagnostic_adp.aclose)
+            app.state.diagnostics = Diagnostics(config, logger, adp=diagnostic_adp, sender=sender)
             yield
+        if gateway is not None:
+            gateway.events.emit("service.stopped")
 
 
 def _error(status: int, code: str, stage: str, message: str, request_id: str | None = None) -> JSONResponse:
@@ -80,6 +98,7 @@ def create_app() -> FastAPI:
     """构造 HTTP 服务，不在导入模块时读取密钥或创建会话。"""
     app = FastAPI(title="ADP 单用户对话服务", lifespan=lifespan)
     app.include_router(router)
+    app.include_router(diagnostic_router)
     _configure_callback_routes(app, DEFAULT_CALLBACK_PATH)
 
     @app.exception_handler(ChatError)
@@ -102,8 +121,10 @@ def create_app() -> FastAPI:
         return _error(502, "ADP_ERROR", exc.stage, "ADP 对话未成功完成。", exc.request_id)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(_request: Request, _exc: RequestValidationError) -> JSONResponse:
+    async def validation_error_handler(request: Request, _exc: RequestValidationError) -> JSONResponse:
         """拦截校验报错，避免在响应中回显请求消息。"""
+        if getattr(request.scope.get("route"), "path", None) == DIAGNOSTIC_CHECK_PATH:
+            return _error(422, "INVALID_DIAGNOSTIC_REQUEST", "input", "请求必须仅包含 target，取值为 adp 或 wecom。")
         return _error(422, "INVALID_REQUEST", "input", "请求必须包含非空文字 message。")
 
     @app.exception_handler(Exception)

@@ -11,7 +11,8 @@ from weakref import WeakValueDictionary
 from adp.async_client import unknown_outcome
 from core.logging import log_adp_answer, log_writer_metrics
 from core.models import ChatError
-from wecom.sender import SendOutcome, unknown_send
+from core.outbound import OutboundProgress
+from wecom.sender import SendOutcome, WeComSender, unknown_send
 
 
 _DISPATCH_BATCH = 64
@@ -187,11 +188,16 @@ class GatewayWorker:
                                employee_id=saved["user_id"])
         self.events.emit("message.session.released", saved, outcome_uncertain=outcome.state == "ADP_UNKNOWN",
                          attributes={"release_reason": outcome.state})
-        self.logger.info("adp_result_saved message_key=%s request_id=%s adp_state=%s local_session_released=true",
-                         saved["message_key"], saved["request_id"], saved["adp_state"])
+        self.logger.info(
+            "adp_result_saved message_key=%s request_id=%s adp_state=%s local_session_released=true "
+            "last_ok=%s failed_stage=%s reason=%s",
+            saved["message_key"], saved["request_id"], saved["adp_state"],
+            "adp_reply_saved" if outcome.state == "ADP_SUCCEEDED" else error.get("last_ok"),
+            error.get("failed_stage"), error.get("reason"),
+        )
         self.wake()
 
-    async def _finish_notification(self, record, outcome):
+    async def _finish_notification(self, record, outcome, progress=None):
         """只提交独立发送维度，绝不修改ADP结果或重新占用员工。"""
         saved = await self.store.update_async(record["message_key"],
             expected_version=record["record_version"], send_state=outcome.state, send_result=asdict(outcome))
@@ -200,8 +206,14 @@ class GatewayWorker:
         self.events.emit(event, saved, error_code=outcome.provider_code, error_stage=outcome.code,
             outcome_uncertain=outcome.state == "SEND_UNKNOWN",
             attributes={"source": outcome.source, "accepted_parts": outcome.accepted_parts, "total_parts": outcome.total_parts})
-        self.logger.info("wecom_send_result message_key=%s send_state=%s source=%s code=%s",
-                         saved["message_key"], saved["send_state"], outcome.source, outcome.code)
+        failed = progress is not None and outcome.state in {"SEND_FAILED", "SEND_UNKNOWN"}
+        self.logger.info(
+            "wecom_send_result message_key=%s send_state=%s source=%s code=%s last_ok=%s failed_stage=%s "
+            "reason=%s http_status=%s provider_code=%s",
+            saved["message_key"], saved["send_state"], outcome.source, outcome.code,
+            progress.last_ok if progress else None, progress.stage if failed else None,
+            progress.reason if failed else None, progress.http_status if failed else None, outcome.provider_code,
+        )
         return saved
 
     async def _execute_notification(self, record):
@@ -223,8 +235,13 @@ class GatewayWorker:
                 expected_version=record["record_version"], send_state="SEND_ARMED", send_result=asdict(plan))
             self.logger.info("wecom_send_armed message_key=%s source=%s", armed["message_key"], self.sender.source)
             self.events.emit("wecom.send.started", armed, attempt=1, attributes={"source": self.sender.source})
-            outcome = await self.sender.send(armed)
-            await self._finish_notification(armed, outcome)
+            progress = None
+            if isinstance(self.sender, WeComSender):
+                progress = OutboundProgress("wecom_prepare", "wecom_notification_ready")
+                outcome = await self.sender.send(armed, progress=progress)
+            else:
+                outcome = await self.sender.send(armed)
+            await self._finish_notification(armed, outcome, progress)
         except asyncio.CancelledError:
             try:
                 current = await self.store.get_async(record["message_key"])

@@ -127,6 +127,18 @@ class ChatTests(unittest.TestCase):
                 self.assertNotIn("test-key", str(caught.exception))
                 self.assertTrue(stream.closed)
 
+    def test_received_http_is_logged_before_any_decodable_sse_event(self):
+        """已收到但无有效事件的 SSE 不会被误定位到网络发出前。"""
+        for data in (b"", b"data: [DONE]\n\n", b"data: []\n\n"):
+            with self.subTest(data=data), patch("adp.sse.open_request", return_value=FakeStream(data)):
+                with self.assertRaises(ChatError) as caught:
+                    chat("问题", config=self.config)
+                log = Path(self.config.log_file).read_text(encoding="utf-8")
+                failure = next(line for line in log.splitlines()
+                               if "ADP请求失败" in line and caught.exception.request_id in line)
+                self.assertIn("last_ok=adp_http_response", failure)
+                self.assertIn("failed_stage=adp_sse", failure)
+
     def test_stream_accepts_cr_line_endings(self):
         """允许使用单独回车符作为 SSE 分隔符。"""
         stream = FakeStream(completed().replace(b"\r\n", b"\r"))

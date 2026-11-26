@@ -4,6 +4,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from core.models import ChatError
+from core.outbound import network_reason
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -25,14 +26,18 @@ def open_request(request: Request, *, timeout: float, stage: str):
     except HTTPError as exc:
         status = exc.code
         exc.close()
-        raise ChatError(stage, "http_error", f"服务返回 HTTP {status}。", http_status=status) from None
+        raise ChatError(stage, "http_error", f"服务返回 HTTP {status}。", http_status=status,
+                        failed_stage="adp_http") from None
     except URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            raise ChatError(stage, "timeout", "等待服务响应超时。") from None
-        raise ChatError(stage, "network_error", "无法建立服务连接。") from None
+            raise ChatError(stage, "timeout", "等待服务响应超时。", failed_stage="adp_connect_or_response") from None
+        reason = network_reason(exc.reason, "network_error") if isinstance(exc.reason, BaseException) else "network_error"
+        raise ChatError(stage, "network_error", "无法建立服务连接。",
+                        failed_stage="adp_connect_or_response", reason=reason) from None
     except TimeoutError:
-        raise ChatError(stage, "timeout", "等待服务响应超时。") from None
+        raise ChatError(stage, "timeout", "等待服务响应超时。", failed_stage="adp_connect_or_response") from None
     except ValueError:
-        raise ChatError(stage, "invalid_request", "HTTPS 请求地址或请求头无效。") from None
-    except (OSError, http.client.HTTPException):
-        raise ChatError(stage, "network_error", "无法建立服务连接。") from None
+        raise ChatError(stage, "invalid_request", "HTTPS 请求地址或请求头无效。", failed_stage="adp_prepare") from None
+    except (OSError, http.client.HTTPException) as exc:
+        raise ChatError(stage, "network_error", "无法建立服务连接。", failed_stage="adp_connect_or_response",
+                        reason=network_reason(exc, "network_error")) from None

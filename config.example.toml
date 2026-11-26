@@ -107,6 +107,15 @@ log_backup_count = 3
 log_question = true
 log_answer = true
 
+[diagnostics]
+# 空 Token 禁用诊断。启用时使用独立随机 Token，32 至 128 个 URL 安全字符。
+diagnostic_token = ""
+# ADP 探测使用单独的无写入工具应用与测试身份，不使用正式 AppKey 或会话。
+diagnostic_adp_app_key = ""
+diagnostic_adp_user_id = ""
+# 企微正式发送模式中的专用测试成员，只接收固定格式的一次性测试消息。
+diagnostic_wecom_user_id = ""
+
 [deployment]
 # 仅服务器 run.sh/upgrade.sh 读取；本地 CLI、直接 Uvicorn 和源码 Compose 忽略。
 # 更换服务器时在此配置宿主监听IPv4，不需要因IP不同修改源码或脚本。

@@ -18,6 +18,8 @@
 | API、会话与并发机制 | [docs/adp-chat/01_FastAPI服务架构.md](docs/adp-chat/01_FastAPI服务架构.md)                                      |
 | 可直接运行的 HTTP 调用脚本 | [examples/http_client.py](examples/http_client.py)、[examples/http_client.ps1](examples/http_client.ps1) |
 
+部署后可从外网核验入口，并在管理网络分别检查 ADP 和企微收发。 [docs/adp-chat/04_服务器收发排障.md](docs/adp-chat/04_服务器收发排障.md)
+
 ## 本地五分钟上手
 
 在仓库根目录，先安装 Python 3.14（Windows 的 `py -3.14` 仅在该版本已安装时适用）：

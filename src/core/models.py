@@ -26,6 +26,8 @@ class ChatError(Exception):
         provider_code: str | None = None,
         provider_request_id: str | None = None,
         provider_trace_id: str | None = None,
+        failed_stage: str | None = None,
+        reason: str | None = None,
     ) -> None:
         """记录错误分类和可选的服务端标识。"""
         super().__init__(message)
@@ -35,5 +37,7 @@ class ChatError(Exception):
         self.provider_code = provider_code
         self.provider_request_id = provider_request_id
         self.provider_trace_id = provider_trace_id
+        self.failed_stage = failed_stage
+        self.reason = reason
         self.conversation_id: str | None = None
         self.request_id: str | None = None
