@@ -18,7 +18,7 @@ from core.config import ADP_CHAT_URL, DEFAULT_CALLBACK_PATH, load_config
 from core.logging import CallbackAccessFilter, diagnostic_logger
 from core.models import ChatError
 from .routes import router
-from .diagnostic_routes import router as diagnostic_router
+from .diagnostic_routes import DIAGNOSTIC_CHECK_PATH, router as diagnostic_router
 from .wecom_routes import create_router as create_wecom_router
 
 
@@ -121,8 +121,10 @@ def create_app() -> FastAPI:
         return _error(502, "ADP_ERROR", exc.stage, "ADP 对话未成功完成。", exc.request_id)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(_request: Request, _exc: RequestValidationError) -> JSONResponse:
+    async def validation_error_handler(request: Request, _exc: RequestValidationError) -> JSONResponse:
         """拦截校验报错，避免在响应中回显请求消息。"""
+        if getattr(request.scope.get("route"), "path", None) == DIAGNOSTIC_CHECK_PATH:
+            return _error(422, "INVALID_DIAGNOSTIC_REQUEST", "input", "请求必须仅包含 target，取值为 adp 或 wecom。")
         return _error(422, "INVALID_REQUEST", "input", "请求必须包含非空文字 message。")
 
     @app.exception_handler(Exception)

@@ -1,6 +1,7 @@
 """单次 ADP 和企微收发检查，使用既有客户端及经认证的回调。"""
 
 import asyncio
+import re
 from dataclasses import dataclass
 from secrets import compare_digest
 from uuid import uuid4
@@ -10,6 +11,7 @@ from wecom.models import InboundMessage, is_employee_id
 
 
 _PREFIX = "ADP-DIAG-"
+_TEST_CODE = re.compile(re.escape(_PREFIX) + r"[0-9a-f]{32}")
 _ADP_TEXT = "这是只读连通性测试。请直接回复：连通正常。"
 _WECOM_SEND_SECONDS = 15
 _WECOM_REPLY_SECONDS = 35
@@ -76,11 +78,11 @@ class Diagnostics:
         return scheme.lower() == "bearer" and compare_digest(self.token.encode(), supplied.encode())
 
     def receive(self, message: InboundMessage) -> bool:
-        """只消费专用账号的保留前缀，旧探测码也不会进入正式 ADP。"""
+        """只消费专用账号发回的完整探测码，旧探测码也不会进入正式 ADP。"""
         if not self.wecom_user or message.user_id.casefold() != self.wecom_user.casefold():
             return False
         content = message.content.strip()
-        if not content.startswith(_PREFIX):
+        if not _TEST_CODE.fullmatch(content):
             return False
         if self._expected is not None:
             expected, received = self._expected

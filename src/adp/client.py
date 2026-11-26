@@ -115,11 +115,8 @@ def _result(record: dict, conversation_id: str, request_id: str) -> ChatResult:
 def _completed_record(payload: dict, config: ChatConfig, logger, progress: OutboundProgress) -> dict:
     """消费两种文本输出模式的 SSE，仅返回已确认成功的正式终态。"""
     counts = Counter()
-    with closing(stream_events(payload, config.chat_timeout_seconds)) as events:
+    with closing(stream_events(payload, config.chat_timeout_seconds, progress=progress)) as events:
         for kind, event in events:
-            if progress.last_ok == "adp_request_prepared":
-                progress.last_ok = "adp_http_response"
-            progress.stage = "adp_sse"
             known = kind if kind in {
                 "error", "request_ack", "response.created", "response.processing", "response.completed",
                 "message.added", "message.processing", "message.done", "text.delta", "text.replace",
@@ -181,7 +178,7 @@ def chat(
             log_conversation(logger, "question", question, conversation_id=conversation_id, request_id=request_id)
         try:
             payload = _payload(config, request_id, conversation_id, [{"Type": "text", "Text": question}])
-            progress.stage, progress.last_ok = "adp_sse", "adp_request_prepared"
+            progress.stage, progress.last_ok = "adp_connect_or_response", "adp_request_prepared"
             record = _completed_record(payload, config, logger, progress)
             progress.stage, progress.last_ok = "adp_reply", "adp_completed"
             result = _result(record, conversation_id, request_id)
@@ -193,7 +190,7 @@ def chat(
             exc.conversation_id = conversation_id
             exc.request_id = request_id
             last_ok = progress.last_ok
-            if last_ok == "adp_request_prepared" and exc.failed_stage in {"adp_http", "adp_sse"}:
+            if exc.failed_stage == "adp_http":
                 last_ok = "adp_http_response"
             logger.error(
                 "request_failed conversation_id=%s request_id=%s stage=%s code=%s http_status=%s provider_code=%s "

@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from urllib.request import Request
 
 from core.models import ChatError
+from core.outbound import OutboundProgress
 from .transport import open_request
 
 
@@ -67,7 +68,7 @@ def _frames(response) -> Iterator[tuple[str, str]]:
         yield from decoder.feed(chunk)
 
 
-def stream_events(payload: dict, timeout: float) -> Iterator[tuple[str, dict]]:
+def stream_events(payload: dict, timeout: float, *, progress: OutboundProgress | None = None) -> Iterator[tuple[str, dict]]:
     """解析 V2 的 SSE 响应并可靠关闭连接；关闭流式文本后仍使用此协议。"""
     request = Request(
         CHAT_URL,
@@ -77,6 +78,8 @@ def stream_events(payload: dict, timeout: float) -> Iterator[tuple[str, dict]]:
     )
     try:
         with open_request(request, timeout=timeout, stage="chat") as response:
+            if progress is not None:
+                progress.last_ok, progress.stage = "adp_http_response", "adp_sse"
             content_type = response.headers.get("Content-Type", "").partition(";")[0].strip().lower()
             if content_type != "text/event-stream":
                 raise ChatError("chat", "invalid_response", "对话服务没有返回 SSE 流。", failed_stage="adp_sse")

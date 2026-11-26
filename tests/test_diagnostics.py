@@ -127,6 +127,7 @@ class DiagnosticsTests(unittest.TestCase):
         client = self._client()
         invalid = client.post(_PATH, json={"target": "adp", "message": "caller input"}, headers=self.auth)
         self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(invalid.json()["error"]["code"], "INVALID_DIAGNOSTIC_REQUEST")
         self.assertEqual(self.adp_requests, [])
         response = client.post(_PATH, json={"target": "adp"}, headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
@@ -175,6 +176,13 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(read_messages(self.config), [])
         self.assertEqual(self.adp_requests, [])
         self.assertEqual(len(self.wecom_requests), 1)
+
+    def test_diagnostic_prefix_with_ordinary_text_still_uses_business_callback(self):
+        """专用账号使用相同前缀的普通消息仍按正常回调持久化。"""
+        client = self._client(replace(self.config, diagnostic_token=""))
+        content = "ADP-DIAG-今天的排障记录"
+        self.assertEqual(self._callback(client, content).status_code, 200)
+        self.assertEqual([record["content"] for record in read_messages(self.config)], [content])
 
     def test_wecom_platform_acceptance_with_no_reply_leaves_receive_unverified(self):
         """平台接受和实际回发分开验收。"""

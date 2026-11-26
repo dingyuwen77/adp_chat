@@ -9,6 +9,7 @@ from application.diagnostics import DiagnosticReport
 
 
 router = APIRouter()
+DIAGNOSTIC_CHECK_PATH = "/api/internal/diagnostics/check"
 
 
 class DiagnosticRequest(BaseModel):
@@ -18,7 +19,7 @@ class DiagnosticRequest(BaseModel):
     target: Literal["adp", "wecom"]
 
 
-@router.post("/api/internal/diagnostics/check", include_in_schema=False)
+@router.post(DIAGNOSTIC_CHECK_PATH, include_in_schema=False)
 async def check_diagnostics(body: DiagnosticRequest, request: Request) -> DiagnosticReport:
     """每进程只运行一轮探测，拒绝并发调用以免重复发送。"""
     diagnostics = request.app.state.diagnostics
