@@ -4,7 +4,7 @@
 
 [adp]
 # 必填：在已发布 ADP 应用 API 接入页复制 AppKey，不是腾讯云 SecretKey。
-app_key = "MOCAigqyPybgYhZpiaIFPGQYFtqvfEUXDoJIToMuUjuxmqQvyFHmwtMrijglghhXVGZQgPZUhOAnwynPIxKMtoHBxENfMMlhWECzQyBpgFndotshSNjGApQFMdZRrFHb"
+app_key = "sJKaRWkhxAEcRikGlydEncuhinBKLhfhHWNHmwhYkTrsBMopoIFraGJCTNhkwGUwDLAoIxuFngZgBgbNkjXcJfTDKgVkBbJzHFcnpenzBRAjAKMwPHtUIiPhvUAcnHGr"
 # 必填：用户的稳定标识；同一用户保持不变，修改后需显式创建新会话。
 user_id = "local-user"
 # 可选访问者标识：留空自动使用 user_id，通常无需填写。
@@ -75,7 +75,7 @@ notification_mode = "wecom"
 gateway_environment = "production"
 # 自建应用详情页的Secret，填在实际配置；A～E保持空值，不提交Git。
 # access_token由发送器用CorpID和本Secret自动获取、缓存，无须手工增加配置项。
-wecom_app_secret = "RlZzhajcMOyvj1wXQpRNDMKtQCOz2xjydEk7yPhTIY"
+wecom_app_secret = "-RlZzhajcMOyvj1wXQpRNDMKtQCOz2xjydEk7yPhTIY"
 # 一次通知的发送预算（Token与全部文字/图片消息）；图片准备另计，不影响ADP占用。
 send_timeout_seconds = 15
 # 含图片的整轮回复，每条消息被接口接受后等待的秒数（含末条）；支持非负整数或小数。
