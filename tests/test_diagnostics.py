@@ -46,14 +46,15 @@ class DiagnosticsTests(unittest.TestCase):
                         self.assertEqual(response.json()["reason"], "adp_unconfigured")
                         self.assertEqual(client.get("/healthz").json(), {"status": "ok"})
 
-    def test_legacy_token_alone_keeps_upgrade_disabled(self):
-        """旧令牌配置可加载，升级后必须显式启用免令牌诊断。"""
+    def test_legacy_diagnostic_fields_keep_upgrade_disabled(self):
+        """旧凭据和收件人配置可加载，升级后必须显式启用诊断。"""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             path.write_text(
                 '[adp]\napp_key="fixture"\nuser_id="staff"\n'
                 '[logging]\nlog_enabled=false\n'
-                f'[diagnostics]\ndiagnostic_token="{_TOKEN}"\n',
+                f'[diagnostics]\ndiagnostic_token="{_TOKEN}"\n'
+                'diagnostic_adp_app_key="old-app"\ndiagnostic_wecom_user_id="old-recipient"\n',
                 encoding="utf-8",
             )
             with patch("api.app.load_config", side_effect=lambda: load_config(path)):
@@ -68,11 +69,10 @@ class DiagnosticsTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
         self.config = ChatConfig(
-            "production-placeholder-key", "staff",
+            "production-placeholder-key", "staff", visitor_id="staff-visitor",
             session_file=str(root / "session.json"), log_file=str(root / "diagnostic.log"),
             database_file=str(root / "gateway.sqlite3"), log_answer=False, log_question=False,
-            diagnostics_enabled=True, diagnostic_adp_app_key="probe-placeholder-key",
-            diagnostic_adp_user_id="adp-probe", diagnostic_wecom_user_id="wecom-probe",
+            diagnostics_enabled=True, diagnostic_adp_user_id="adp-probe",
             max_active_requests=4, gateway_enabled=True, notification_mode="wecom",
             gateway_environment="production", corp_id="fixturecorp", agent_id=120,
             adp_application="fixture", wecom_app_secret="wecom-secret-placeholder",
@@ -82,6 +82,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.wecom_mode = "accepted"
         self.adp_requests = []
         self.wecom_requests = []
+        self.adp_called = threading.Event()
         self.sending = threading.Event()
 
     def _upstream(self, request):
@@ -89,6 +90,7 @@ class DiagnosticsTests(unittest.TestCase):
         if request.url.host == "wss.lke.cloud.tencent.com":
             payload = json.loads(request.content)
             self.adp_requests.append(payload)
+            self.adp_called.set()
             if self.adp_mode == "dns":
                 raise httpx.ConnectError("私密底层错误") from socket.gaierror()
             cid = payload["ConversationId"]
@@ -135,7 +137,7 @@ class DiagnosticsTests(unittest.TestCase):
     def test_disabled_check_has_no_outbound_side_effect(self):
         """旧配置兼容，禁用后不会访问渠道。"""
         client = self._client(replace(self.config, diagnostics_enabled=False))
-        self.assertEqual(client.post(_PATH, json={"target": "wecom"}).status_code, 404)
+        self.assertEqual(client.post(_PATH, json={"target": "wecom", "user_id": "wecom-probe"}).status_code, 404)
         self.assertEqual(self.wecom_requests, [])
         self.assertEqual(self.adp_requests, [])
 
@@ -152,13 +154,49 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual((result["status"], result["last_ok"]), ("passed", "adp_reply_parsed"))
         payload = self.adp_requests[0]
         self.assertEqual(payload["RequestId"], result["request_id"])
-        self.assertEqual((payload["UserId"], payload["AppKey"]), ("adp-probe", "probe-placeholder-key"))
+        self.assertEqual(payload["AppKey"], self.config.app_key)
+        self.assertEqual((payload["UserId"], payload["VisitorId"]), ("adp-probe", "adp-probe"))
+        formal_session = client.app.state.chat_service.initialize()
+        self.assertNotEqual(payload["ConversationId"], formal_session)
         self.assertNotIn("fixture-only", response.text)
         self.adp_mode = "incomplete"
         result = client.post(_PATH, json={"target": "adp"}).json()
         self.assertEqual((result["status"], result["last_ok"], result["failed_stage"], result["reason"]),
                          ("unknown", "adp_ack", "adp_sse", "incomplete"))
         self.assertNotEqual(payload["ConversationId"], self.adp_requests[-1]["ConversationId"])
+        self.assertEqual(client.app.state.chat_service.initialize(), formal_session)
+
+    def test_adp_does_not_probe_with_a_formal_identity(self):
+        """测试身份与正式 UserId 或 VisitorId 重合时，不发送诊断请求。"""
+        self.enterContext(patch("httpx.AsyncHTTPTransport", side_effect=lambda **_: httpx.MockTransport(self._upstream)))
+        for identity in (self.config.user_id, self.config.visitor_id):
+            with self.subTest(identity=identity):
+                config = replace(self.config, diagnostic_adp_user_id=identity, gateway_enabled=False, log_enabled=False)
+                with patch("api.app.load_config", return_value=config), TestClient(create_app()) as client:
+                    response = client.post(_PATH, json={"target": "adp"})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["reason"], "adp_unconfigured")
+        self.assertEqual(self.adp_requests, [])
+
+    def test_diagnostic_request_accepts_only_the_target_and_a_single_wecom_member(self):
+        """非法成员或试图指定 ADP 身份时返回安全的 422，且没有出站。"""
+        client = self._client()
+        invalid_requests = [
+            {"target": "wecom"},
+            *({"target": "wecom", "user_id": value}
+              for value in (None, 123, "", " ", "@all", "one|two", "one,two", "A" * 65)),
+            {"target": "wecom", "user_id": "wecom-probe", "message": "caller input"},
+            {"target": "adp", "user_id": "caller input"},
+            {"target": "adp", "user_id": None},
+        ]
+        for body in invalid_requests:
+            with self.subTest(body=body):
+                response = client.post(_PATH, json=body)
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()["error"]["code"], "INVALID_DIAGNOSTIC_REQUEST")
+                self.assertNotIn("caller input", response.text)
+        self.assertEqual(self.wecom_requests, [])
+        self.assertEqual(self.adp_requests, [])
 
     def test_adp_dns_failure_is_observed_without_leaking_exception(self):
         """连接异常中的 DNS 证据和安全排查方向返回给运维。"""
@@ -171,32 +209,65 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("DNS", result["hint"])
         self.assertNotIn("私密底层错误", response.text)
 
+    def test_adp_diagnostic_identity_is_independent_of_wecom_employee_session(self):
+        """正式企微回调与诊断使用同一应用，各自的 ADP 身份和会话独立。"""
+        client = self._client(replace(self.config, notification_mode="disabled"))
+        self.assertEqual(self._callback(client, "业务问句", user="employee-probe").status_code, 200)
+        self.assertTrue(self.adp_called.wait(5))
+        employee_request = self.adp_requests[0]
+        result = client.post(_PATH, json={"target": "adp"}).json()
+        self.assertEqual(result["status"], "passed")
+        diagnostic_request = self.adp_requests[1]
+        self.assertEqual(employee_request["AppKey"], diagnostic_request["AppKey"])
+        self.assertEqual((employee_request["UserId"], employee_request["VisitorId"]),
+                         ("employee-probe", "employee-probe"))
+        self.assertEqual((diagnostic_request["UserId"], diagnostic_request["VisitorId"]),
+                         ("adp-probe", "adp-probe"))
+        self.assertNotEqual(employee_request["ConversationId"], diagnostic_request["ConversationId"])
+
     def test_wecom_authenticated_reply_completes_without_adp_or_business_record(self):
         """回发需经过验签，探测与业务存储分离并拒绝重复主动发送。"""
         self.enterContext(patch("application.diagnostics._WECOM_REPLY_SECONDS", 10))
         client = self._client()
+        body = {"target": "wecom", "user_id": "alternate-probe"}
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(client.post, _PATH, json={"target": "wecom"})
+            future = executor.submit(client.post, _PATH, json=body)
             self.assertTrue(self.sending.wait(5))
-            duplicate = client.post(_PATH, json={"target": "wecom"})
+            duplicate = client.post(_PATH, json=body)
             self.assertEqual(duplicate.status_code, 409)
             sent = self.wecom_requests[0]
-            self.assertEqual(sent["touser"], "wecom-probe")
+            self.assertEqual(sent["touser"], body["user_id"])
             code = sent["text"]["content"]
-            self.assertEqual(self._callback(client, code, valid=False).status_code, 403)
-            self.assertEqual(self._callback(client, code).status_code, 200)
+            self.assertEqual(self._callback(client, code, user="alternate-probe", valid=False).status_code, 403)
+            self.assertEqual(self._callback(client, code, user="ALTERNATE-PROBE").status_code, 200)
             result = future.result(timeout=5).json()
         self.assertEqual((result["status"], result["send_status"], result["receive_status"]),
                          ("passed", "passed", "passed"))
         self.assertEqual(result["last_ok"], "wecom_callback_verified")
-        self.assertEqual(self._callback(client, code).status_code, 200)
+        self.assertEqual(self._callback(client, code, user="alternate-probe").status_code, 200)
         self.assertEqual(read_messages(self.config), [])
         self.assertEqual(self.adp_requests, [])
         self.assertEqual(len(self.wecom_requests), 1)
 
-    def test_diagnostic_prefix_with_ordinary_text_still_uses_business_callback(self):
-        """专用账号使用相同前缀的普通消息仍按正常回调持久化。"""
+    def test_wecom_wrong_member_cannot_verify_receive(self):
+        """另一名通过验签的成员发回正确测试码，仍不能确认指定成员的收发。"""
+        self.enterContext(patch("application.diagnostics._WECOM_REPLY_SECONDS", 2))
+        client = self._client()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(client.post, _PATH, json={"target": "wecom", "user_id": "chosen-member"})
+            self.assertTrue(self.sending.wait(5))
+            code = self.wecom_requests[0]["text"]["content"]
+            self.assertEqual(self._callback(client, code, user="other-member").status_code, 200)
+            result = future.result(timeout=5).json()
+        self.assertEqual((result["send_status"], result["receive_status"], result["reason"]),
+                         ("passed", "unverified", "reply_not_observed"))
+        self.assertEqual(read_messages(self.config), [])
+        self.assertEqual(self.adp_requests, [])
+
+    def test_disabled_diagnostics_ignores_test_codes_but_accepts_ordinary_text(self):
+        """停用后仍拦截完整测试码，相同前缀的普通消息继续持久化。"""
         client = self._client(replace(self.config, diagnostics_enabled=False))
+        self.assertEqual(self._callback(client, "ADP-DIAG-" + "f" * 32).status_code, 200)
         content = "ADP-DIAG-今天的排障记录"
         self.assertEqual(self._callback(client, content).status_code, 200)
         self.assertEqual([record["content"] for record in read_messages(self.config)], [content])
@@ -204,7 +275,7 @@ class DiagnosticsTests(unittest.TestCase):
     def test_wecom_platform_acceptance_with_no_reply_leaves_receive_unverified(self):
         """平台接受和实际回发分开验收。"""
         with patch("application.diagnostics._WECOM_REPLY_SECONDS", 0):
-            result = self._client().post(_PATH, json={"target": "wecom"}).json()
+            result = self._client().post(_PATH, json={"target": "wecom", "user_id": "wecom-probe"}).json()
         self.assertEqual((result["status"], result["send_status"], result["receive_status"]),
                          ("unverified", "passed", "unverified"))
         self.assertEqual((result["failed_stage"], result["reason"]), ("wecom_callback", "reply_not_observed"))
@@ -212,13 +283,14 @@ class DiagnosticsTests(unittest.TestCase):
     def test_wecom_token_rejection_and_lost_send_response_are_distinct(self):
         """已提交但未见响应的发送与 Token 拒绝具有不同边界。"""
         client = self._client()
+        body = {"target": "wecom", "user_id": "wecom-probe"}
         self.wecom_mode = "token_rejected"
-        result = client.post(_PATH, json={"target": "wecom"}).json()
+        result = client.post(_PATH, json=body).json()
         self.assertEqual((result["failed_stage"], result["send_status"], result["provider_code"]),
                          ("wecom_token", "failed", 40001))
         self.assertEqual(self.wecom_requests, [])
         self.wecom_mode = "read_timeout"
-        result = client.post(_PATH, json={"target": "wecom"}).json()
+        result = client.post(_PATH, json=body).json()
         self.assertEqual((result["failed_stage"], result["send_status"], result["reason"]),
                          ("wecom_send", "unknown", "read_timeout"))
         self.assertEqual(len(self.wecom_requests), 1)

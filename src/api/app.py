@@ -68,11 +68,11 @@ async def lifespan(app: FastAPI):
                 outgoing.push_async_callback(worker.stop)
                 await worker.start()
                 gateway.events.emit("service.started")
-            diagnostic_key = config.diagnostic_adp_app_key.strip()
-            if (config.diagnostics_enabled and diagnostic_key and diagnostic_key != config.app_key.strip()
-                    and config.diagnostic_adp_user_id.strip()):
+            diagnostic_user_id = config.diagnostic_adp_user_id.strip()
+            if (config.diagnostics_enabled and diagnostic_user_id
+                    and diagnostic_user_id not in (config.user_id.strip(), config.visitor_id.strip())):
                 diagnostic_config = replace(
-                    config, app_key=diagnostic_key, user_id=config.diagnostic_adp_user_id.strip(), visitor_id="",
+                    config, user_id=diagnostic_user_id, visitor_id="",
                     user_name="", system_role="", search_network="", workflow_status="", enable_multi_intent=None,
                     adp_url=ADP_CHAT_URL, max_active_requests=1,
                     chat_timeout_seconds=min(config.chat_timeout_seconds, 30),
@@ -124,7 +124,8 @@ def create_app() -> FastAPI:
     async def validation_error_handler(request: Request, _exc: RequestValidationError) -> JSONResponse:
         """拦截校验报错，避免在响应中回显请求消息。"""
         if getattr(request.scope.get("route"), "path", None) == DIAGNOSTIC_CHECK_PATH:
-            return _error(422, "INVALID_DIAGNOSTIC_REQUEST", "input", "请求必须仅包含 target，取值为 adp 或 wecom。")
+            return _error(422, "INVALID_DIAGNOSTIC_REQUEST", "input",
+                          "ADP 检查只需传 target=adp。企微检查需传 target=wecom 和一个有效的成员 user_id。")
         return _error(422, "INVALID_REQUEST", "input", "请求必须包含非空文字 message。")
 
     @app.exception_handler(Exception)

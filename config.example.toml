@@ -110,11 +110,8 @@ log_answer = true
 [diagnostics]
 # 默认关闭。开启前在管理代理或防火墙上限制诊断入口的访问来源。
 diagnostics_enabled = false
-# ADP 探测使用单独的无写入工具应用与测试身份，不使用正式 AppKey 或会话。
-diagnostic_adp_app_key = ""
+# ADP 探测复用 [adp].app_key。填写不与正式 ADP 或企微成员身份重合的测试 UserId，每次使用新会话。
 diagnostic_adp_user_id = ""
-# 企微正式发送模式中的专用测试成员，只接收固定格式的一次性测试消息。
-diagnostic_wecom_user_id = ""
 
 [deployment]
 # 仅服务器 run.sh/upgrade.sh 读取；本地 CLI、直接 Uvicorn 和源码 Compose 忽略。
