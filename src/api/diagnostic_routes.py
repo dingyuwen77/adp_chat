@@ -1,4 +1,4 @@
-"""运维诊断入口，仅允许鉴权后的固定探测目标。"""
+"""由可信内网或管理代理访问的固定目标诊断入口。"""
 
 from typing import Literal
 
@@ -23,10 +23,8 @@ class DiagnosticRequest(BaseModel):
 async def check_diagnostics(body: DiagnosticRequest, request: Request) -> DiagnosticReport:
     """每进程只运行一轮探测，拒绝并发调用以免重复发送。"""
     diagnostics = request.app.state.diagnostics
-    if not diagnostics.token:
+    if not diagnostics.enabled:
         raise HTTPException(404, "诊断接口未启用。")
-    if not diagnostics.authorized(request.headers.getlist("authorization")):
-        raise HTTPException(401, "诊断令牌无效。", headers={"WWW-Authenticate": "Bearer"})
     if diagnostics.lock.locked():
         raise HTTPException(409, "另一轮诊断正在执行。")
     async with diagnostics.lock:

@@ -108,8 +108,8 @@ log_question = true
 log_answer = true
 
 [diagnostics]
-# 空 Token 禁用诊断。启用时使用独立随机 Token，32 至 128 个 URL 安全字符。
-diagnostic_token = ""
+# 默认关闭。开启前在管理代理或防火墙上限制诊断入口的访问来源。
+diagnostics_enabled = false
 # ADP 探测使用单独的无写入工具应用与测试身份，不使用正式 AppKey 或会话。
 diagnostic_adp_app_key = ""
 diagnostic_adp_user_id = ""

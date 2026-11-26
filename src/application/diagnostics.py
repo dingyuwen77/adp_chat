@@ -3,7 +3,6 @@
 import asyncio
 import re
 from dataclasses import dataclass
-from secrets import compare_digest
 from uuid import uuid4
 
 from core.outbound import OutboundProgress
@@ -62,20 +61,13 @@ class Diagnostics:
 
     def __init__(self, config, logger, *, adp=None, sender=None):
         """借用 lifespan 管理的客户端，不占用正式 ADP 会话。"""
-        self.token = config.diagnostic_token
+        self.enabled = config.diagnostics_enabled
         self.wecom_user = config.diagnostic_wecom_user_id
         self.logger = logger
         self.adp = adp
         self.sender = sender
         self.lock = asyncio.Lock()
         self._expected: tuple[str, asyncio.Event] | None = None
-
-    def authorized(self, headers: list[str]) -> bool:
-        """常量时间比较唯一 Bearer 凭据，不记录客户端提供的值。"""
-        if len(headers) != 1:
-            return False
-        scheme, _, supplied = headers[0].partition(" ")
-        return scheme.lower() == "bearer" and compare_digest(self.token.encode(), supplied.encode())
 
     def receive(self, message: InboundMessage) -> bool:
         """只消费专用账号发回的完整探测码，旧探测码也不会进入正式 ADP。"""
@@ -91,7 +83,7 @@ class Diagnostics:
         return True
 
     async def check(self, target: str) -> DiagnosticReport:
-        """运行一轮已鉴权、已限并发的检查并记录可关联结果。"""
+        """运行一轮已启用、已限并发的检查并记录可关联结果。"""
         report = DiagnosticReport(uuid4().hex, target, "passed", "request_received")
         if target == "adp":
             await self._check_adp(report)

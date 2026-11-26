@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     with ExitStack() as resources:
         gateway = sender = diagnostic_adp = None
         logger = (resources.enter_context(diagnostic_logger(config, background=True))
-                  if config.gateway_enabled or config.diagnostic_token else None)
+                  if config.gateway_enabled or config.diagnostics_enabled else None)
         async with AsyncExitStack() as outgoing:
             if config.gateway_enabled:
                 gateway = WeComGateway(config, logger)
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
                 await worker.start()
                 gateway.events.emit("service.started")
             diagnostic_key = config.diagnostic_adp_app_key.strip()
-            if (config.diagnostic_token and diagnostic_key and diagnostic_key != config.app_key.strip()
+            if (config.diagnostics_enabled and diagnostic_key and diagnostic_key != config.app_key.strip()
                     and config.diagnostic_adp_user_id.strip()):
                 diagnostic_config = replace(
                     config, app_key=diagnostic_key, user_id=config.diagnostic_adp_user_id.strip(), visitor_id="",
